@@ -6,40 +6,46 @@ import time
 import csv
 import statistics
 from collections import Counter
+from pathlib import Path
+from simulatino_parser import parse_run
+
+#from pathlib import Path
+
 
 #git debug
 
 
 
 # initialize per-run logging files
-from pathlib import Path
 
-def _next_run_number(counter_path: str = "numTries") -> int:
-    """Reads an integer from `counter_path`, increments it, writes it back, and returns the new value."""
-    p = Path(counter_path)
-    try:
-        current = int(p.read_text().strip())
-    except Exception:
-        current = 0
-    current += 1
-    p.write_text(str(current))
-    return current
+results_dir = Path("results")
+results_dir.mkdir(parents=True, exist_ok=True)
 
-run_num = _next_run_number("numTries")
+counter_path = results_dir / "numTries"
+try:
+    run_num = int(counter_path.read_text().strip())
+except Exception:
+    run_num = 0
+counter_path.write_text(str(run_num + 1))
 
-log_name_1 = f"simulation_log_{run_num}.csv"
-log_name_2 = f"simulation_log2_{run_num}.csv"
+print(run_num)
+
+run_dir = results_dir / str(run_num)
+run_dir.mkdir(parents=True, exist_ok=True)
+
+log_path_1 = run_dir / f"simulation_log_{run_num}.csv"
+log_path_2 = run_dir / f"simulation_log2_{run_num}.csv"
 
 # Create NEW files each run (overwrite if they already exist)
-csv_file = open(log_name_1, "w", newline="")
+csv_file = open(log_path_1, "w", newline="")
 csv_writer = csv.writer(csv_file)
 csv_writer.writerow(["evolution rate", "length lived", "species population time", "population"])
 
-csv_file2 = open(log_name_2, "w", newline="")
+csv_file2 = open(log_path_2, "w", newline="")
 csv_writer2 = csv.writer(csv_file2)
 csv_writer2.writerow(["frame", "avg evo", "population"])
 
-print(f"Run #{run_num} -> writing logs: {log_name_1}, {log_name_2}")
+print(f"Run #{run_num} -> writing logs: {log_path_1}, {log_path_2}")
 
 
 # Initialize pygame∫
@@ -216,7 +222,7 @@ class Dot:
 
             
 
-            if random.uniform(0, child.evolution_speed) < 0.15: #random chance for cancer to happend, where the child can't reproduce or smth
+            if random.uniform(0, child.evolution_speed) < 0.10: #random chance for cancer to happend, where the child can't reproduce or smth
                 
                 dots.append(child)
             else:
@@ -339,6 +345,7 @@ dots, nutrient = reset_simulation()
 
 clock = pygame.time.Clock()
 running = True
+should_parse = False
 frame_count = 0
 avgSpecies = []
 
@@ -419,6 +426,7 @@ while running:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
                             wrte_info(evo_val, data)
+            should_parse = True
             running = False
         elif event.type == pygame.KEYDOWN:  # key pressed
             if event.key == pygame.K_SPACE:
@@ -433,6 +441,7 @@ while running:
 
                 # Put your code here to handle space press
             if event.key == pygame.K_ESCAPE:
+                should_parse = True
                 running = False
             if event.key == pygame.K_p:
                 pause = not pause  
@@ -442,6 +451,7 @@ while running:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
                             wrte_info(evo_val, data)
+                should_parse = True
                 running = False
             if event.key == pygame.K_d:
                 draw = not draw
@@ -739,6 +749,8 @@ while running:
 pygame.quit()
 csv_file.close()
 csv_file2.close()
-
-
-
+if should_parse:
+    try:
+        parse_run(results_dir, run_num)
+    except Exception as e:
+        print(f"Failed to parse results: {e}")
