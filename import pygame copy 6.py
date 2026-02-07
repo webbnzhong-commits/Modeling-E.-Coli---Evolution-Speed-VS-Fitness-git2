@@ -34,18 +34,15 @@ run_dir = results_dir / str(run_num)
 run_dir.mkdir(parents=True, exist_ok=True)
 
 log_path_1 = run_dir / f"simulation_log_{run_num}.csv"
-log_path_2 = run_dir / f"simulation_log2_{run_num}.csv"
 
-# Create NEW files each run (overwrite if they already exist)
-csv_file = open(log_path_1, "w", newline="")
+# Append to existing logs; write headers only if the file is new/empty.
+log1_has_data = log_path_1.exists() and log_path_1.stat().st_size > 0
+csv_file = open(log_path_1, "a", newline="")
 csv_writer = csv.writer(csv_file)
-csv_writer.writerow(["evolution rate", "length lived", "species population time", "population"])
+if not log1_has_data:
+    csv_writer.writerow(["evolution rate", "length lived", "species population time", "population"])
 
-csv_file2 = open(log_path_2, "w", newline="")
-csv_writer2 = csv.writer(csv_file2)
-csv_writer2.writerow(["frame", "avg evo", "population"])
-
-print(f"Run #{run_num} -> writing logs: {log_path_1}, {log_path_2}")
+print(f"Run #{run_num} -> writing log: {log_path_1}")
 
 
 # Initialize pygame∫
@@ -349,6 +346,7 @@ should_parse = False
 frame_count = 0
 last_1000_start = time.perf_counter()
 last_1000_time = None
+iter_1000_times = []
 avgSpecies = []
 
 
@@ -391,7 +389,7 @@ phLevel                     = 7.0
 
 draw = False
 drawSometimes = True
-drawAmnt = 100
+drawAmnt = 500
 
 enviormentChangeRate = 1
 
@@ -548,24 +546,7 @@ while running:
     for dot in list(dots):
         dot.collect_resources()
     nutrient.update()
-    if frame_count % 100 == 0:
-        population = len(dots)
-        if population > 0:
-            evo_speeds = [dot.evolution_speed for dot in dots]
-            median_evo_speed = statistics.median(evo_speeds)
-            csv_writer2.writerow([frame_count, median_evo_speed, population])
-
-            # Write individual species data if they exceed 20% of total population
-            evo_groups = {}
-            for dot in dots:
-                key = round(dot.evolution_speed, 2)
-                evo_groups.setdefault(key, []).append(dot)
-            for evo_val, group in evo_groups.items():
-                pct = len(group) / population
-                if pct > 0.2:
-                    csv_writer2.writerow([frame_count, evo_val, len(group), f"{pct*100:.2f}%"])
-        else:
-            median_evo_speed = 0
+    
 
     evo_speeds = [dot.evolution_speed for dot in dots]
     median_evo_speed = statistics.median(evo_speeds)
@@ -689,6 +670,27 @@ while running:
         screen.blit(text, (10, 80))
         text = font.render(f"evo avg: {avg_evo_speed}", True, (255, 255, 255))
         screen.blit(text, (10, 110))
+
+        # Graph of 1000-iteration times (0-2s) to the right of the HUD
+        graph_x, graph_y = 400, 25
+        graph_w, graph_h = WIDTH - graph_x - 150, 80
+        pygame.draw.rect(screen, (80, 80, 80), (graph_x, graph_y, graph_w, graph_h), 1)
+        # y-axis labels (0s at bottom, 2s at top)
+        label_top = font.render("2.0s", True, (200, 200, 200))
+        label_bot = font.render("0.0s", True, (200, 200, 200))
+        screen.blit(label_top, (graph_x + graph_w + 5, graph_y - 5))
+        screen.blit(label_bot, (graph_x + graph_w + 5, graph_y + graph_h - 15))
+        if len(iter_1000_times) > 0:
+            mean_1000 = sum(iter_1000_times) / len(iter_1000_times)
+            mean_text = font.render(f"-Mean: {mean_1000:.2f}s", True, (200, 200, 200))
+            screen.blit(mean_text, (graph_x + graph_w + 5, graph_y - mean_1000 + graph_h - mean_text.get_height()))
+            max_points = graph_w  # one pixel per point
+            recent = iter_1000_times[-max_points:]
+            for i, tval in enumerate(recent):
+                t_clamped = max(0.0, min(2.0, tval))
+                px = graph_x + i
+                py = graph_y + graph_h - int((t_clamped / 2.0) * graph_h)
+                pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
     if frame_count % 400 / enviormentChangeRate == 0:
         phLevel += random.uniform(-2, 2)
         if phLevel < 4:
@@ -738,16 +740,17 @@ while running:
                 txt = font.render(line, True, (255, 255, 255))
                 screen.blit(txt, (40, y))  # shift text right so square doesn't overlap
             y += 30
-
-    pygame.display.flip()
-    #clock.tick(60) # keep commented
+    
+        pygame.display.flip()
+    clock.tick(0) # keep commented
     
     frame_count += 1
     if frame_count % 1000 == 0:
         now = time.perf_counter()
         last_1000_time = now - last_1000_start
         last_1000_start = now
-    if frame_count % 10 == 0:
+        iter_1000_times.append(last_1000_time)
+    if frame_count % 1000 == 0:
         print (frame_count)
         print (totalSim)
         print (f"amount of species: {amntOfSpecies}")
@@ -761,7 +764,6 @@ while running:
     
 pygame.quit()
 csv_file.close()
-csv_file2.close()
 if should_parse:
     try:
         parse_run(results_dir, run_num)

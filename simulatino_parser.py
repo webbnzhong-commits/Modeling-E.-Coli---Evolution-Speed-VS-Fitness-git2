@@ -76,7 +76,7 @@ def parse_run(
     results_dir: Path,
     run_num: int,
     step: float = 0.001,
-    max_speed: float = 0.3,
+    max_speed: float = 0.4,
     fps: float = 60.0,
     quiet: bool = False,
 ) -> Tuple[Path, Path]:
@@ -243,10 +243,12 @@ def _infer_latest_run(results_dir: Path) -> int:
         current = int(counter_path.read_text().strip())
     except Exception:
         current = 0
-    return max(0, current - 1)
+    return max(0, current)
 
 
 if __name__ == "__main__":
     results_dir = Path("results")
+    
     run_num = _infer_latest_run(results_dir)
+    print (f"run num is {run_num}")
     parse_run(results_dir, run_num)
