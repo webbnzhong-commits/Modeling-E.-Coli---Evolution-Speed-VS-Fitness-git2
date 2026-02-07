@@ -50,6 +50,7 @@ pygame.display.set_caption("Dots Example")
 
 evo_speed_range = [0.05, 0.4]
 
+
 '''
 Three traits:
 reproduction rate: what resource amount is needed to reproduce. How much o or c or n is needed to reproduce, however they need 10 of each resource to live
