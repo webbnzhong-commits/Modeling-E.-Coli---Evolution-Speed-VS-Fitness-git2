@@ -347,6 +347,8 @@ clock = pygame.time.Clock()
 running = True
 should_parse = False
 frame_count = 0
+last_1000_start = time.perf_counter()
+last_1000_time = None
 avgSpecies = []
 
 
@@ -678,8 +680,12 @@ while running:
         species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
         text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
         screen.blit(text, (10, 50))
-        time_1000 = 1000 / 60
-        text = font.render(f"1000 iters: {time_1000:.2f}s", True, (255, 255, 255))
+        if last_1000_time is not None and last_1000_time > 0:
+            fps_est = 1000 / last_1000_time
+            time_1000_text = f"1000 iters: {last_1000_time:.2f}s @ {fps_est:.1f} FPS"
+        else:
+            time_1000_text = "1000 iters: --"
+        text = font.render(time_1000_text, True, (255, 255, 255))
         screen.blit(text, (10, 80))
         text = font.render(f"evo avg: {avg_evo_speed}", True, (255, 255, 255))
         screen.blit(text, (10, 110))
@@ -737,6 +743,10 @@ while running:
     #clock.tick(60) # keep commented
     
     frame_count += 1
+    if frame_count % 1000 == 0:
+        now = time.perf_counter()
+        last_1000_time = now - last_1000_start
+        last_1000_start = now
     if frame_count % 10 == 0:
         print (frame_count)
         print (totalSim)
