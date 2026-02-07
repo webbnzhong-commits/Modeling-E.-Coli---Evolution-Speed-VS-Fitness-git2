@@ -77,6 +77,7 @@ def parse_run(
     run_num: int,
     step: float = 0.001,
     max_speed: float = 0.3,
+    fps: float = 60.0,
     quiet: bool = False,
 ) -> Tuple[Path, Path]:
     run_dir = results_dir / str(run_num)
@@ -214,6 +215,12 @@ def parse_run(
             _add_line(f"Quadratic model R^2: {_r2(y_list, y_pred_quad):.4f}")
         else:
             _add_line("Quadratic fit skipped (numpy not available).")
+
+    if fps > 0:
+        seconds_1000 = 1000.0 / fps
+        _add_line(
+            f"Estimated time for 1000 iterations at {fps:.2f} FPS: {seconds_1000:.2f} seconds"
+        )
 
     if not quiet:
         print("")

@@ -23,10 +23,10 @@ results_dir.mkdir(parents=True, exist_ok=True)
 
 counter_path = results_dir / "numTries"
 try:
-    run_num = int(counter_path.read_text().strip())
+    run_num = int(counter_path.read_text().strip()) + 1
 except Exception:
     run_num = 0
-counter_path.write_text(str(run_num + 1))
+counter_path.write_text(str(run_num))
 
 print(run_num)
 
@@ -678,8 +678,11 @@ while running:
         species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
         text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
         screen.blit(text, (10, 50))
+        time_1000 = 1000 / 60
+        text = font.render(f"1000 iters: {time_1000:.2f}s", True, (255, 255, 255))
+        screen.blit(text, (10, 80))
         text = font.render(f"evo avg: {avg_evo_speed}", True, (255, 255, 255))
-        screen.blit(text, (10, 100))
+        screen.blit(text, (10, 110))
     if frame_count % 400 / enviormentChangeRate == 0:
         phLevel += random.uniform(-2, 2)
         if phLevel < 4:
@@ -731,7 +734,7 @@ while running:
             y += 30
 
     pygame.display.flip()
-    clock.tick(60) # keep commented
+    #clock.tick(60) # keep commented
     
     frame_count += 1
     if frame_count % 10 == 0:
