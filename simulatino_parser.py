@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -18,6 +19,11 @@ try:
 except Exception:
     _scipy_pearsonr = None
     _HAS_SCIPY = False
+
+
+def _part_index(filename: str) -> int:
+    match = re.search(r"_part(\\d+)\\.csv$", filename)
+    return int(match.group(1)) if match else 0
 
 
 def _geometric_mean(values: Iterable[float], scale: float = 100.0) -> float:
@@ -81,33 +87,46 @@ def parse_run(
     quiet: bool = False,
 ) -> Tuple[Path, Path]:
     run_dir = results_dir / str(run_num)
-    input_file = run_dir / f"simulation_log_{run_num}.csv"
+    raw_dir = run_dir / "raw_data"
+    base_input = raw_dir / f"simulation_log_{run_num}.csv"
+    part_pattern = f"simulation_log_{run_num}_part*.csv"
+    part_files = sorted(
+        raw_dir.glob(part_pattern),
+        key=lambda p: _part_index(p.name),
+    )
+    input_files = []
+    if base_input.exists():
+        input_files.append(base_input)
+    input_files.extend(part_files)
     output_file_geo = run_dir / f"parsedGeometricMeanSimulatino{run_num}_Log.csv"
     output_file_mean = run_dir / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
     summary_file = run_dir / f"stats_summary_{run_num}.txt"
 
-    if not input_file.exists():
-        raise FileNotFoundError(f"Missing input log: {input_file}")
+    if not input_files:
+        raise FileNotFoundError(
+            f"Missing input log: {base_input} or {part_pattern}"
+        )
 
     data = []
-    with open(input_file, newline="") as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            try:
-                evo_speed = float(row["evolution rate"])
-                length_lived = float(row["length lived"])
-                species_pop_time = float(row["species population time"])
-                population = float(row["population"])
-                data.append(
-                    {
-                        "evolution rate": evo_speed,
-                        "length lived": length_lived,
-                        "species population time": species_pop_time,
-                        "population": population,
-                    }
-                )
-            except ValueError:
-                break
+    for input_file in input_files:
+        with open(input_file, newline="") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                try:
+                    evo_speed = float(row["evolution rate"])
+                    length_lived = float(row["length lived"])
+                    species_pop_time = float(row["species population time"])
+                    population = float(row["population"])
+                    data.append(
+                        {
+                            "evolution rate": evo_speed,
+                            "length lived": length_lived,
+                            "species population time": species_pop_time,
+                            "population": population,
+                        }
+                    )
+                except (ValueError, KeyError, TypeError):
+                    continue
 
     parsed_data_geo = []
     parsed_data_mean = []

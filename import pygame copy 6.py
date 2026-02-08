@@ -3,10 +3,11 @@ import random
 import math
 #import pyautogui
 import time
-import csv
 import statistics
+import csv
 from collections import Counter
 from pathlib import Path
+from data_tracking import RunDataTracker
 from simulatino_parser import parse_run
 
 #from pathlib import Path
@@ -16,33 +17,9 @@ from simulatino_parser import parse_run
 
 
 
-# initialize per-run logging files
-
-results_dir = Path("results")
-results_dir.mkdir(parents=True, exist_ok=True)
-
-counter_path = results_dir / "numTries"
-try:
-    run_num = int(counter_path.read_text().strip()) + 1
-except Exception:
-    run_num = 0
-counter_path.write_text(str(run_num))
-
-print(run_num)
-
-run_dir = results_dir / str(run_num)
-run_dir.mkdir(parents=True, exist_ok=True)
-
-log_path_1 = run_dir / f"simulation_log_{run_num}.csv"
-
-# Append to existing logs; write headers only if the file is new/empty.
-log1_has_data = log_path_1.exists() and log_path_1.stat().st_size > 0
-csv_file = open(log_path_1, "a", newline="")
-csv_writer = csv.writer(csv_file)
-if not log1_has_data:
-    csv_writer.writerow(["evolution rate", "length lived", "species population time", "population"])
-
-print(f"Run #{run_num} -> writing log: {log_path_1}")
+# initialize per-run logging
+tracker = RunDataTracker()
+run_num = tracker.run_num
 
 
 # Initialize pygame∫
@@ -54,6 +31,11 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Dots Example")
 
 evo_speed_range = [0.05, 0.4]
+FPS_GRAPH_X = 400
+FPS_GRAPH_Y = 25
+FPS_GRAPH_H = 80
+FPS_GRAPH_W = WIDTH - FPS_GRAPH_X - 150
+ARITH_OVERLAY_H = 140
 
 
 '''
@@ -82,6 +64,84 @@ Ability to breed: get the squared diffrence of the traits above. If the those nu
 Thesis: How does evoloution speed allow species to adapt to a changing environment?
 Does evoloution speed affect species fitness
 '''
+
+def _load_arithmetic_mean_points(results_dir: Path, run_num: int):
+    run_dir = results_dir / str(run_num)
+    parsed_path = run_dir / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
+    if not parsed_path.exists():
+        return []
+    points = []
+    with open(parsed_path, newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                x = float(row["evolution rate"])
+                y = float(row["arithmetic mean length lived"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            points.append((x, y))
+    return points
+
+
+def _draw_arithmetic_mean_overlay(surface, font, points, rect, error_text=""):
+    pygame.draw.rect(surface, (30, 30, 30), rect)
+    pygame.draw.rect(surface, (180, 180, 180), rect, 1)
+    title = font.render("Arithmetic Mean Length Lived", True, (220, 220, 220))
+    surface.blit(title, (rect.x + 8, rect.y + 6))
+
+    if error_text:
+        err = font.render(error_text, True, (255, 160, 160))
+        surface.blit(err, (rect.x + 8, rect.y + 28))
+        return
+
+    if not points:
+        msg = font.render("No arithmetic-mean data yet.", True, (200, 200, 200))
+        surface.blit(msg, (rect.x + 8, rect.y + 28))
+        return
+
+    points_sorted = sorted(points, key=lambda p: p[0])
+    xs = [p[0] for p in points_sorted]
+    ys = [p[1] for p in points_sorted]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if max_x == min_x:
+        max_x = min_x + 1.0
+    if max_y == min_y:
+        max_y = min_y + 1.0
+
+    x_pad = (max_x - min_x) * 0.05
+    y_pad = (max_y - min_y) * 0.05
+    min_x -= x_pad
+    max_x += x_pad
+    min_y -= y_pad
+    max_y += y_pad
+
+    plot_left = rect.x + 8
+    plot_top = rect.y + 28
+    plot_width = rect.width - 16
+    plot_height = rect.height - 36
+
+    def _scale_point(x, y):
+        px = plot_left + int(((x - min_x) / (max_x - min_x)) * plot_width)
+        py = plot_top + plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
+        return px, py
+
+    last_pt = None
+    for x, y in points_sorted:
+        px, py = _scale_point(x, y)
+        if last_pt is not None:
+            pygame.draw.line(surface, (0, 200, 255), last_pt, (px, py), 2)
+        pygame.draw.circle(surface, (0, 220, 255), (px, py), 2)
+        last_pt = (px, py)
+
+    x_label_min = font.render(f"{min_x:.3f}", True, (200, 200, 200))
+    x_label_max = font.render(f"{max_x:.3f}", True, (200, 200, 200))
+    y_label_min = font.render(f"{min_y:.1f}", True, (200, 200, 200))
+    y_label_max = font.render(f"{max_y:.1f}", True, (200, 200, 200))
+    surface.blit(x_label_min, (plot_left, plot_top + plot_height - 14))
+    surface.blit(x_label_max, (plot_left + plot_width - 40, plot_top + plot_height - 14))
+    surface.blit(y_label_min, (plot_left + 4, plot_top + plot_height - 28))
+    surface.blit(y_label_max, (plot_left + 4, plot_top))
 
 # Create a Dot class
 class Dot:
@@ -274,15 +334,24 @@ class nutrients ():
     def regenerate_resources(self):
         # Slightly vary each resource value
         for r in ["o", "c", "n"]:
-            self.resource_pool[r] += random.randint(-1, 1)
+            self.resource_pool[r] += random.uniform(-0.1, 0.1)
 
         # Prevent negative values
         for r in ["o", "c", "n"]:
             if self.resource_pool[r] < 0:
                 self.resource_pool[r] = 0
+            if self.resource_pool[r] > 1:
+                self.resource_pool[r] = 1
+            
+            
+            
+
+        
 
         # Normalize so that o + c + n ≈ 100
         total = self.resource_pool["o"] + self.resource_pool["c"] + self.resource_pool["n"]
+        for r in ["o", "c", "n"]:
+            self.resource_pool[r] *= 1/ total
         '''
         if len(dots) > 300:
             self.foodAmnt -= 1
@@ -304,15 +373,16 @@ class nutrients ():
             high = low * ((1 + enviormentChangeRate/10) / (1 - enviormentChangeRate/10))
 
             # Clamp to keep targets reasonable
-            low = int(max(1, min(low, 600)))
-            high = int(max(low + 1, min(high, 600)))
+            low = int(max(1, min(low, 200)))
+            high = int(max(low + 1, min(high, 200)))
 
             self.goingToAmnt = random.randint(low, high)
+
 
         
 
     def get_resources(self):
-        const = len(dots) * 100
+        const = len(dots)
         return {"o": (self.resource_pool["o"] * self.foodAmnt + self.deadNutreints["o"])/const,
                 "c": (self.resource_pool["c"] * self.foodAmnt + self.deadNutreints["c"])/const,
                 "n": (self.resource_pool["n"] * self.foodAmnt + self.deadNutreints["n"])/const} 
@@ -370,11 +440,12 @@ info9 = ""
 last_avg_evo_speed          = 0
 species_period              = 0
 current_species_populatino  = 0
-amntOfSpecies               = 0
-amntOfMediumSpecies         = 0
-amntOfBigSpecies            = 0
-amntOfSpeciesEach           = ""
 species_trackers            = {}
+show_arithmetic_graph       = False
+arithmetic_points           = []
+arithmetic_graph_error       = ""
+arithmetic_surface          = None
+display_mode                = 2
 
 temp = 37.0
 
@@ -398,26 +469,6 @@ font = pygame.font.SysFont("Consolas", 20)
 tempDirUp = True
 
 
-def wrte_info(evo_val, data):
-    global amntOfBigSpecies, amntOfMediumSpecies, amntOfSpecies, amntOfSpeciesEach
-
-    # Track counts by lifespan bucket
-    if data["lifespan"] > 1999:
-        amntOfBigSpecies += 1
-        amntOfSpeciesEach += f"{data['lifespan']}: {str(evo_val)[:5]}, "
-    elif data["lifespan"] > 500:
-        amntOfMediumSpecies += 1
-
-    population_when_dead = data["pop_time"] // data["lifespan"]
-
-    csv_writer.writerow([
-        evo_val,
-        data["lifespan"],
-        data["pop_time"],
-        population_when_dead
-    ])
-
-    amntOfSpecies += 1
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -425,7 +476,7 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            wrte_info(evo_val, data)
+                            tracker.write_species_info(evo_val, data)
             should_parse = True
             running = False
         elif event.type == pygame.KEYDOWN:  # key pressed
@@ -434,7 +485,7 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            wrte_info(evo_val, data)
+                            tracker.write_species_info(evo_val, data)
                 dots, nutrient = reset_simulation()
                 species_trackers = {}
                 totalSim += 1
@@ -450,12 +501,14 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            wrte_info(evo_val, data)
+                            tracker.write_species_info(evo_val, data)
                 should_parse = True
                 running = False
             if event.key == pygame.K_d:
                 draw = not draw
-            if event.key == pygame.K_s:
+            if event.key == pygame.K_h:
+                display_mode = (display_mode + 1) % 3
+            if event.key == pygame.K_s and display_mode == 2:
                 # Get common evolution speeds
                 evo_speeds = [round(dot.evolution_speed, 2) for dot in dots] if len(dots) > 0 else []
                 
@@ -510,6 +563,40 @@ while running:
                 except Exception as e:
                     info = "No unique mode"
                     info2 = ""
+
+                show_arithmetic_graph = True
+                try:
+                    tracker.csv_file.flush()
+                except Exception:
+                    pass
+
+                arithmetic_points = []
+                arithmetic_graph_error = ""
+                try:
+                    parse_run(tracker.results_dir, tracker.run_num, quiet=True)
+                    arithmetic_points = _load_arithmetic_mean_points(
+                        tracker.results_dir,
+                        tracker.run_num,
+                    )
+                except Exception as e:
+                    arithmetic_graph_error = f"Graph error: {e}"
+
+                overlay_rect = pygame.Rect(
+                    FPS_GRAPH_X,
+                    FPS_GRAPH_Y + FPS_GRAPH_H + 20,
+                    FPS_GRAPH_W,
+                    ARITH_OVERLAY_H,
+                )
+                arithmetic_surface = pygame.Surface(
+                    (overlay_rect.width, overlay_rect.height)
+                )
+                _draw_arithmetic_mean_overlay(
+                    arithmetic_surface,
+                    font,
+                    arithmetic_points,
+                    pygame.Rect(0, 0, overlay_rect.width, overlay_rect.height),
+                    arithmetic_graph_error,
+                )
     if pause:
         continue
     
@@ -548,11 +635,6 @@ while running:
     nutrient.update()
     
 
-    evo_speeds = [dot.evolution_speed for dot in dots]
-    median_evo_speed = statistics.median(evo_speeds)
-    
-
-    
     # --- Multi-species tracking system ---
     evo_groups = {}
     for dot in dots:
@@ -586,7 +668,7 @@ while running:
                 if data["alive"]:
                     data["alive"] = False
                     if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                        wrte_info(evo_val, data)
+                        tracker.write_species_info(evo_val, data)
             dots, nutrient = reset_simulation()
             species_trackers = {}
             totalSim += 1
@@ -596,7 +678,7 @@ while running:
             
             data["alive"] = False
             if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                wrte_info(evo_val, data)
+                tracker.write_species_info(evo_val, data)
             
             extinct_species.append(evo_val)
 
@@ -651,46 +733,56 @@ while running:
 
     # Draw text labels (frame count, population, evo avg, evo median, etc.) after all dots are drawn
     if draw or (drawSometimes and frame_count % drawAmnt == 0):
-        if len(dots) > 0:
-            avg_evo_speed = sum(dot.evolution_speed for dot in dots) / len(dots)
-        else:
-            avg_evo_speed = 0
-        text = font.render(f"Run: {run_num} | Frames: {frame_count}", True, (255, 255, 255))
-        screen.blit(text, (10, 10))
-        # Count how many distinct species exist (species defined by evolution_speed rounded to 6 decimals)
-        species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
-        text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
-        screen.blit(text, (10, 50))
-        if last_1000_time is not None and last_1000_time > 0:
-            fps_est = 1000 / last_1000_time
-            time_1000_text = f"1000 iters: {last_1000_time:.2f}s @ {fps_est:.1f} FPS"
-        else:
-            time_1000_text = "1000 iters: --"
-        text = font.render(time_1000_text, True, (255, 255, 255))
-        screen.blit(text, (10, 80))
-        text = font.render(f"evo avg: {avg_evo_speed}", True, (255, 255, 255))
-        screen.blit(text, (10, 110))
+        if display_mode >= 1:
+            if len(dots) > 0:
+                avg_evo_speed = sum(dot.evolution_speed for dot in dots) / len(dots)
+            else:
+                avg_evo_speed = 0
+            text = font.render(f"Run: {run_num} | Frames: {frame_count}", True, (255, 255, 255))
+            screen.blit(text, (10, 10))
+            # Count how many distinct species exist (species defined by evolution_speed rounded to 6 decimals)
+            species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
+            text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
+            screen.blit(text, (10, 50))
+            if last_1000_time is not None and last_1000_time > 0:
+                fps_est = 1000 / last_1000_time
+                time_1000_text = f"1000 iters: {last_1000_time:.2f}s @ {fps_est:.1f} FPS"
+            else:
+                time_1000_text = "1000 iters: --"
+            text = font.render(time_1000_text, True, (255, 255, 255))
+            screen.blit(text, (10, 80))
+            text = font.render(f"evo avg: {avg_evo_speed}", True, (255, 255, 255))
+            screen.blit(text, (10, 110))
 
-        # Graph of 1000-iteration times (0-2s) to the right of the HUD
-        graph_x, graph_y = 400, 25
-        graph_w, graph_h = WIDTH - graph_x - 150, 80
-        pygame.draw.rect(screen, (80, 80, 80), (graph_x, graph_y, graph_w, graph_h), 1)
-        # y-axis labels (0s at bottom, 2s at top)
-        label_top = font.render("2.0s", True, (200, 200, 200))
-        label_bot = font.render("0.0s", True, (200, 200, 200))
-        screen.blit(label_top, (graph_x + graph_w + 5, graph_y - 5))
-        screen.blit(label_bot, (graph_x + graph_w + 5, graph_y + graph_h - 15))
-        if len(iter_1000_times) > 0:
-            mean_1000 = sum(iter_1000_times) / len(iter_1000_times)
-            mean_text = font.render(f"-Mean: {mean_1000:.2f}s", True, (200, 200, 200))
-            screen.blit(mean_text, (graph_x + graph_w + 5, graph_y - mean_1000 + graph_h - mean_text.get_height()))
-            max_points = graph_w  # one pixel per point
-            recent = iter_1000_times[-max_points:]
-            for i, tval in enumerate(recent):
-                t_clamped = max(0.0, min(2.0, tval))
-                px = graph_x + i
-                py = graph_y + graph_h - int((t_clamped / 2.0) * graph_h)
-                pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+            # Graph of 1000-iteration times (0-2s) to the right of the HUD
+            graph_x, graph_y = FPS_GRAPH_X, FPS_GRAPH_Y
+            graph_w, graph_h = FPS_GRAPH_W, FPS_GRAPH_H
+            pygame.draw.rect(screen, (80, 80, 80), (graph_x, graph_y, graph_w, graph_h), 1)
+            # y-axis labels (0s at bottom, 2s at top)
+            label_top = font.render("2.0s", True, (200, 200, 200))
+            label_bot = font.render("0.0s", True, (200, 200, 200))
+            screen.blit(label_top, (graph_x + graph_w + 5, graph_y - 5))
+            screen.blit(label_bot, (graph_x + graph_w + 5, graph_y + graph_h - 15))
+            if len(iter_1000_times) > 0:
+                mean_1000 = sum(iter_1000_times) / len(iter_1000_times)
+                mean_text = font.render(f"-Mean: {mean_1000:.2f}s", True, (200, 200, 200))
+                screen.blit(mean_text, (graph_x + graph_w + 5, graph_y - mean_1000 + graph_h - mean_text.get_height()))
+                max_points = graph_w  # one pixel per point
+                recent = iter_1000_times[-max_points:]
+                for i, tval in enumerate(recent):
+                    t_clamped = max(0.0, min(2.0, tval))
+                    px = graph_x + i
+                    py = graph_y + graph_h - int((t_clamped / 2.0) * graph_h)
+                    pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+
+            if display_mode == 2 and show_arithmetic_graph and arithmetic_surface is not None:
+                overlay_rect = pygame.Rect(
+                    graph_x,
+                    graph_y + graph_h + 20,
+                    graph_w,
+                    ARITH_OVERLAY_H,
+                )
+                screen.blit(arithmetic_surface, overlay_rect.topleft)
     if frame_count % 400 / enviormentChangeRate == 0:
         phLevel += random.uniform(-2, 2)
         if phLevel < 4:
@@ -715,57 +807,60 @@ while running:
             enviormentChangeRate = 0.5
         if enviormentChangeRate > 5:
             enviormentChangeRate = 5'''
-    # Display median evolution speed below average
-    if len(dots) > 0:
-        median_evo_speed = statistics.median(dot.evolution_speed for dot in dots)
-    else:
-        median_evo_speed = 0
-
-    text = font.render(
-        f"evo median: {str(median_evo_speed)[:5]} | alive for: {longestAlive} | species #{amntOfSpecies} | medium Seepcies #{amntOfMediumSpecies} | big species #{amntOfBigSpecies}",
-        True,
-        (255, 255, 255)
-        )
-    
     if draw or (drawSometimes and frame_count % drawAmnt == 0):
-        screen.blit(text, (10, 130))
-
-        # Draw info text after all dots and labels are drawn so it overlays the dots
-        # Draw info text and color squares for top performing dots
-        y = 160
-        for line in [info, info2, info3, info4, info5, info6, info7, info8, info9]:
-            if isinstance(line, tuple) and line[0] == "color_square":
-                pygame.draw.rect(screen, line[1], (10, y, 20, 20))  # small 20x20 square
+        if display_mode >= 1:
+            # Display median evolution speed below average
+            if len(dots) > 0:
+                median_evo_speed = statistics.median(dot.evolution_speed for dot in dots)
             else:
-                txt = font.render(line, True, (255, 255, 255))
-                screen.blit(txt, (40, y))  # shift text right so square doesn't overlap
-            y += 30
+                median_evo_speed = 0
+
+            text = font.render(
+                f"evo median: {str(median_evo_speed)[:5]} | alive for: {longestAlive} | species #{tracker.amntOfSpecies} | medium Seepcies #{tracker.amntOfMediumSpecies} | big species #{tracker.amntOfBigSpecies}",
+                True,
+                (255, 255, 255),
+            )
+            screen.blit(text, (10, 130))
+
+        if display_mode == 2:
+            # Draw info text after all dots and labels are drawn so it overlays the dots
+            # Draw info text and color squares for top performing dots
+            y = 160
+            for line in [info, info2, info3, info4, info5, info6, info7, info8, info9]:
+                if isinstance(line, tuple) and line[0] == "color_square":
+                    pygame.draw.rect(screen, line[1], (10, y, 20, 20))  # small 20x20 square
+                else:
+                    txt = font.render(line, True, (255, 255, 255))
+                    screen.blit(txt, (40, y))  # shift text right so square doesn't overlap
+                y += 30
     
         pygame.display.flip()
     clock.tick(0) # keep commented
     
     frame_count += 1
+    
     if frame_count % 1000 == 0:
         now = time.perf_counter()
         last_1000_time = now - last_1000_start
+        if display_mode >= 1:
+            last_1000_time = now - last_1000_start
+            iter_1000_times.append(last_1000_time)
         last_1000_start = now
-        iter_1000_times.append(last_1000_time)
     if frame_count % 1000 == 0:
         print (frame_count)
         print (totalSim)
-        print (f"amount of species: {amntOfSpecies}")
-        print (amntOfSpeciesEach)
+        if last_1000_time is not None and last_1000_time > 0:
+            fps_est = 1000 / last_1000_time
+            print(f"FPS (last 1000): {fps_est:.1f}, and 1000 iters: {last_1000_time}")
+        print (f"amount of species: {tracker.amntOfSpecies}")
+        print (tracker.amntOfSpeciesEach)
 
-        print (f"resource pool: {nutrient.resource_pool}")
+        print (f"resource pool: {nutrient.get_resources()}")
         print(f"food amnt {nutrient.foodAmnt}")
+        
 
 
 
     
 pygame.quit()
-csv_file.close()
-if should_parse:
-    try:
-        parse_run(results_dir, run_num)
-    except Exception as e:
-        print(f"Failed to parse results: {e}")
+tracker.set_should_parse(should_parse)
