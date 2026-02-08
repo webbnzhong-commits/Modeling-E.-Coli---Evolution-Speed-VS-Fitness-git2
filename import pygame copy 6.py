@@ -208,7 +208,7 @@ class Dot:
         self.realy = y
         self.radius = radius
         self.color = color
-        self.speed = [random.uniform(-2, 2.0), random.uniform(-2, 2.0)]
+        self.speed = [random.uniform(-0.002, 0.002), random.uniform(-0.002, 0.002)]
         self.cancerous = False
         self._cancer_surface = None
         self._cancer_surface_size = None
