@@ -3,6 +3,12 @@ import random
 import math
 import os
 import json
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except Exception:
+    np = None
+    HAS_NUMPY = False
 #import pyautogui
 import time
 import statistics
@@ -14,6 +20,12 @@ from simulatino_parser import parse_run
 from settings_manager import load_settings, save_settings
 from multiprocessing import Pool, cpu_count
 from fps_tracker import FPSTracker
+fast_update = None
+if HAS_NUMPY:
+    try:
+        from fast_loop import fast_update
+    except Exception:
+        fast_update = None
 
 def work(x):
     return x * x
@@ -75,6 +87,7 @@ evo_speed_range = [0.05, 0.4]
 SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
 ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
 SIM_FPS_PATH = os.environ.get("SIM_FPS_PATH")
+FAST_MODE = os.environ.get("FAST_MODE") == "1" and HAS_NUMPY and fast_update is not None
 try:
     SIM_INDEX = int(os.environ.get("SIM_INDEX", "0"))
 except ValueError:
@@ -357,6 +370,7 @@ class Dot:
 
     def update(self):
         global dots
+        self.collect_resources()
         # Move the dot
         self.realx += self.speed[0]
         self.realy += self.speed[1]
@@ -386,70 +400,12 @@ class Dot:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
                 reproduce = False
 
-        if reproduce: #it can reproduce
-            # Deduct reproduction resources
-            
-            
-            
+        if reproduce:
             self.resources["o"] -= self.reproduction_resource["o"]
             self.resources["c"] -= self.reproduction_resource["c"]
             self.resources["n"] -= self.reproduction_resource["n"]
-
-            
-            # Create offspring with slight mutations 
-            child = Dot(self.x, self.y)
-            child.evolution_speed = max(0.001, self.evolution_speed) # + random.uniform(-0.01, 0.01))
-
-
-            #set child traits based on parent trait and evolution speed
-            child.size = max(1, self.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
-            
-            child.favored_resource = self.favored_resource
-            child.immune_system = self.immune_system
-            child.optimal_ph = self.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
-            child.optimal_temp = self.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
-            child.color = self.color.copy()
-            #child.immune_system = min(5, max(0, self.immune_system + int(random.uniform(-child.evolution_speed*3.4, child.evolution_speed*3.4))))
-            if self.evolution_speed > 0.17:
-                child.immune_system = child.immune_system
-                child.immune_system = random.randint(0, 5)
-                #child.immune_system = int(min(5, max(0, self.immune_system + random.uniform(-self.evolution_speed, self.evolution_speed) * 20)))
-                #child.immune_system = self.immune_system
-
-
-            #child.max_cycles = max(10, self.max_cycles + int(random.uniform(-child.evolution_speed*5.5, child.evolution_speed*5.5)))
-            total  = 0
-            total2 = 0
-            for r in ["o", "c", "n"]:
-                mutation = int(random.uniform(-child.evolution_speed, child.evolution_speed) /4) 
-                child.reproduction_resource[r] = max(1, self.reproduction_resource[r] + mutation)
-                if child.favored_resource != r:
-                    total2 += child.reproduction_resource[r]
-                total += child.reproduction_resource[r]
-            
-            # Normalize reproduction rates to keep total similar
-            factor = child.size / total * 2
-            for r in ["o", "c", "n"]:
-                child.reproduction_resource[r] = max(1, int(child.reproduction_resource[r] * factor))   
-            
-            child.reproduction_resource[child.favored_resource] = max(1 * child.size / 2, child.reproduction_resource[child.favored_resource])
-            
-
-            '''
-            x = 2y
-            (y / y+x) = 1/2
-            '''
-            #child.sameResourceNeeds()
-
-            
-
-            if random.uniform(0, child.evolution_speed) < 0.10: #random chance for cancer to happend, where the child can't reproduce or smth
-                dots.append(child)
-            else:
-                for r in ["o", "c", "n"]:
-                    child.reproduction_resource[r] = float('inf')  # can't reproduce if any resource is infinite
-                child.cancerous = True
-                dots.append(child)
+            child = _spawn_child_from_parent(self)
+            dots.append(child)
 
     def death (self):
 
@@ -736,7 +692,56 @@ def _update_stats_snapshot():
         arithmetic_graph_error,
     )
 
-CONTROL_CHECK_INTERVAL = 10
+
+def _spawn_child_from_parent(parent):
+    child = Dot(parent.x, parent.y)
+    child.evolution_speed = max(0.001, parent.evolution_speed)
+    child.size = max(1, parent.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
+    child.favored_resource = parent.favored_resource
+    child.immune_system = parent.immune_system
+    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.color = parent.color.copy()
+    if parent.evolution_speed > 0.17:
+        child.immune_system = random.randint(0, 5)
+
+    total = 0
+    total2 = 0
+    for r in ["o", "c", "n"]:
+        mutation = int(random.uniform(-child.evolution_speed, child.evolution_speed) / 4)
+        child.reproduction_resource[r] = max(1, parent.reproduction_resource[r] + mutation)
+        if child.favored_resource != r:
+            total2 += child.reproduction_resource[r]
+        total += child.reproduction_resource[r]
+
+    if total > 0:
+        factor = child.size / total * 2
+        for r in ["o", "c", "n"]:
+            child.reproduction_resource[r] = max(1, int(child.reproduction_resource[r] * factor))
+
+    child.reproduction_resource[child.favored_resource] = max(
+        1 * child.size / 2, child.reproduction_resource[child.favored_resource]
+    )
+
+    if random.uniform(0, child.evolution_speed) < 0.10:
+        return child
+    for r in ["o", "c", "n"]:
+        child.reproduction_resource[r] = float("inf")
+    child.cancerous = True
+    return child
+
+
+def _log_species(evo_val, data):
+    tracker.write_species_info(
+        evo_val,
+        data,
+        frame_count=frame_count,
+        min_frame_gap=SPECIES_LOG_GAP,
+    )
+
+CONTROL_CHECK_INTERVAL = 50
+SPECIES_LOG_GAP = 1000
+PRINT_INTERVAL = 5000
 control_active_index = None
 enabled_flags = None
 draw_modes = None
@@ -788,7 +793,7 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            tracker.write_species_info(evo_val, data)
+                            _log_species(evo_val, data)
             should_parse = True
             running = False
         elif event.type == pygame.KEYDOWN:  # key pressed
@@ -797,7 +802,7 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            tracker.write_species_info(evo_val, data)
+                            _log_species(evo_val, data)
                 dots, nutrient = reset_simulation()
                 species_trackers = {}
                 totalSim += 1
@@ -813,7 +818,7 @@ while running:
                     if data["alive"]:
                         data["alive"] = False
                         if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                            tracker.write_species_info(evo_val, data)
+                            _log_species(evo_val, data)
                 should_parse = True
                 running = False
             if event.key == pygame.K_d and not SIM_CONTROL_FILE:
@@ -916,8 +921,7 @@ while running:
 
     
     nutrient.regenerate_resources()
-    for dot in list(dots):
-        dot.collect_resources()
+    resource_pool = nutrient.get_resources()
     nutrient.update()
     
 
@@ -954,7 +958,7 @@ while running:
                 if data["alive"]:
                     data["alive"] = False
                     if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                        tracker.write_species_info(evo_val, data)
+                        _log_species(evo_val, data)
             dots, nutrient = reset_simulation()
             species_trackers = {}
             totalSim += 1
@@ -964,7 +968,7 @@ while running:
             
             data["alive"] = False
             if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                tracker.write_species_info(evo_val, data)
+                _log_species(evo_val, data)
             
             extinct_species.append(evo_val)
 
@@ -1011,15 +1015,105 @@ while running:
 
 
     # Update and draw each dot
-    
-    for dot in list(dots):
-        dot.update()
-        if should_draw:
-            dot.draw(screen)
+    if FAST_MODE:
+        n = len(dots)
+        if n > 0:
+            realx = np.array([dot.realx for dot in dots], dtype=np.float32)
+            realy = np.array([dot.realy for dot in dots], dtype=np.float32)
+            speedx = np.array([dot.speed[0] for dot in dots], dtype=np.float32)
+            speedy = np.array([dot.speed[1] for dot in dots], dtype=np.float32)
+            life_cycles = np.array([dot.life_cycles for dot in dots], dtype=np.int32)
+            max_cycles = np.array([dot.max_cycles for dot in dots], dtype=np.int32)
+            res_o = np.array([dot.resources["o"] for dot in dots], dtype=np.float32)
+            res_c = np.array([dot.resources["c"] for dot in dots], dtype=np.float32)
+            res_n = np.array([dot.resources["n"] for dot in dots], dtype=np.float32)
+            repro_o = np.array([dot.reproduction_resource["o"] for dot in dots], dtype=np.float32)
+            repro_c = np.array([dot.reproduction_resource["c"] for dot in dots], dtype=np.float32)
+            repro_n = np.array([dot.reproduction_resource["n"] for dot in dots], dtype=np.float32)
+            opt_ph = np.array([dot.optimal_ph for dot in dots], dtype=np.float32)
+            opt_temp = np.array([dot.optimal_temp for dot in dots], dtype=np.float32)
+
+            dead_mask, reproduce_mask = fast_update(
+                realx,
+                realy,
+                speedx,
+                speedy,
+                life_cycles,
+                max_cycles,
+                res_o,
+                res_c,
+                res_n,
+                repro_o,
+                repro_c,
+                repro_n,
+                opt_ph,
+                opt_temp,
+                phLevel,
+                temp,
+                PH_EFFECT_SCALE,
+                PH_EFFECT_DIVISOR,
+                TEMP_EFFECT_SCALE,
+                TEMP_EFFECT_DIVISOR,
+                REPRO_DEBUF_MIN,
+                WIDTH,
+                HEIGHT,
+                resource_pool["o"],
+                resource_pool["c"],
+                resource_pool["n"],
+            )
+
+            if np.any(dead_mask):
+                dead_o = float(res_o[dead_mask].sum())
+                dead_c = float(res_c[dead_mask].sum())
+                dead_n = float(res_n[dead_mask].sum())
+                nutrient.deadNutreints["o"] += dead_o
+                nutrient.deadNutreints["c"] += dead_c
+                nutrient.deadNutreints["n"] += dead_n
+
+            alive_mask = ~dead_mask
+            if not np.all(alive_mask):
+                dots = [dot for i, dot in enumerate(dots) if alive_mask[i]]
+                realx = realx[alive_mask]
+                realy = realy[alive_mask]
+                speedx = speedx[alive_mask]
+                speedy = speedy[alive_mask]
+                life_cycles = life_cycles[alive_mask]
+                res_o = res_o[alive_mask]
+                res_c = res_c[alive_mask]
+                res_n = res_n[alive_mask]
+                reproduce_mask = reproduce_mask[alive_mask]
+
+            for idx, dot in enumerate(dots):
+                dot.realx = float(realx[idx])
+                dot.realy = float(realy[idx])
+                dot.x = int(dot.realx)
+                dot.y = int(dot.realy)
+                dot.speed[0] = float(speedx[idx])
+                dot.speed[1] = float(speedy[idx])
+                dot.life_cycles = int(life_cycles[idx])
+                dot.resources["o"] = float(res_o[idx])
+                dot.resources["c"] = float(res_c[idx])
+                dot.resources["n"] = float(res_n[idx])
+
+            if reproduce_mask is not None and len(dots) > 0:
+                for idx, flag in enumerate(reproduce_mask):
+                    if flag:
+                        child = _spawn_child_from_parent(dots[idx])
+                        dots.append(child)
+
+            if should_draw:
+                for dot in dots:
+                    dot.draw(screen)
+    else:
+        for dot in list(dots):
+            dot.update()
+            if should_draw:
+                dot.draw(screen)
 
     # Draw text labels (frame count, population, evo avg, evo median, etc.) after all dots are drawn
     if should_draw:
         if display_mode >= 1:
+            fps_enabled = display_mode == 2
             if len(dots) > 0:
                 avg_evo_speed = sum(dot.evolution_speed for dot in dots) / len(dots)
             else:
@@ -1030,9 +1124,12 @@ while running:
             species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
             text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
             screen.blit(text, (10, 50))
-            fps_est = fps_tracker.fps_estimate()
-            if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
-                time_1000_text = f"1000 iters: {fps_tracker.last_interval_time:.2f}s @ {fps_est:.1f} FPS"
+            if fps_enabled:
+                fps_est = fps_tracker.fps_estimate()
+                if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
+                    time_1000_text = f"1000 iters: {fps_tracker.last_interval_time:.2f}s @ {fps_est:.1f} FPS"
+                else:
+                    time_1000_text = "1000 iters: --"
             else:
                 time_1000_text = "1000 iters: --"
             text = font.render(time_1000_text, True, (255, 255, 255))
@@ -1043,7 +1140,8 @@ while running:
             # Graph of 1000-iteration times (0-2s) to the right of the HUD
             graph_x, graph_y = FPS_GRAPH_X, FPS_GRAPH_Y
             graph_w, graph_h = FPS_GRAPH_W, FPS_GRAPH_H
-            fps_tracker.draw_graph(screen, font, graph_x, graph_y, graph_w, graph_h)
+            if fps_enabled:
+                fps_tracker.draw_graph(screen, font, graph_x, graph_y, graph_w, graph_h)
 
             if display_mode == 2 and show_arithmetic_graph and arithmetic_surface is not None:
                 overlay_rect = pygame.Rect(
@@ -1108,17 +1206,19 @@ while running:
     clock.tick(0) # keep commented
     
     frame_count += 1
-    fps_tracker.update(frame_count, display_mode)
-    if frame_count % 1000 == 0:
-        print (frame_count)
-        print (totalSim)
-        fps_est = fps_tracker.fps_estimate()
-        if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
-            print(f"FPS (last 1000): {fps_est:.1f}, and 1000 iters: {fps_tracker.last_interval_time}")
-        print (f"amount of species: {tracker.amntOfSpecies}")
-        print (tracker.amntOfSpeciesEach)
+    if display_mode == 2:
+        fps_tracker.update(frame_count, display_mode)
+    if frame_count % PRINT_INTERVAL == 0 and (not SIM_CONTROL_FILE or caption_active):
+        print(frame_count)
+        print(totalSim)
+        if display_mode == 2:
+            fps_est = fps_tracker.fps_estimate()
+            if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
+                print(f"FPS (last 1000): {fps_est:.1f}, and 1000 iters: {fps_tracker.last_interval_time}")
+        print(f"amount of species: {tracker.amntOfSpecies}")
+        print(tracker.amntOfSpeciesEach)
 
-        print (f"resource pool: {nutrient.get_resources()}")
+        print(f"resource pool: {nutrient.get_resources()}")
         print(f"food amnt {nutrient.foodAmnt}")
         
 

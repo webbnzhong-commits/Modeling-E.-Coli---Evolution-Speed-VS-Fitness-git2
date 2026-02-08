@@ -66,6 +66,7 @@ class RunDataTracker:
         self.amntOfSpeciesEach = ""
         self.should_parse = False
         self._closed = False
+        self.last_write_frame = None
         atexit.register(self._atexit_close)
 
     def _part_path(self, part_index: int) -> Path:
@@ -180,7 +181,15 @@ class RunDataTracker:
         self.current_rows = 0
         self._open_log_file(self._part_path(self.current_part), True)
 
-    def write_species_info(self, evo_val, data) -> None:
+    def write_species_info(self, evo_val, data, frame_count=None, min_frame_gap=None) -> bool:
+        if frame_count is not None and min_frame_gap is not None:
+            try:
+                gap = int(min_frame_gap)
+            except Exception:
+                gap = 0
+            if gap > 0 and self.last_write_frame is not None:
+                if (frame_count - self.last_write_frame) < gap:
+                    return False
         if self.current_rows >= self.rows_per_file - 1:
             self._rotate_if_needed()
 
@@ -196,8 +205,11 @@ class RunDataTracker:
             [evo_val, data["lifespan"], data["pop_time"], population_when_dead]
         )
         self.current_rows += 1
+        if frame_count is not None:
+            self.last_write_frame = frame_count
 
         self.amntOfSpecies += 1
+        return True
 
     def set_should_parse(self, should_parse: bool) -> None:
         self.should_parse = should_parse
