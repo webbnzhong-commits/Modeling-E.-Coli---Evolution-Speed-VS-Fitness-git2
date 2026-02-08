@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 from data_tracking import RunDataTracker
 from simulatino_parser import parse_run
+from settings_manager import load_settings, save_settings
 
 #from pathlib import Path
 
@@ -22,20 +23,80 @@ tracker = RunDataTracker()
 run_num = tracker.run_num
 
 
+# Window settings
+settings = load_settings()
+WIDTH = int(settings["screen"]["width"])
+HEIGHT = int(settings["screen"]["height"])
+WIDTH = max(200, WIDTH)
+HEIGHT = max(200, HEIGHT)
+
+display_mode = int(settings["display_mode"])
+draw = bool(settings["draw"])
+drawSometimes = bool(settings["drawSometimes"])
+drawAmnt = int(settings["drawAmnt"])
+population_cap = float(settings["population_cap"])
+enviormentChangeRate = float(settings["enviormentChangeRate"])
+PH_EFFECT_SCALE = float(settings["ph_effect"]["scale"])
+PH_EFFECT_DIVISOR = float(settings["ph_effect"]["divisor"])
+TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
+TEMP_EFFECT_DIVISOR = float(settings["temp_effect"]["divisor"])
+REPRO_DEBUF_MIN = float(settings["reproduction_debuf_min"])
+
+FPS_GRAPH_X = 400
+FPS_GRAPH_Y = 25
+FPS_GRAPH_H = 80
+CANCER_ALPHA = 128
+
+
+def _recalc_graph_width():
+    global FPS_GRAPH_W
+    FPS_GRAPH_W = WIDTH - FPS_GRAPH_X - 150
+
+
+_recalc_graph_width()
+ARITH_OVERLAY_H = 140
+
 # Initialize pygame∫
 pygame.init()
-
-# Window settings
-WIDTH, HEIGHT = 1280, 832
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Dots Example")
 
 evo_speed_range = [0.05, 0.4]
-FPS_GRAPH_X = 400
-FPS_GRAPH_Y = 25
-FPS_GRAPH_H = 80
-FPS_GRAPH_W = WIDTH - FPS_GRAPH_X - 150
-ARITH_OVERLAY_H = 140
+
+
+def apply_settings(new_settings, update_screen=False):
+    global settings, WIDTH, HEIGHT, screen
+    global display_mode, draw, drawSometimes, drawAmnt
+    global population_cap, enviormentChangeRate
+    global PH_EFFECT_SCALE, PH_EFFECT_DIVISOR, TEMP_EFFECT_SCALE, TEMP_EFFECT_DIVISOR, REPRO_DEBUF_MIN
+
+    settings = new_settings
+    new_width = int(settings["screen"]["width"])
+    new_height = int(settings["screen"]["height"])
+    new_width = max(200, new_width)
+    new_height = max(200, new_height)
+
+    if new_width != WIDTH or new_height != HEIGHT:
+        WIDTH, HEIGHT = new_width, new_height
+        _recalc_graph_width()
+        if update_screen and pygame.get_init():
+            screen = pygame.display.set_mode((WIDTH, HEIGHT))
+
+    display_mode = int(settings["display_mode"])
+    draw = bool(settings["draw"])
+    drawSometimes = bool(settings["drawSometimes"])
+    drawAmnt = int(settings["drawAmnt"])
+    population_cap = float(settings["population_cap"])
+    enviormentChangeRate = float(settings["enviormentChangeRate"])
+    PH_EFFECT_SCALE = float(settings["ph_effect"]["scale"])
+    PH_EFFECT_DIVISOR = float(settings["ph_effect"]["divisor"])
+    TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
+    TEMP_EFFECT_DIVISOR = float(settings["temp_effect"]["divisor"])
+    REPRO_DEBUF_MIN = float(settings["reproduction_debuf_min"])
+
+
+def reload_settings():
+    apply_settings(load_settings(), update_screen=True)
 
 
 '''
@@ -84,9 +145,10 @@ def _load_arithmetic_mean_points(results_dir: Path, run_num: int):
 
 
 def _draw_arithmetic_mean_overlay(surface, font, points, rect, error_text=""):
-    pygame.draw.rect(surface, (30, 30, 30), rect)
+    surface.fill((0, 0, 0, 0))
     pygame.draw.rect(surface, (180, 180, 180), rect, 1)
-    title = font.render("Arithmetic Mean Length Lived", True, (220, 220, 220))
+    title = font.render("Arithmetic Mean Length Lived", True, (220, 220, 0))
+    
     surface.blit(title, (rect.x + 8, rect.y + 6))
 
     if error_text:
@@ -134,14 +196,8 @@ def _draw_arithmetic_mean_overlay(surface, font, points, rect, error_text=""):
         pygame.draw.circle(surface, (0, 220, 255), (px, py), 2)
         last_pt = (px, py)
 
-    x_label_min = font.render(f"{min_x:.3f}", True, (200, 200, 200))
-    x_label_max = font.render(f"{max_x:.3f}", True, (200, 200, 200))
-    y_label_min = font.render(f"{min_y:.1f}", True, (200, 200, 200))
-    y_label_max = font.render(f"{max_y:.1f}", True, (200, 200, 200))
-    surface.blit(x_label_min, (plot_left, plot_top + plot_height - 14))
-    surface.blit(x_label_max, (plot_left + plot_width - 40, plot_top + plot_height - 14))
-    surface.blit(y_label_min, (plot_left + 4, plot_top + plot_height - 28))
-    surface.blit(y_label_max, (plot_left + 4, plot_top))
+    
+    
 
 # Create a Dot class
 class Dot:
@@ -153,6 +209,10 @@ class Dot:
         self.radius = radius
         self.color = color
         self.speed = [random.uniform(-2, 2.0), random.uniform(-2, 2.0)]
+        self.cancerous = False
+        self._cancer_surface = None
+        self._cancer_surface_size = None
+        self._cancer_surface_color = None
 
         self.favored_resource = random.choice(["o", "c", "n"])
         self.immune_system = random.randint(0, 5)  # resistance to antiBiotics
@@ -216,9 +276,14 @@ class Dot:
             return
         
         reproduce = True
+        ph_diff = abs(self.optimal_ph - phLevel)
+        temp_diff = abs(self.optimal_temp - temp)
+        ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
+        temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
+        ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
+        temp_effect = min(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
+        debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
         for r in ["o", "c", "n"]:
-            debuf =  min(1, (abs(self.optimal_ph - phLevel)/2)) * min(1, (abs(self.optimal_temp - temp)))
-
             if self.resources[r] / debuf < self.reproduction_resource[r]:
                 reproduce = False
 
@@ -280,12 +345,11 @@ class Dot:
             
 
             if random.uniform(0, child.evolution_speed) < 0.10: #random chance for cancer to happend, where the child can't reproduce or smth
-                
                 dots.append(child)
             else:
                 for r in ["o", "c", "n"]:
                     child.reproduction_resource[r] = float('inf')  # can't reproduce if any resource is infinite
-                child.color = (child.color[0], child.color[1], child.color[2], 0.5)  # visually distinct color for "cancerous" dots
+                child.cancerous = True
                 dots.append(child)
 
     def death (self):
@@ -308,7 +372,27 @@ class Dot:
         #b = 125
 
         #pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.size)
-        pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.size)
+        if self.cancerous:
+            color_tuple = tuple(self.color)
+            if (
+                self._cancer_surface is None
+                or self._cancer_surface_size != self.size
+                or self._cancer_surface_color != color_tuple
+            ):
+                size = max(1, int(self.size))
+                diameter = size * 2 + 2
+                self._cancer_surface = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+                pygame.draw.circle(
+                    self._cancer_surface,
+                    (color_tuple[0], color_tuple[1], color_tuple[2], CANCER_ALPHA),
+                    (diameter // 2, diameter // 2),
+                    size,
+                )
+                self._cancer_surface_size = self.size
+                self._cancer_surface_color = color_tuple
+            surface.blit(self._cancer_surface, (int(self.x) - self.size - 1, int(self.y) - self.size - 1))
+        else:
+            pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.size)
         
 
 
@@ -445,24 +529,16 @@ show_arithmetic_graph       = False
 arithmetic_points           = []
 arithmetic_graph_error       = ""
 arithmetic_surface          = None
-display_mode                = 2
 
 temp = 37.0
 
 
 
-population_cap              = 0.5
 fightChance                 = 5
 
 
 phLevel                     = 7.0
 
-
-draw = False
-drawSometimes = True
-drawAmnt = 500
-
-enviormentChangeRate = 1
 
 font = pygame.font.SysFont("Consolas", 20)
 
@@ -506,8 +582,14 @@ while running:
                 running = False
             if event.key == pygame.K_d:
                 draw = not draw
+                settings["draw"] = draw
+                save_settings(settings)
             if event.key == pygame.K_h:
                 display_mode = (display_mode + 1) % 3
+                settings["display_mode"] = display_mode
+                save_settings(settings)
+            if event.key == pygame.K_u:
+                reload_settings()
             if event.key == pygame.K_s and display_mode == 2:
                 # Get common evolution speeds
                 evo_speeds = [round(dot.evolution_speed, 2) for dot in dots] if len(dots) > 0 else []
@@ -588,7 +670,7 @@ while running:
                     ARITH_OVERLAY_H,
                 )
                 arithmetic_surface = pygame.Surface(
-                    (overlay_rect.width, overlay_rect.height)
+                    (overlay_rect.width, overlay_rect.height), pygame.SRCALPHA
                 )
                 _draw_arithmetic_mean_overlay(
                     arithmetic_surface,
