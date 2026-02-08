@@ -1,5 +1,6 @@
 import atexit
 import csv
+import os
 import re
 from pathlib import Path
 from typing import Union
@@ -24,11 +25,28 @@ class RunDataTracker:
         self.rows_per_file = max(1, rows_per_file)
 
         counter_path = self.results_dir / "numTries"
-        try:
-            self.run_num = int(counter_path.read_text().strip()) + 1
-        except Exception:
-            self.run_num = 0
-        counter_path.write_text(str(self.run_num))
+        env_run_num = os.environ.get("SIM_RUN_NUM")
+        run_num_override = None
+        if env_run_num is not None:
+            try:
+                run_num_override = int(env_run_num)
+            except ValueError:
+                run_num_override = None
+
+        if run_num_override is not None:
+            self.run_num = run_num_override
+            try:
+                current = int(counter_path.read_text().strip())
+            except Exception:
+                current = -1
+            if self.run_num > current:
+                counter_path.write_text(str(self.run_num))
+        else:
+            try:
+                self.run_num = int(counter_path.read_text().strip()) + 1
+            except Exception:
+                self.run_num = 0
+            counter_path.write_text(str(self.run_num))
 
         print(self.run_num)
 

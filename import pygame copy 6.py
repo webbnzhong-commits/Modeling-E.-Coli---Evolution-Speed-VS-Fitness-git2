@@ -1,6 +1,8 @@
 import pygame
 import random
 import math
+import os
+import json
 #import pyautogui
 import time
 import statistics
@@ -10,6 +12,13 @@ from pathlib import Path
 from data_tracking import RunDataTracker
 from simulatino_parser import parse_run
 from settings_manager import load_settings, save_settings
+from multiprocessing import Pool, cpu_count
+from fps_tracker import FPSTracker
+
+def work(x):
+    return x * x
+
+
 
 #from pathlib import Path
 
@@ -62,6 +71,96 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Dots Example")
 
 evo_speed_range = [0.05, 0.4]
+
+SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
+ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
+SIM_FPS_PATH = os.environ.get("SIM_FPS_PATH")
+try:
+    SIM_INDEX = int(os.environ.get("SIM_INDEX", "0"))
+except ValueError:
+    SIM_INDEX = 0
+try:
+    SIM_TOTAL = int(os.environ.get("SIM_TOTAL", "0"))
+except ValueError:
+    SIM_TOTAL = 0
+
+
+def _read_control_state():
+    if not SIM_CONTROL_FILE:
+        return None, None, None, None, None, None
+    try:
+        data = Path(SIM_CONTROL_FILE).read_text().strip()
+    except Exception:
+        return None, None, None, None, None, None
+    if not data:
+        return None, None, None, None, None, None
+    if data.lstrip().startswith("{"):
+        try:
+            payload = json.loads(data)
+        except Exception:
+            return None, None, None, None, None, None
+        active = payload.get("active")
+        enabled = payload.get("enabled")
+        draw_modes = payload.get("draw_mode")
+        draw_every = payload.get("draw_every")
+        mode_values = payload.get("mode")
+        update_tokens = payload.get("update_tokens")
+        try:
+            active = int(active) if active is not None else None
+        except (TypeError, ValueError):
+            active = None
+        enabled_flags = None
+        if isinstance(enabled, list):
+            enabled_flags = [bool(item) for item in enabled]
+        draw_mode_list = None
+        if isinstance(draw_modes, list):
+            draw_mode_list = []
+            for item in draw_modes:
+                try:
+                    draw_mode_list.append(int(item))
+                except (TypeError, ValueError):
+                    draw_mode_list.append(0)
+        draw_every_list = None
+        if isinstance(draw_every, list):
+            draw_every_list = []
+            for item in draw_every:
+                try:
+                    draw_every_list.append(int(item))
+                except (TypeError, ValueError):
+                    draw_every_list.append(1)
+        mode_list = None
+        if isinstance(mode_values, list):
+            mode_list = []
+            for item in mode_values:
+                try:
+                    mode_list.append(int(item))
+                except (TypeError, ValueError):
+                    mode_list.append(0)
+        update_list = None
+        if isinstance(update_tokens, list):
+            update_list = []
+            for item in update_tokens:
+                try:
+                    update_list.append(int(item))
+                except (TypeError, ValueError):
+                    update_list.append(0)
+        return active, enabled_flags, draw_mode_list, draw_every_list, mode_list, update_list
+    try:
+        return int(data), None, None, None, None, None
+    except ValueError:
+        return None, None, None, None, None, None
+
+
+def _build_caption(active, enabled):
+    if SIM_TOTAL > 0:
+        label = f"Simulation {SIM_INDEX + 1}/{SIM_TOTAL}"
+    else:
+        label = f"Simulation {SIM_INDEX + 1}"
+    if not enabled:
+        status = "OFF"
+    else:
+        status = "ACTIVE" if active else "INACTIVE"
+    return f"Dots Example - {label} - {status}"
 
 
 def apply_settings(new_settings, update_screen=False):
@@ -498,9 +597,7 @@ clock = pygame.time.Clock()
 running = True
 should_parse = False
 frame_count = 0
-last_1000_start = time.perf_counter()
-last_1000_time = None
-iter_1000_times = []
+fps_tracker = FPSTracker(sample_interval=1000, log_path=SIM_FPS_PATH)
 avgSpecies = []
 
 
@@ -545,6 +642,145 @@ font = pygame.font.SysFont("Consolas", 20)
 tempDirUp = True
 
 
+def _update_stats_snapshot():
+    global info, info2, info3, info4, info5, info6, info7, info8, info9
+    global show_arithmetic_graph, arithmetic_points, arithmetic_graph_error, arithmetic_surface
+    evo_speeds = [round(dot.evolution_speed, 2) for dot in dots] if len(dots) > 0 else []
+    try:
+        speed_counts = Counter(evo_speeds)
+        common = speed_counts.most_common()
+        infos = []
+        total_dots = len(dots)
+
+        qualified = []
+        for speed, _ in common:
+            mode_dots = [dot for dot in dots if round(dot.evolution_speed, 2) == speed]
+            count = len(mode_dots)
+            if total_dots > 0 and count / total_dots >= 0.10:
+                qualified.append((speed, mode_dots, count))
+
+        if len(qualified) == 0 and common:
+            qualified = [
+                (
+                    common[0][0],
+                    [dot for dot in dots if round(dot.evolution_speed, 2) == common[0][0]],
+                    speed_counts[common[0][0]],
+                )
+            ]
+        while len(qualified) < 3 and qualified:
+            qualified.append(qualified[0])
+
+        for idx in range(3):
+            if idx >= len(qualified):
+                infos.append("No dots")
+                infos.append("")
+                continue
+            speed, mode_dots, count = qualified[idx]
+            pct = round((count / total_dots) * 100, 2) if total_dots > 0 else 0
+            chosen = random.choice(mode_dots) if mode_dots else None
+            if chosen:
+                infos.append(
+                    f"{pct}% Mode {str(speed)[0:5]} Size:{str(chosen.size)[0:5]} "
+                    f" Imm:{str(chosen.immune_system)[0:5]} "
+                    f"Fav:{chosen.favored_resource}  Cyc:{str(chosen.max_cycles)[0:5]} Evo Speed :{str(chosen.evolution_speed)[0:5]} "
+                )
+                infos.append(("color_square", chosen.color))
+                infos.append(
+                    f"Needs o:{str(chosen.reproduction_resource['o'])[0:5]} "
+                    f"c:{str(chosen.reproduction_resource['c'])[0:5]} "
+                    f"n:{str(chosen.reproduction_resource['n'])[0:5]}"
+                )
+            else:
+                infos.append("No dots")
+                infos.append("")
+
+        while len(infos) < 9:
+            infos.append("")
+
+        info, info2, info3, info4, info5, info6, info7, info8, info9 = infos[:9]
+    except Exception:
+        info = "No unique mode"
+        info2 = ""
+
+    show_arithmetic_graph = True
+    try:
+        tracker.csv_file.flush()
+    except Exception:
+        pass
+
+    arithmetic_points = []
+    arithmetic_graph_error = ""
+    try:
+        parse_run(tracker.results_dir, tracker.run_num, quiet=True)
+        arithmetic_points = _load_arithmetic_mean_points(
+            tracker.results_dir,
+            tracker.run_num,
+        )
+    except Exception as e:
+        arithmetic_graph_error = f"Graph error: {e}"
+
+    overlay_rect = pygame.Rect(
+        FPS_GRAPH_X,
+        FPS_GRAPH_Y + FPS_GRAPH_H + 20,
+        FPS_GRAPH_W,
+        ARITH_OVERLAY_H,
+    )
+    arithmetic_surface = pygame.Surface(
+        (overlay_rect.width, overlay_rect.height), pygame.SRCALPHA
+    )
+    _draw_arithmetic_mean_overlay(
+        arithmetic_surface,
+        font,
+        arithmetic_points,
+        pygame.Rect(0, 0, overlay_rect.width, overlay_rect.height),
+        arithmetic_graph_error,
+    )
+
+CONTROL_CHECK_INTERVAL = 10
+control_active_index = None
+enabled_flags = None
+draw_modes = None
+draw_every_list = None
+mode_values = None
+update_tokens = None
+enabled = True
+draw_mode = 0
+draw_every = 500
+last_update_token = None
+external_active = True
+caption_active = False
+if SIM_CONTROL_FILE:
+    (
+        control_active_index,
+        enabled_flags,
+        draw_modes,
+        draw_every_list,
+        mode_values,
+        update_tokens,
+    ) = _read_control_state()
+    if enabled_flags is not None and SIM_INDEX < len(enabled_flags):
+        enabled = bool(enabled_flags[SIM_INDEX])
+    if draw_modes is not None and SIM_INDEX < len(draw_modes):
+        draw_mode = int(draw_modes[SIM_INDEX])
+    if draw_every_list is not None and SIM_INDEX < len(draw_every_list):
+        draw_every = max(1, int(draw_every_list[SIM_INDEX]))
+    if mode_values is not None and SIM_INDEX < len(mode_values):
+        try:
+            display_mode = int(mode_values[SIM_INDEX])
+        except (TypeError, ValueError):
+            display_mode = display_mode
+    if control_active_index is not None:
+        caption_active = (control_active_index == SIM_INDEX)
+    if ALL_ACTIVE:
+        external_active = enabled
+    else:
+        external_active = enabled if control_active_index is None else enabled and caption_active
+    if update_tokens is not None and SIM_INDEX < len(update_tokens):
+        last_update_token = update_tokens[SIM_INDEX]
+last_caption_state = None
+pygame.display.set_caption(_build_caption(caption_active, enabled))
+
+
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -580,109 +816,77 @@ while running:
                             tracker.write_species_info(evo_val, data)
                 should_parse = True
                 running = False
-            if event.key == pygame.K_d:
+            if event.key == pygame.K_d and not SIM_CONTROL_FILE:
                 draw = not draw
                 settings["draw"] = draw
                 save_settings(settings)
-            if event.key == pygame.K_h:
+            if event.key == pygame.K_h and not SIM_CONTROL_FILE:
                 display_mode = (display_mode + 1) % 3
                 settings["display_mode"] = display_mode
                 save_settings(settings)
             if event.key == pygame.K_u:
                 reload_settings()
-            if event.key == pygame.K_s and display_mode == 2:
-                # Get common evolution speeds
-                evo_speeds = [round(dot.evolution_speed, 2) for dot in dots] if len(dots) > 0 else []
-                
-                try:
-                    speed_counts = Counter(evo_speeds)
-                    common = speed_counts.most_common()
-                    infos = []  # clear old
-                    total_dots = len(dots)
+            if event.key == pygame.K_s:
+                _update_stats_snapshot()
+    if SIM_CONTROL_FILE and frame_count % CONTROL_CHECK_INTERVAL == 0:
+        (
+            control_active_index,
+            enabled_flags,
+            draw_modes,
+            draw_every_list,
+            mode_values,
+            update_tokens,
+        ) = _read_control_state()
+        if control_active_index == -1:
+            should_parse = True
+            running = False
+            break
+        if enabled_flags is not None and SIM_INDEX < len(enabled_flags):
+            enabled = bool(enabled_flags[SIM_INDEX])
+        if draw_modes is not None and SIM_INDEX < len(draw_modes):
+            draw_mode = int(draw_modes[SIM_INDEX])
+        if draw_every_list is not None and SIM_INDEX < len(draw_every_list):
+            draw_every = max(1, int(draw_every_list[SIM_INDEX]))
+        if mode_values is not None and SIM_INDEX < len(mode_values):
+            try:
+                display_mode = int(mode_values[SIM_INDEX])
+            except (TypeError, ValueError):
+                display_mode = display_mode
+        if control_active_index is not None:
+            caption_active = (control_active_index == SIM_INDEX)
+        else:
+            caption_active = False
+        if ALL_ACTIVE:
+            external_active = enabled
+        else:
+            external_active = enabled if control_active_index is None else enabled and caption_active
+        if update_tokens is not None and SIM_INDEX < len(update_tokens):
+            current_token = update_tokens[SIM_INDEX]
+            if current_token != last_update_token:
+                _update_stats_snapshot()
+                last_update_token = current_token
 
-                    # Collect all modes >=10%
-                    qualified = []
-                    for speed, _ in common:
-                        mode_dots = [dot for dot in dots if round(dot.evolution_speed, 2) == speed]
-                        count = len(mode_dots)
-                        if total_dots > 0 and count / total_dots >= 0.10:
-                            qualified.append((speed, mode_dots, count))
-
-                    # If fewer than 3 qualifying modes, repeat top mode to fill
-                    if len(qualified) == 0:
-                        qualified = [(common[0][0], [dot for dot in dots if round(dot.evolution_speed,2)==common[0][0]], speed_counts[common[0][0]])]
-                    while len(qualified) < 3:
-                        qualified.append(qualified[0])
-
-                    # Build info lines for up to 3 modes
-                    for idx in range(3):
-                        speed, mode_dots, count = qualified[idx]
-                        pct = round((count / total_dots) * 100, 2) if total_dots > 0 else 0
-                        chosen = random.choice(mode_dots) if mode_dots else None
-                        if chosen:
-                            infos.append(
-                                f"{pct}% Mode {str(speed)[0:5]} Size:{str(chosen.size)[0:5]} "
-                                f" Imm:{str(chosen.immune_system)[0:5]} "
-                                f"Fav:{chosen.favored_resource}  Cyc:{str(chosen.max_cycles)[0:5]} Evo Speed :{str(chosen.evolution_speed)[0:5]} "
-                                
-                            )
-                            # Add color square
-                            infos.append(("color_square", chosen.color))
-                            infos.append(
-                                f"Needs o:{str(chosen.reproduction_resource['o'])[0:5]} "
-                                f"c:{str(chosen.reproduction_resource['c'])[0:5]} "
-                                f"n:{str(chosen.reproduction_resource['n'])[0:5]}"
-                            )
-                        else:
-                            infos.append("No dots")
-                            infos.append("")
-
-                    # Assign display info variables
-                    while len(infos) < 9:  # ensure enough lines for drawing
-                        infos.append("")
-
-                    info, info2, info3, info4, info5, info6, info7, info8, info9 = infos[:9]
-                except Exception as e:
-                    info = "No unique mode"
-                    info2 = ""
-
-                show_arithmetic_graph = True
-                try:
-                    tracker.csv_file.flush()
-                except Exception:
-                    pass
-
-                arithmetic_points = []
-                arithmetic_graph_error = ""
-                try:
-                    parse_run(tracker.results_dir, tracker.run_num, quiet=True)
-                    arithmetic_points = _load_arithmetic_mean_points(
-                        tracker.results_dir,
-                        tracker.run_num,
-                    )
-                except Exception as e:
-                    arithmetic_graph_error = f"Graph error: {e}"
-
-                overlay_rect = pygame.Rect(
-                    FPS_GRAPH_X,
-                    FPS_GRAPH_Y + FPS_GRAPH_H + 20,
-                    FPS_GRAPH_W,
-                    ARITH_OVERLAY_H,
-                )
-                arithmetic_surface = pygame.Surface(
-                    (overlay_rect.width, overlay_rect.height), pygame.SRCALPHA
-                )
-                _draw_arithmetic_mean_overlay(
-                    arithmetic_surface,
-                    font,
-                    arithmetic_points,
-                    pygame.Rect(0, 0, overlay_rect.width, overlay_rect.height),
-                    arithmetic_graph_error,
-                )
+    current_caption_state = (caption_active, enabled)
+    if current_caption_state != last_caption_state:
+        pygame.display.set_caption(_build_caption(caption_active, enabled))
+        last_caption_state = current_caption_state
+    if not external_active:
+        clock.tick(30)
+        continue
     if pause:
         continue
     
-    if draw or (drawSometimes and frame_count % drawAmnt == 0):
+    if SIM_CONTROL_FILE:
+        if draw_mode == 1:
+            should_draw = external_active and (frame_count % draw_every == 0)
+        elif draw_mode == 2:
+            should_draw = False
+        else:
+            should_draw = external_active
+    else:
+        should_draw = external_active and (draw or (drawSometimes and frame_count % drawAmnt == 0))
+
+    if should_draw:
         screen.fill((0, 0, 0))
 
     # Display frame count
@@ -810,11 +1014,11 @@ while running:
     
     for dot in list(dots):
         dot.update()
-        if draw or (drawSometimes and frame_count % drawAmnt == 0):
+        if should_draw:
             dot.draw(screen)
 
     # Draw text labels (frame count, population, evo avg, evo median, etc.) after all dots are drawn
-    if draw or (drawSometimes and frame_count % drawAmnt == 0):
+    if should_draw:
         if display_mode >= 1:
             if len(dots) > 0:
                 avg_evo_speed = sum(dot.evolution_speed for dot in dots) / len(dots)
@@ -826,9 +1030,9 @@ while running:
             species_count = len({round(dot.evolution_speed, 6) for dot in dots}) if len(dots) > 0 else 0
             text = font.render(f"Population: {len(dots)} | Species#: {species_count}", True, (255, 255, 255))
             screen.blit(text, (10, 50))
-            if last_1000_time is not None and last_1000_time > 0:
-                fps_est = 1000 / last_1000_time
-                time_1000_text = f"1000 iters: {last_1000_time:.2f}s @ {fps_est:.1f} FPS"
+            fps_est = fps_tracker.fps_estimate()
+            if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
+                time_1000_text = f"1000 iters: {fps_tracker.last_interval_time:.2f}s @ {fps_est:.1f} FPS"
             else:
                 time_1000_text = "1000 iters: --"
             text = font.render(time_1000_text, True, (255, 255, 255))
@@ -839,23 +1043,7 @@ while running:
             # Graph of 1000-iteration times (0-2s) to the right of the HUD
             graph_x, graph_y = FPS_GRAPH_X, FPS_GRAPH_Y
             graph_w, graph_h = FPS_GRAPH_W, FPS_GRAPH_H
-            pygame.draw.rect(screen, (80, 80, 80), (graph_x, graph_y, graph_w, graph_h), 1)
-            # y-axis labels (0s at bottom, 2s at top)
-            label_top = font.render("2.0s", True, (200, 200, 200))
-            label_bot = font.render("0.0s", True, (200, 200, 200))
-            screen.blit(label_top, (graph_x + graph_w + 5, graph_y - 5))
-            screen.blit(label_bot, (graph_x + graph_w + 5, graph_y + graph_h - 15))
-            if len(iter_1000_times) > 0:
-                mean_1000 = sum(iter_1000_times) / len(iter_1000_times)
-                mean_text = font.render(f"-Mean: {mean_1000:.2f}s", True, (200, 200, 200))
-                screen.blit(mean_text, (graph_x + graph_w + 5, graph_y - mean_1000 + graph_h - mean_text.get_height()))
-                max_points = graph_w  # one pixel per point
-                recent = iter_1000_times[-max_points:]
-                for i, tval in enumerate(recent):
-                    t_clamped = max(0.0, min(2.0, tval))
-                    px = graph_x + i
-                    py = graph_y + graph_h - int((t_clamped / 2.0) * graph_h)
-                    pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+            fps_tracker.draw_graph(screen, font, graph_x, graph_y, graph_w, graph_h)
 
             if display_mode == 2 and show_arithmetic_graph and arithmetic_surface is not None:
                 overlay_rect = pygame.Rect(
@@ -889,7 +1077,7 @@ while running:
             enviormentChangeRate = 0.5
         if enviormentChangeRate > 5:
             enviormentChangeRate = 5'''
-    if draw or (drawSometimes and frame_count % drawAmnt == 0):
+    if should_draw:
         if display_mode >= 1:
             # Display median evolution speed below average
             if len(dots) > 0:
@@ -920,20 +1108,13 @@ while running:
     clock.tick(0) # keep commented
     
     frame_count += 1
-    
-    if frame_count % 1000 == 0:
-        now = time.perf_counter()
-        last_1000_time = now - last_1000_start
-        if display_mode >= 1:
-            last_1000_time = now - last_1000_start
-            iter_1000_times.append(last_1000_time)
-        last_1000_start = now
+    fps_tracker.update(frame_count, display_mode)
     if frame_count % 1000 == 0:
         print (frame_count)
         print (totalSim)
-        if last_1000_time is not None and last_1000_time > 0:
-            fps_est = 1000 / last_1000_time
-            print(f"FPS (last 1000): {fps_est:.1f}, and 1000 iters: {last_1000_time}")
+        fps_est = fps_tracker.fps_estimate()
+        if fps_tracker.last_interval_time is not None and fps_tracker.last_interval_time > 0 and fps_est is not None:
+            print(f"FPS (last 1000): {fps_est:.1f}, and 1000 iters: {fps_tracker.last_interval_time}")
         print (f"amount of species: {tracker.amntOfSpecies}")
         print (tracker.amntOfSpeciesEach)
 
@@ -946,3 +1127,7 @@ while running:
     
 pygame.quit()
 tracker.set_should_parse(should_parse)
+if __name__ == "__main__":
+    if os.environ.get("SIM_RUN_POOL") == "1":
+        with Pool(cpu_count()) as p:
+            results = p.map(work, range(10_000))
