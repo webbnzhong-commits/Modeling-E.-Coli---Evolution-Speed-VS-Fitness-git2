@@ -3,8 +3,8 @@
     "width": 1280,
     "height": 832
   },
-  "display_mode": 1,
-  "draw": true,
+  "display_mode": 2,
+  "draw": false,
   "drawSometimes": true,
   "drawAmnt": 500,
   "population_cap": 0.5,
@@ -17,5 +17,8 @@
     "scale": 1.0,
     "divisor": 4.0
   },
-  "reproduction_debuf_min": 1e-05
+  "reproduction_debuf_min": 1e-05,
+  "simulations": {
+    "count": 5
+  }
 }
