@@ -13,6 +13,22 @@ import pygame
 
 from settings_manager import load_settings
 
+_SIM_COLORS = [
+    (0, 200, 255),
+    (255, 180, 0),
+    (0, 220, 120),
+    (220, 80, 80),
+    (180, 120, 255),
+    (120, 200, 200),
+    (255, 120, 200),
+    (120, 255, 160),
+    (255, 220, 120),
+]
+
+
+def _sim_color(idx: int):
+    return _SIM_COLORS[idx % len(_SIM_COLORS)]
+
 
 def _write_control(
     control_path: Path,
@@ -124,7 +140,14 @@ def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     return points
 
 
-def _draw_fps_chart(surface, font, rect: pygame.Rect, points: list[float], max_seconds: float = 2.0) -> None:
+def _draw_fps_chart(
+    surface,
+    font,
+    rect: pygame.Rect,
+    points: list[float],
+    color=(0, 200, 255),
+    max_seconds: float = 2.0,
+) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
         msg = font.render("No FPS data", True, (160, 160, 160))
@@ -136,7 +159,7 @@ def _draw_fps_chart(surface, font, rect: pygame.Rect, points: list[float], max_s
     max_points = rect.width
     recent = points[-max_points:]
     overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    color = (0, 200, 255, 128)
+    color = (color[0], color[1], color[2], 128)
     for i, tval in enumerate(recent):
         t_clamped = max(0.0, min(max_seconds, tval))
         px = i
@@ -145,7 +168,13 @@ def _draw_fps_chart(surface, font, rect: pygame.Rect, points: list[float], max_s
     surface.blit(overlay, rect.topleft)
 
 
-def _draw_arithmetic_chart(surface, font, rect: pygame.Rect, points: list[tuple[float, float]]) -> None:
+def _draw_arithmetic_chart(
+    surface,
+    font,
+    rect: pygame.Rect,
+    points: list[tuple[float, float]],
+    color=(0, 220, 255),
+) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
         msg = font.render("No mean data", True, (160, 160, 160))
@@ -180,7 +209,7 @@ def _draw_arithmetic_chart(surface, font, rect: pygame.Rect, points: list[tuple[
         return px, py
 
     overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
-    color = (0, 220, 255, 128)
+    color = (color[0], color[1], color[2], 128)
     for x, y in points_sorted:
         px, py = _scale_point(x, y)
         pygame.draw.circle(overlay, color, (px, py), 2)
@@ -195,14 +224,7 @@ def _draw_multi_fps_chart(
         msg = font.render("No FPS data", True, (160, 160, 160))
         surface.blit(msg, (rect.x + 6, rect.y + 6))
         return
-    colors = [
-        (0, 200, 255),
-        (255, 180, 0),
-        (0, 220, 120),
-        (220, 80, 80),
-        (180, 120, 255),
-        (120, 200, 200),
-    ]
+    colors = _SIM_COLORS
     max_points = rect.width
     overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
     for idx, points in enumerate(series):
@@ -253,14 +275,7 @@ def _draw_multi_arithmetic_chart(
         py = plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
         return px, py
 
-    colors = [
-        (0, 200, 255),
-        (255, 180, 0),
-        (0, 220, 120),
-        (220, 80, 80),
-        (180, 120, 255),
-        (120, 200, 200),
-    ]
+    colors = _SIM_COLORS
     overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
     for idx, points in enumerate(series):
         if not points:
@@ -286,6 +301,8 @@ def main() -> None:
     sim_path = Path(args.script)
     if not sim_path.exists():
         raise FileNotFoundError(f"Simulation script not found: {sim_path}")
+
+    interpreter = sys.executable
 
     control_path = Path(tempfile.gettempdir()) / f"sim_master_active_{os.getpid()}.txt"
     selected_row = 0
@@ -321,17 +338,17 @@ def main() -> None:
         env["SIM_FPS_PATH"] = str(fps_paths[idx])
         env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [sys.executable, str(sim_path)],
+            [interpreter, str(sim_path)],
             env=env,
             cwd=os.getcwd(),
         )
         procs.append(proc)
 
     pygame.init()
-    header_top = 90
-    global_chart_h = 70
+    header_top = 30
+    global_chart_h = 90
     global_chart_gap = 20
-    master_line_offset = 120
+    master_line_offset = 150
     header_h = header_top + master_line_offset + global_chart_gap + global_chart_h + 30
     chart_h = 70
     panel_h = chart_h + 32
@@ -344,6 +361,15 @@ def main() -> None:
 
     fps_cache = {}
     arithmetic_cache = {}
+    fps_series = [[] for _ in range(count)]
+    mean_series = [[] for _ in range(count)]
+    last_chart_refresh = 0.0
+    base_chart_refresh_s = 2.0
+    base_master_fps = 1
+    chart_refresh_s = base_chart_refresh_s
+    master_fps = base_master_fps
+    master_capped = True
+
 
     running = True
     while running:
@@ -396,6 +422,14 @@ def main() -> None:
                         idx = selected_row - 1
                         update_tokens[idx] += 1
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                elif event.key == pygame.K_f:
+                    master_capped = not master_capped
+                    if master_capped:
+                        chart_refresh_s = base_chart_refresh_s
+                        master_fps = base_master_fps
+                    else:
+                        chart_refresh_s = 0.0
+                        master_fps = 0
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if my < header_h:
@@ -421,13 +455,16 @@ def main() -> None:
         status = font.render(status_text, True, (0, 200, 255))
         hint1 = small_font.render("Up/Down: select sim", True, (200, 200, 200))
         hint2 = small_font.render("Left/Right or click: on/off", True, (200, 200, 200))
-        hint3 = small_font.render("D: draw  M: mode  S: update  Esc/Q: quit", True, (200, 200, 200))
+        cap_label = "CAPPED" if master_capped else "UNCAPPED"
+        hint3 = small_font.render("D: draw  M: mode  S: update  F: cap  Esc/Q: quit", True, (200, 200, 200))
+        hint4 = small_font.render(f"Master FPS: {cap_label}", True, (200, 200, 200))
 
         screen.blit(title, (20, header_top))
         screen.blit(status, (20, header_top + 30))
         screen.blit(hint1, (20, header_top + 60))
         screen.blit(hint2, (20, header_top + 80))
         screen.blit(hint3, (20, header_top + 100))
+        screen.blit(hint4, (20, header_top + 120))
 
         margin = 20
         gap = 20
@@ -437,28 +474,29 @@ def main() -> None:
         fps_all_rect = pygame.Rect(margin, global_chart_y, chart_w, global_chart_h)
         mean_all_rect = pygame.Rect(margin + chart_w + gap, global_chart_y, chart_w, global_chart_h)
 
-        fps_series = []
-        mean_series = []
-        for idx in range(count):
-            fps_points = _get_cached_points(
-                fps_cache,
-                fps_paths[idx],
-                lambda p: _load_fps_points(p, max_points=chart_w),
-            )
-            fps_series.append(fps_points)
+        now = time.time()
+        if now - last_chart_refresh >= chart_refresh_s:
+            last_chart_refresh = now
+            for idx in range(count):
+                fps_points = _get_cached_points(
+                    fps_cache,
+                    fps_paths[idx],
+                    lambda p: _load_fps_points(p, max_points=chart_w),
+                )
+                fps_series[idx] = fps_points
 
-            mean_path = (
-                results_dir
-                / str(run_nums[idx])
-                / f"parsedArithmeticMeanSimulatino{run_nums[idx]}_Log.csv"
-            )
-            mean_points = _get_cached_points(
-                arithmetic_cache,
-                mean_path,
-                lambda p: _load_arithmetic_points(results_dir, run_nums[idx]),
-                max_age=1.0,
-            )
-            mean_series.append(mean_points)
+                mean_path = (
+                    results_dir
+                    / str(run_nums[idx])
+                    / f"parsedArithmeticMeanSimulatino{run_nums[idx]}_Log.csv"
+                )
+                mean_points = _get_cached_points(
+                    arithmetic_cache,
+                    mean_path,
+                    lambda p: _load_arithmetic_points(results_dir, run_nums[idx]),
+                    max_age=1.0,
+                )
+                mean_series[idx] = mean_points
         enabled_all = all(enabled)
         enabled_any = any(enabled)
         if enabled_all:
@@ -513,15 +551,16 @@ def main() -> None:
             fps_rect = pygame.Rect(margin, chart_y, chart_w, chart_h)
             mean_rect = pygame.Rect(margin + chart_w + gap, chart_y, chart_w, chart_h)
 
+            sim_color = _sim_color(idx)
             fps_points = fps_series[idx] if idx < len(fps_series) else []
-            _draw_fps_chart(screen, small_font, fps_rect, fps_points)
+            _draw_fps_chart(screen, small_font, fps_rect, fps_points, sim_color)
 
             mean_points = mean_series[idx] if idx < len(mean_series) else []
-            _draw_arithmetic_chart(screen, small_font, mean_rect, mean_points)
+            _draw_arithmetic_chart(screen, small_font, mean_rect, mean_points, sim_color)
 
             y += panel_h
         pygame.display.flip()
-        clock.tick(30)
+        clock.tick(master_fps)
 
         for proc in procs:
             if proc.poll() is not None:
