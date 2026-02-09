@@ -42,6 +42,10 @@ def work(x):
 # initialize per-run logging
 tracker = RunDataTracker()
 run_num = tracker.run_num
+RUN_META_PATH = tracker.results_dir / str(run_num) / "run_meta.json"
+MASTER_RUN_META_PATH = None
+if os.environ.get("SIM_MASTER_DIR"):
+    MASTER_RUN_META_PATH = Path(os.environ["SIM_MASTER_DIR"]) / str(run_num) / "run_meta.json"
 
 
 # Window settings
@@ -555,6 +559,8 @@ should_parse = False
 frame_count = 0
 fps_tracker = FPSTracker(sample_interval=1000, log_path=SIM_FPS_PATH)
 avgSpecies = []
+run_start_time = time.perf_counter()
+META_WRITE_INTERVAL = 1000
 
 
 
@@ -738,6 +744,25 @@ def _log_species(evo_val, data):
         frame_count=frame_count,
         min_frame_gap=SPECIES_LOG_GAP,
     )
+
+
+def _write_run_meta(final=False):
+    try:
+        elapsed = time.perf_counter() - run_start_time
+        payload = {
+            "frame_count": int(frame_count),
+            "elapsed_seconds": float(elapsed),
+            "amnt_of_species": int(tracker.amntOfSpecies),
+            "amnt_of_medium_species": int(tracker.amntOfMediumSpecies),
+            "amnt_of_big_species": int(tracker.amntOfBigSpecies),
+            "final": bool(final),
+        }
+        RUN_META_PATH.write_text(json.dumps(payload))
+        if MASTER_RUN_META_PATH is not None:
+            MASTER_RUN_META_PATH.parent.mkdir(parents=True, exist_ok=True)
+            MASTER_RUN_META_PATH.write_text(json.dumps(payload))
+    except Exception:
+        pass
 
 CONTROL_CHECK_INTERVAL = 50
 SPECIES_LOG_GAP = 1000
@@ -1208,6 +1233,8 @@ while running:
     frame_count += 1
     if display_mode == 2:
         fps_tracker.update(frame_count, display_mode)
+    if frame_count % META_WRITE_INTERVAL == 0:
+        _write_run_meta()
     if frame_count % PRINT_INTERVAL == 0 and (not SIM_CONTROL_FILE or caption_active):
         print(frame_count)
         print(totalSim)
@@ -1221,11 +1248,12 @@ while running:
         print(f"resource pool: {nutrient.get_resources()}")
         print(f"food amnt {nutrient.foodAmnt}")
         
-
-
+    
+    
 
     
 pygame.quit()
+_write_run_meta(final=True)
 tracker.set_should_parse(should_parse)
 if __name__ == "__main__":
     if os.environ.get("SIM_RUN_POOL") == "1":
