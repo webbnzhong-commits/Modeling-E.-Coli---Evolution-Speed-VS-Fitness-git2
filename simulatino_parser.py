@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 from pathlib import Path
@@ -250,6 +251,40 @@ def parse_run(
 
     _add_line(f"Parsed geometric-mean data saved to {output_file_geo}")
     _add_line(f"Parsed arithmetic-mean data saved to {output_file_mean}")
+
+    meta_path = run_dir / "run_meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+            frame_count = meta.get("frame_count")
+            elapsed = meta.get("elapsed_seconds")
+            amnt_species = meta.get("amnt_of_species")
+            amnt_medium = meta.get("amnt_of_medium_species")
+            amnt_big = meta.get("amnt_of_big_species")
+
+            _add_line("")
+            _add_line("--- Run Summary ---")
+            if frame_count is not None:
+                _add_line(f"Total frames: {frame_count}")
+            if elapsed is not None:
+                try:
+                    elapsed = float(elapsed)
+                    hours = int(elapsed // 3600)
+                    minutes = int((elapsed % 3600) // 60)
+                    seconds = elapsed % 60
+                    _add_line(
+                        f"Total runtime: {hours:02d}:{minutes:02d}:{seconds:05.2f} (h:m:s)"
+                    )
+                except Exception:
+                    _add_line(f"Total runtime (seconds): {elapsed}")
+            if amnt_species is not None:
+                _add_line(f"Species count: {amnt_species}")
+            if amnt_medium is not None:
+                _add_line(f"Medium species count: {amnt_medium}")
+            if amnt_big is not None:
+                _add_line(f"Big species count: {amnt_big}")
+        except Exception:
+            pass
 
     summary_file.write_text("\n".join(summary_lines) + "\n")
 

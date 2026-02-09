@@ -60,6 +60,14 @@ class RunDataTracker:
         self.current_rows = 1
         self._open_initial_log()
 
+        self.master_dir = os.environ.get("SIM_MASTER_DIR")
+        self.master_csv_file = None
+        self.master_csv_writer = None
+        self.master_current_part = 0
+        self.master_current_rows = 1
+        if self.master_dir:
+            self._open_master_log()
+
         self.amntOfSpecies = 0
         self.amntOfMediumSpecies = 0
         self.amntOfBigSpecies = 0
@@ -143,6 +151,34 @@ class RunDataTracker:
             self.csv_writer.writerow(_HEADER)
         print(f"Run #{self.run_num} -> writing log: {self.log_path}")
 
+    def _open_master_log(self) -> None:
+        master_dir = Path(self.master_dir) / str(self.run_num)
+        master_dir.mkdir(parents=True, exist_ok=True)
+        master_raw_dir = master_dir / "raw_data"
+        master_raw_dir.mkdir(parents=True, exist_ok=True)
+        self.master_base_log_path = master_raw_dir / f"simulation_log_{self.run_num}.csv"
+        self.master_log_path = self.master_base_log_path
+        self.master_csv_file = open(self.master_log_path, "a", newline="")
+        self.master_csv_writer = csv.writer(self.master_csv_file)
+        if self.master_log_path.stat().st_size == 0:
+            self.master_csv_writer.writerow(_HEADER)
+
+    def _rotate_master_if_needed(self) -> None:
+        if self.master_csv_writer is None:
+            return
+        if self.master_current_rows < self.rows_per_file - 1:
+            return
+        self.master_csv_file.close()
+        self.master_current_part = max(1, self.master_current_part + 1)
+        self.master_current_rows = 0
+        master_dir = Path(self.master_dir) / str(self.run_num) / "raw_data"
+        master_dir.mkdir(parents=True, exist_ok=True)
+        self.master_log_path = master_dir / f"simulation_log_{self.run_num}_part{self.master_current_part}.csv"
+        self.master_csv_file = open(self.master_log_path, "a", newline="")
+        self.master_csv_writer = csv.writer(self.master_csv_file)
+        if self.master_log_path.stat().st_size == 0:
+            self.master_csv_writer.writerow(_HEADER)
+
     def _open_initial_log(self) -> None:
         self._rebalance_existing_logs()
         part_files = sorted(
@@ -192,6 +228,8 @@ class RunDataTracker:
                     return False
         if self.current_rows >= self.rows_per_file - 1:
             self._rotate_if_needed()
+        if self.master_csv_writer is not None:
+            self._rotate_master_if_needed()
 
         if data["lifespan"] > 1999:
             self.amntOfBigSpecies += 1
@@ -205,6 +243,11 @@ class RunDataTracker:
             [evo_val, data["lifespan"], data["pop_time"], population_when_dead]
         )
         self.current_rows += 1
+        if self.master_csv_writer is not None:
+            self.master_csv_writer.writerow(
+                [evo_val, data["lifespan"], data["pop_time"], population_when_dead]
+            )
+            self.master_current_rows += 1
         if frame_count is not None:
             self.last_write_frame = frame_count
 
@@ -222,8 +265,15 @@ class RunDataTracker:
             return
         self._closed = True
         self.csv_file.close()
+        if self.master_csv_file is not None:
+            self.master_csv_file.close()
         if self.should_parse:
             try:
                 parse_run(self.results_dir, self.run_num)
             except Exception as e:
                 print(f"Failed to parse results: {e}")
+            if self.master_dir:
+                try:
+                    parse_run(Path(self.master_dir), self.run_num)
+                except Exception as e:
+                    print(f"Failed to parse master results: {e}")

@@ -83,6 +83,17 @@ def _allocate_run_numbers(count: int) -> list[int]:
     return run_nums
 
 
+def _allocate_master_run_number(results_dir: Path) -> int:
+    counter_path = results_dir / "numTriesMaster.csv"
+    try:
+        current = int(counter_path.read_text().strip())
+    except Exception:
+        current = -1
+    new_val = current + 1
+    counter_path.write_text(str(new_val))
+    return new_val
+
+
 def _load_fps_points(path: Path, max_points: int = 200) -> list[float]:
     if not path.exists():
         return []
@@ -138,6 +149,15 @@ def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     points = loader(path)
     cache[path] = {"points": points, "mtime": mtime, "last": now}
     return points
+
+
+def _load_run_meta(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
 
 
 def _draw_fps_chart(
@@ -323,8 +343,11 @@ def main() -> None:
         update_tokens,
     )
 
-    run_nums = _allocate_run_numbers(count)
     results_dir = Path("results")
+    run_nums = _allocate_run_numbers(count)
+    master_run_num = _allocate_master_run_number(results_dir)
+    master_dir = results_dir / f"master_{master_run_num}"
+    master_dir.mkdir(parents=True, exist_ok=True)
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
     env_base = os.environ.copy()
     procs = []
@@ -336,6 +359,7 @@ def main() -> None:
         env["SIM_ALL_ACTIVE"] = "1"
         env["SIM_RUN_NUM"] = str(run_nums[idx])
         env["SIM_FPS_PATH"] = str(fps_paths[idx])
+        env["SIM_MASTER_DIR"] = str(master_dir)
         env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [interpreter, str(sim_path)],
@@ -363,6 +387,7 @@ def main() -> None:
     arithmetic_cache = {}
     fps_series = [[] for _ in range(count)]
     mean_series = [[] for _ in range(count)]
+    meta_series = [{} for _ in range(count)]
     last_chart_refresh = 0.0
     base_chart_refresh_s = 2.0
     base_master_fps = 1
@@ -497,6 +522,14 @@ def main() -> None:
                     max_age=1.0,
                 )
                 mean_series[idx] = mean_points
+
+                meta_path = master_dir / str(run_nums[idx]) / "run_meta.json"
+                meta_series[idx] = _get_cached_points(
+                    arithmetic_cache,
+                    meta_path,
+                    _load_run_meta,
+                    max_age=1.0,
+                )
         enabled_all = all(enabled)
         enabled_any = any(enabled)
         if enabled_all:
@@ -521,12 +554,32 @@ def main() -> None:
             master_mode = "MODE MIXED"
 
         master_color = (0, 200, 255) if selected_row == 0 else (200, 200, 200)
+        frame_vals = [
+            m.get("frame_count")
+            for m in meta_series
+            if isinstance(m, dict) and isinstance(m.get("frame_count"), (int, float))
+        ]
+        species_vals = [
+            m.get("amnt_of_species")
+            for m in meta_series
+            if isinstance(m, dict) and isinstance(m.get("amnt_of_species"), (int, float))
+        ]
+        total_frames = int(sum(frame_vals)) if frame_vals else 0
+        mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
+        mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
+
         master_line = small_font.render(
             f"MASTER (0): {master_state} | {master_draw} | {master_mode}",
             True,
             master_color,
         )
+        master_stats = small_font.render(
+            f"Frames total: {total_frames} | Frames mean: {mean_frames:.0f} | Species mean: {mean_species:.1f}",
+            True,
+            master_color,
+        )
         screen.blit(master_line, (margin, master_line_y))
+        screen.blit(master_stats, (margin, master_line_y + 16))
         _draw_multi_fps_chart(screen, small_font, fps_all_rect, fps_series)
         _draw_multi_arithmetic_chart(screen, small_font, mean_all_rect, mean_series)
 
