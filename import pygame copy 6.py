@@ -704,8 +704,9 @@ def _spawn_child_from_parent(parent):
     child.evolution_speed = max(0.001, parent.evolution_speed)
     child.size = max(1, parent.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
     child.favored_resource = parent.favored_resource
-    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -0.35, child.evolution_speed * 0.35))#can start at 0.14 so
-    child.immune_system=child.immune_system % 5
+    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -3.5, child.evolution_speed * 3.5))#can start at 0.14 so
+    
+    child.immune_system = child.immune_system % 5
 
 
     child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
