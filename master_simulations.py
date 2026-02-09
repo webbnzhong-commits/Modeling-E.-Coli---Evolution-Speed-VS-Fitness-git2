@@ -12,6 +12,7 @@ import time
 import pygame
 
 from settings_manager import load_settings
+from simulatino_parser import parse_run
 
 _SIM_COLORS = [
     (0, 200, 255),
@@ -23,6 +24,14 @@ _SIM_COLORS = [
     (255, 120, 200),
     (120, 255, 160),
     (255, 220, 120),
+]
+_DOT_ALPHA = 128
+
+_MASTER_HEADER = [
+    "evolution rate",
+    "length lived",
+    "species population time",
+    "population",
 ]
 
 
@@ -132,6 +141,35 @@ def _allocate_master_run_number(results_dir: Path) -> int:
     return new_val
 
 
+def _combine_master_logs(
+    results_dir: Path,
+    master_dir: Path,
+    master_label: str,
+    run_nums: list[int],
+) -> None:
+    master_raw = master_dir / "raw_data"
+    master_raw.mkdir(parents=True, exist_ok=True)
+    master_log = master_raw / f"simulation_log_{master_label}.csv"
+    with open(master_log, "w", newline="") as out_handle:
+        writer = csv.writer(out_handle)
+        writer.writerow(_MASTER_HEADER)
+        for run_num in run_nums:
+            raw_dir = results_dir / str(run_num) / "raw_data"
+            base = raw_dir / f"simulation_log_{run_num}.csv"
+            part_files = sorted(raw_dir.glob(f"simulation_log_{run_num}_part*.csv"))
+            for path in [base] + part_files:
+                if not path.exists():
+                    continue
+                with open(path, newline="") as in_handle:
+                    reader = csv.reader(in_handle)
+                    try:
+                        next(reader)
+                    except StopIteration:
+                        continue
+                    for row in reader:
+                        writer.writerow(row)
+
+
 def _load_fps_points(path: Path, max_points: int = 200) -> list[float]:
     if not path.exists():
         return []
@@ -217,7 +255,7 @@ def _draw_fps_chart(
     max_points = rect.width
     recent = points[-max_points:]
     overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    color = (color[0], color[1], color[2], 128)
+    color = (color[0], color[1], color[2], _DOT_ALPHA)
     for i, tval in enumerate(recent):
         t_clamped = max(0.0, min(max_seconds, tval))
         px = i
@@ -267,7 +305,7 @@ def _draw_arithmetic_chart(
         return px, py
 
     overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
-    color = (color[0], color[1], color[2], 128)
+    color = (color[0], color[1], color[2], _DOT_ALPHA)
     for x, y in points_sorted:
         px, py = _scale_point(x, y)
         pygame.draw.circle(overlay, color, (px, py), 2)
@@ -289,7 +327,7 @@ def _draw_multi_fps_chart(
         if not points:
             continue
         base_color = colors[idx % len(colors)]
-        color = (base_color[0], base_color[1], base_color[2], 128)
+        color = (base_color[0], base_color[1], base_color[2], _DOT_ALPHA)
         recent = points[-max_points:]
         for i, tval in enumerate(recent):
             t_clamped = max(0.0, min(max_seconds, tval))
@@ -339,7 +377,7 @@ def _draw_multi_arithmetic_chart(
         if not points:
             continue
         base_color = colors[idx % len(colors)]
-        color = (base_color[0], base_color[1], base_color[2], 128)
+        color = (base_color[0], base_color[1], base_color[2], _DOT_ALPHA)
         points_sorted = sorted(points, key=lambda p: p[0])
         for x, y in points_sorted:
             px, py = _scale_point(x, y)
@@ -384,7 +422,8 @@ def main() -> None:
     results_dir = Path("results")
     run_nums = _allocate_run_numbers(count)
     master_run_num = _allocate_master_run_number(results_dir)
-    master_dir = results_dir / f"master_{master_run_num}"
+    master_label = f"master_{master_run_num}"
+    master_dir = results_dir / master_label
     master_dir.mkdir(parents=True, exist_ok=True)
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
     env_base = os.environ.copy()
@@ -397,7 +436,6 @@ def main() -> None:
         env["SIM_ALL_ACTIVE"] = "1"
         env["SIM_RUN_NUM"] = str(run_nums[idx])
         env["SIM_FPS_PATH"] = str(fps_paths[idx])
-        env["SIM_MASTER_DIR"] = str(master_dir)
         env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [interpreter, str(sim_path)],
@@ -576,7 +614,7 @@ def main() -> None:
                 )
                 mean_series[idx] = mean_points
 
-                meta_path = master_dir / str(run_nums[idx]) / "run_meta.json"
+                meta_path = results_dir / str(run_nums[idx]) / "run_meta.json"
                 meta_series[idx] = _get_cached_points(
                     arithmetic_cache,
                     meta_path,
@@ -688,6 +726,12 @@ def main() -> None:
             time.sleep(0.05)
         if proc.poll() is None:
             proc.kill()
+
+    try:
+        _combine_master_logs(results_dir, master_dir, master_label, run_nums)
+        parse_run(results_dir, master_label, quiet=True)
+    except Exception as e:
+        print(f"Failed to build master logs: {e}")
 
     try:
         control_path.unlink(missing_ok=True)
