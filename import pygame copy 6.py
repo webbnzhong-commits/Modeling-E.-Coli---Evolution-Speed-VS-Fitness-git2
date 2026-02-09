@@ -709,7 +709,7 @@ def _spawn_child_from_parent(parent):
         child.immune_system = 0 - 5
     
     '''
-    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -4.7, child.evolution_speed * 4.7 ) ** 3)#can start at 0.14 so
+    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -4.3, child.evolution_speed * 4.1 ) ** 2)#can start at 0.14 so. pow of 2 - 4.1, pow of 1, 3.5, pow of 3, 4.7
     
     child.immune_system = child.immune_system % 5
 
