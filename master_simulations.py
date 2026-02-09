@@ -30,6 +30,44 @@ def _sim_color(idx: int):
     return _SIM_COLORS[idx % len(_SIM_COLORS)]
 
 
+def _apply_draw_toggle(selected_row: int, draw_modes: list[int]) -> None:
+    if not draw_modes:
+        return
+    if selected_row == 0:
+        new_mode = (draw_modes[0] + 1) % 3
+        for i in range(len(draw_modes)):
+            draw_modes[i] = new_mode
+    else:
+        idx = selected_row - 1
+        if 0 <= idx < len(draw_modes):
+            draw_modes[idx] = (draw_modes[idx] + 1) % 3
+
+
+def _apply_mode_toggle(selected_row: int, mode_values: list[int]) -> None:
+    if not mode_values:
+        return
+    if selected_row == 0:
+        new_mode = (mode_values[0] + 1) % 3
+        for i in range(len(mode_values)):
+            mode_values[i] = new_mode
+    else:
+        idx = selected_row - 1
+        if 0 <= idx < len(mode_values):
+            mode_values[idx] = (mode_values[idx] + 1) % 3
+
+
+def _apply_update(selected_row: int, update_tokens: list[int]) -> None:
+    if not update_tokens:
+        return
+    if selected_row == 0:
+        for i in range(len(update_tokens)):
+            update_tokens[i] += 1
+    else:
+        idx = selected_row - 1
+        if 0 <= idx < len(update_tokens):
+            update_tokens[idx] += 1
+
+
 def _write_control(
     control_path: Path,
     active: int,
@@ -398,6 +436,16 @@ def main() -> None:
 
     running = True
     while running:
+        button_w = 110
+        button_h = 26
+        button_gap = 8
+        button_x = window_w - button_w - 20
+        button_y = header_top
+        draw_btn = pygame.Rect(button_x, button_y, button_w, button_h)
+        mode_btn = pygame.Rect(button_x, button_y + (button_h + button_gap), button_w, button_h)
+        info_btn = pygame.Rect(button_x, button_y + 2 * (button_h + button_gap), button_w, button_h)
+        exit_btn = pygame.Rect(button_x, button_y + 3 * (button_h + button_gap), button_w, button_h)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -422,30 +470,13 @@ def main() -> None:
                         enabled[idx] = not enabled[idx]
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_d:
-                    if selected_row == 0:
-                        new_mode = (draw_modes[0] + 1) % 3
-                        for i in range(count):
-                            draw_modes[i] = new_mode
-                    else:
-                        idx = selected_row - 1
-                        draw_modes[idx] = (draw_modes[idx] + 1) % 3
+                    _apply_draw_toggle(selected_row, draw_modes)
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_m:
-                    if selected_row == 0:
-                        new_mode = (mode_values[0] + 1) % 3
-                        for i in range(count):
-                            mode_values[i] = new_mode
-                    else:
-                        idx = selected_row - 1
-                        mode_values[idx] = (mode_values[idx] + 1) % 3
+                    _apply_mode_toggle(selected_row, mode_values)
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_s:
-                    if selected_row == 0:
-                        for i in range(count):
-                            update_tokens[i] += 1
-                    else:
-                        idx = selected_row - 1
-                        update_tokens[idx] += 1
+                    _apply_update(selected_row, update_tokens)
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_f:
                     master_capped = not master_capped
@@ -457,7 +488,18 @@ def main() -> None:
                         master_fps = 0
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
-                if my < header_h:
+                if draw_btn.collidepoint(mx, my):
+                    _apply_draw_toggle(selected_row, draw_modes)
+                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                elif mode_btn.collidepoint(mx, my):
+                    _apply_mode_toggle(selected_row, mode_values)
+                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                elif info_btn.collidepoint(mx, my):
+                    _apply_update(selected_row, update_tokens)
+                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                elif exit_btn.collidepoint(mx, my):
+                    running = False
+                elif my < header_h:
                     selected_row = 0
                     active_sim_index = master_active_index
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
@@ -490,6 +532,17 @@ def main() -> None:
         screen.blit(hint2, (20, header_top + 80))
         screen.blit(hint3, (20, header_top + 100))
         screen.blit(hint4, (20, header_top + 120))
+
+        for rect, label in [
+            (draw_btn, "Draw"),
+            (mode_btn, "Mode"),
+            (info_btn, "Info (S)"),
+            (exit_btn, "Exit"),
+        ]:
+            pygame.draw.rect(screen, (40, 40, 40), rect)
+            pygame.draw.rect(screen, (120, 120, 120), rect, 1)
+            text = small_font.render(label, True, (220, 220, 220))
+            screen.blit(text, (rect.x + 8, rect.y + 5))
 
         margin = 20
         gap = 20
