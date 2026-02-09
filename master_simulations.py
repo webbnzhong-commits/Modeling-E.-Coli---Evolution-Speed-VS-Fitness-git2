@@ -497,6 +497,7 @@ def main() -> None:
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
     env_base = os.environ.copy()
     procs = []
+    sim_start_times = []
     for idx in range(count):
         env = env_base.copy()
         env["SIM_CONTROL_FILE"] = str(control_path)
@@ -512,6 +513,7 @@ def main() -> None:
             cwd=os.getcwd(),
         )
         procs.append(proc)
+        sim_start_times.append(time.perf_counter())
 
     pygame.init()
     header_top          = 30
@@ -521,7 +523,7 @@ def main() -> None:
     header_h            = header_top + master_line_offset + global_chart_gap + global_chart_h + 30
     chart_h             = 70
     panel_h             = chart_h + 32
-    window_w            = 640
+    window_w            = 1000
     content_h           = header_h + panel_h * count
     try:
         max_window_h = int(settings.get("screen", {}).get("height", 900))
@@ -790,16 +792,24 @@ def main() -> None:
             for m in meta_series
             if isinstance(m, dict) and isinstance(m.get("amnt_of_species"), (int, float))
         ]
-        elapsed_vals = [
-            m.get("elapsed_seconds")
-            for m in meta_series
-            if isinstance(m, dict) and isinstance(m.get("elapsed_seconds"), (int, float))
-        ]
+        now_perf = time.perf_counter()
+        elapsed_vals = []
+        for idx in range(count):
+            meta = meta_series[idx] if idx < len(meta_series) else {}
+            elapsed = None
+            if isinstance(meta, dict):
+                meta_elapsed = meta.get("elapsed_seconds")
+                if isinstance(meta_elapsed, (int, float)):
+                    elapsed = float(meta_elapsed)
+            if idx < len(sim_start_times):
+                fallback = max(0.0, now_perf - sim_start_times[idx])
+                elapsed = fallback if elapsed is None else max(elapsed, fallback)
+            if elapsed is not None:
+                elapsed_vals.append(elapsed)
         
         mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
         mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
         mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
-        max_elapsed = max(elapsed_vals) if elapsed_vals else 0.0
 
         master_line = small_font.render(
             f"MASTER (0): {master_state} | {master_draw} | {master_mode}",
@@ -807,7 +817,7 @@ def main() -> None:
             master_color,
         )
         master_stats = small_font.render(
-            f"Frames mean: {mean_frames:.0f} | Species mean: {mean_species:.1f} | Runtime mean: {_format_duration(mean_elapsed)} | Runtime max: {_format_duration(max_elapsed)}",
+            f"Frames mean: {mean_frames:.0f} | Species mean: {mean_species:.1f} | Runtime: {_format_duration(mean_elapsed)}",
             True,
             master_color,
         )
@@ -833,8 +843,19 @@ def main() -> None:
                 draw_state = "NO-DRAW"
             mode_state = f"MODE {mode_values[idx]}"
             label = f"Sim {idx + 1}"
+            meta = meta_series[idx] if idx < len(meta_series) and isinstance(meta_series[idx], dict) else {}
+            species_count = meta.get("amnt_of_species")
+            big_species_count = meta.get("amnt_of_big_species")
+            species_text = (
+                f"{int(species_count)}" if isinstance(species_count, (int, float)) else "--"
+            )
+            big_species_text = (
+                f"{int(big_species_count)}" if isinstance(big_species_count, (int, float)) else "--"
+            )
             line = small_font.render(
-                f"{label}: {state} | {draw_state} | {mode_state}", True, color
+                f"{label}: {state} | {draw_state} | {mode_state} | Species: {species_text} | Big: {big_species_text}",
+                True,
+                color,
             )
             screen.blit(line, (margin, y))
 
