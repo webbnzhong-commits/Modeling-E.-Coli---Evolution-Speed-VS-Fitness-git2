@@ -26,6 +26,9 @@ _SIM_COLORS = [
     (255, 220, 120),
 ]
 _DOT_ALPHA = 128
+_FPS_MODE_CAPPED = 0
+_FPS_MODE_UNCAPPED = 1
+_FPS_MODE_FULL_THROTTLE = 2
 
 _MASTER_HEADER = [
     "evolution rate",
@@ -339,6 +342,8 @@ def _draw_arithmetic_chart(
     rect: pygame.Rect,
     points: list[tuple[float, float]],
     color=(0, 220, 255),
+    selected_point=None,
+    selected_idx=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
@@ -351,6 +356,8 @@ def _draw_arithmetic_chart(
     ys = [p[1] for p in points_sorted]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
+    raw_min_y = min_y
+    raw_max_y = max_y
     if max_x == min_x:
         max_x = min_x + 1.0
     if max_y == min_y:
@@ -380,6 +387,28 @@ def _draw_arithmetic_chart(
         pygame.draw.circle(overlay, color, (px, py), 2)
     surface.blit(overlay, (plot_left, plot_top))
 
+    max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
+    min_label = font.render(f"min {raw_min_y:.2f}", True, (160, 160, 160))
+    surface.blit(max_label, (plot_left, rect.y + 2))
+    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
+
+    if selected_point and selected_point.get("scope") == "sim":
+        if selected_idx is None or selected_point.get("sim_index") == selected_idx:
+            x = selected_point.get("x")
+            y = selected_point.get("y")
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                px, py = _scale_point(x, y)
+                px += plot_left
+                py += plot_top
+                pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+                _draw_value_label(
+                    surface,
+                    font,
+                    rect,
+                    f"x:{x:.3f} y:{y:.2f}",
+                    (px + 6, py - 6),
+                )
+
 
 def _draw_multi_fps_chart(
     surface, font, rect: pygame.Rect, series: list[list[float]], max_seconds: float = 2.0
@@ -407,7 +436,11 @@ def _draw_multi_fps_chart(
 
 
 def _draw_multi_arithmetic_chart(
-    surface, font, rect: pygame.Rect, series: list[list[tuple[float, float]]]
+    surface,
+    font,
+    rect: pygame.Rect,
+    series: list[list[tuple[float, float]]],
+    selected_point=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     all_points = [pt for points in series for pt in points]
@@ -419,6 +452,8 @@ def _draw_multi_arithmetic_chart(
     ys = [p[1] for p in all_points]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
+    raw_min_y = min_y
+    raw_max_y = max_y
     if max_x == min_x:
         max_x = min_x + 1.0
     if max_y == min_y:
@@ -452,6 +487,122 @@ def _draw_multi_arithmetic_chart(
             px, py = _scale_point(x, y)
             pygame.draw.circle(overlay, color, (px, py), 2)
     surface.blit(overlay, (plot_left, plot_top))
+
+    max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
+    min_label = font.render(f"min {raw_min_y:.2f}", True, (160, 160, 160))
+    surface.blit(max_label, (plot_left, rect.y + 2))
+    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
+
+    if selected_point and selected_point.get("scope") == "global":
+        x = selected_point.get("x")
+        y = selected_point.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            px, py = _scale_point(x, y)
+            px += plot_left
+            py += plot_top
+            pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+            label = f"x:{x:.3f} y:{y:.2f}"
+            sim_idx = selected_point.get("sim_index")
+            if isinstance(sim_idx, int):
+                label = f"Sim {sim_idx + 1} {label}"
+            _draw_value_label(
+                surface,
+                font,
+                rect,
+                label,
+                (px + 6, py - 6),
+            )
+
+
+def _draw_value_label(surface, font, rect: pygame.Rect, text: str, pos: tuple[int, int]) -> None:
+    label = font.render(text, True, (235, 235, 235))
+    pad = 4
+    box = pygame.Rect(pos[0], pos[1], label.get_width() + pad * 2, label.get_height() + pad * 2)
+    if box.right > rect.right:
+        box.x = rect.right - box.width
+    if box.left < rect.left:
+        box.x = rect.left
+    if box.bottom > rect.bottom:
+        box.y = rect.bottom - box.height
+    if box.top < rect.top:
+        box.y = rect.top
+    pygame.draw.rect(surface, (10, 10, 10), box)
+    pygame.draw.rect(surface, (200, 200, 200), box, 1)
+    surface.blit(label, (box.x + pad, box.y + pad))
+
+
+def _load_mean_points(path: Path, value_field: str) -> list[tuple[float, float]]:
+    if not path.exists():
+        return []
+    points = []
+    try:
+        with open(path, newline="") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                try:
+                    x = float(row["evolution rate"])
+                    y = float(row[value_field])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                points.append((x, y))
+    except Exception:
+        return []
+    return points
+
+
+def _mean_value_field(mean_kind: str) -> str:
+    kind = mean_kind.lower()
+    return f"{kind} mean length lived"
+
+
+def _pick_mean_point(
+    click_pos: tuple[int, int],
+    rect: pygame.Rect,
+    series: list[list[tuple[float, float]]],
+    max_distance: int = 8,
+):
+    all_points = [pt for points in series for pt in points]
+    if not all_points:
+        return None
+
+    xs = [p[0] for p in all_points]
+    ys = [p[1] for p in all_points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if max_x == min_x:
+        max_x = min_x + 1.0
+    if max_y == min_y:
+        max_y = min_y + 1.0
+    x_pad = (max_x - min_x) * 0.05
+    y_pad = (max_y - min_y) * 0.05
+    min_x -= x_pad
+    max_x += x_pad
+    min_y -= y_pad
+    max_y += y_pad
+
+    plot_left = rect.x + 6
+    plot_top = rect.y + 6
+    plot_width = rect.width - 12
+    plot_height = rect.height - 12
+
+    def _scale_point(x, y):
+        px = int(((x - min_x) / (max_x - min_x)) * plot_width)
+        py = plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
+        return px + plot_left, py + plot_top
+
+    best = None
+    best_d2 = max_distance * max_distance
+    cx, cy = click_pos
+    for s_idx, points in enumerate(series):
+        for x, y in points:
+            px, py = _scale_point(x, y)
+            dx = px - cx
+            dy = py - cy
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_d2 = d2
+                best = {"sim_index": s_idx, "x": x, "y": y}
+    return best
 
 
 def main() -> None:
@@ -550,7 +701,12 @@ def main() -> None:
     uncapped_fps = 240
     chart_refresh_s = base_chart_refresh_s
     master_fps = base_master_fps
-    master_capped = True
+    master_fps_mode = _FPS_MODE_CAPPED
+    mean_kind = "Arithmetic"
+    selected_mean_point = None
+    full_throttle_active = False
+    saved_draw_modes = None
+    saved_mode_values = None
 
 
     max_scroll = max(0, content_h - window_h)
@@ -558,7 +714,65 @@ def main() -> None:
     scroll_step = max(30, panel_h // 2)
 
     running = True
+
+    
+    def _apply_master_fps_mode(new_mode: int) -> None:
+        nonlocal master_fps_mode, chart_refresh_s, master_fps
+        nonlocal full_throttle_active, saved_draw_modes, saved_mode_values
+        master_fps_mode = new_mode
+        if master_fps_mode == _FPS_MODE_FULL_THROTTLE:
+            chart_refresh_s = float("inf")
+            master_fps = 0
+            if not full_throttle_active:
+                saved_draw_modes = draw_modes.copy()
+                saved_mode_values = mode_values.copy()
+                for i in range(len(draw_modes)):
+                    draw_modes[i] = 2
+                for i in range(len(mode_values)):
+                    mode_values[i] = 0
+                _write_control(
+                    control_path,
+                    active_sim_index,
+                    enabled,
+                    draw_modes,
+                    draw_every,
+                    mode_values,
+                    update_tokens,
+                )
+                full_throttle_active = True
+        else:
+            if full_throttle_active:
+                if saved_draw_modes is not None:
+                    draw_modes[:] = saved_draw_modes
+                if saved_mode_values is not None:
+                    mode_values[:] = saved_mode_values
+                _write_control(
+                    control_path,
+                    active_sim_index,
+                    enabled,
+                    draw_modes,
+                    draw_every,
+                    mode_values,
+                    update_tokens,
+                )
+                full_throttle_active = False
+            if master_fps_mode == _FPS_MODE_CAPPED:
+                chart_refresh_s = base_chart_refresh_s
+                master_fps = base_master_fps
+            else:
+                chart_refresh_s = 0.0
+                master_fps = uncapped_fps
+
     while running:
+        margin = 20
+        gap = 20
+        chart_w = (window_w - margin * 2 - gap) // 2
+        master_line_y = header_top + master_line_offset
+        global_chart_y = master_line_y + global_chart_gap
+        mean_all_rect_content = pygame.Rect(
+            margin + chart_w + gap, global_chart_y, chart_w, global_chart_h
+        )
+
         button_w = 110
         button_h = 26
         button_gap = 8
@@ -567,8 +781,9 @@ def main() -> None:
         draw_btn = pygame.Rect(button_x, button_y, button_w, button_h)
         mode_btn = pygame.Rect(button_x, button_y + (button_h + button_gap), button_w, button_h)
         info_btn = pygame.Rect(button_x, button_y + 2 * (button_h + button_gap), button_w, button_h)
-        fps_btn = pygame.Rect(button_x, button_y + 3 * (button_h + button_gap), button_w, button_h)
-        exit_btn = pygame.Rect(button_x, button_y + 4 * (button_h + button_gap), button_w, button_h)
+        mean_btn = pygame.Rect(button_x, button_y + 3 * (button_h + button_gap), button_w, button_h)
+        fps_btn = pygame.Rect(button_x, button_y + 4 * (button_h + button_gap), button_w, button_h)
+        exit_btn = pygame.Rect(button_x, button_y + 5 * (button_h + button_gap), button_w, button_h)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -620,22 +835,18 @@ def main() -> None:
                         enabled[idx] = not enabled[idx]
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_d:
-                    _apply_draw_toggle(selected_row, draw_modes)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                        _apply_draw_toggle(selected_row, draw_modes)
+                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_m:
-                    _apply_mode_toggle(selected_row, mode_values)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                        _apply_mode_toggle(selected_row, mode_values)
+                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_s:
                     _apply_update(selected_row, update_tokens)
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_f:
-                    master_capped = not master_capped
-                    if master_capped:
-                        chart_refresh_s = base_chart_refresh_s
-                        master_fps = base_master_fps
-                    else:
-                        chart_refresh_s = 0.0
-                        master_fps = uncapped_fps
+                    _apply_master_fps_mode((master_fps_mode + 1) % 3)
             elif event.type == pygame.MOUSEWHEEL:
                 if max_scroll > 0:
                     scroll_offset = max(
@@ -644,26 +855,74 @@ def main() -> None:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 content_y = my + scroll_offset
+                handled_click = False
                 if draw_btn.collidepoint(mx, content_y):
-                    _apply_draw_toggle(selected_row, draw_modes)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    handled_click = True
+                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                        _apply_draw_toggle(selected_row, draw_modes)
+                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif mode_btn.collidepoint(mx, content_y):
-                    _apply_mode_toggle(selected_row, mode_values)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    handled_click = True
+                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                        _apply_mode_toggle(selected_row, mode_values)
+                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif info_btn.collidepoint(mx, content_y):
                     _apply_update(selected_row, update_tokens)
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    handled_click = True
+                elif mean_btn.collidepoint(mx, content_y):
+                    mean_kind = "Geometric" if mean_kind == "Arithmetic" else "Arithmetic"
+                    selected_mean_point = None
+                    last_chart_refresh = 0.0
+                    handled_click = True
                 elif fps_btn.collidepoint(mx, content_y):
-                    master_capped = not master_capped
-                    if master_capped:
-                        chart_refresh_s = base_chart_refresh_s
-                        master_fps = base_master_fps
-                    else:
-                        chart_refresh_s = 0.0
-                        master_fps = uncapped_fps
+                    _apply_master_fps_mode((master_fps_mode + 1) % 3)
+                    handled_click = True
                 elif exit_btn.collidepoint(mx, content_y):
                     running = False
-                elif content_y < header_h:
+                    handled_click = True
+                else:
+                    handled_chart_click = False
+                    if mean_all_rect_content.collidepoint(mx, content_y):
+                        picked = _pick_mean_point(
+                            (mx, content_y),
+                            mean_all_rect_content,
+                            mean_series,
+                        )
+                        if picked:
+                            picked["scope"] = "global"
+                            selected_mean_point = picked
+                        else:
+                            selected_mean_point = None
+                        handled_chart_click = True
+                    else:
+                        row_start = header_h
+                        row_h = panel_h
+                        if content_y >= row_start:
+                            idx = (content_y - row_start) // row_h
+                            if 0 <= idx < count:
+                                chart_y = row_start + idx * row_h + 20
+                                mean_rect = pygame.Rect(
+                                    margin + chart_w + gap, chart_y, chart_w, chart_h
+                                )
+                                if mean_rect.collidepoint(mx, content_y):
+                                    picked = _pick_mean_point(
+                                        (mx, content_y),
+                                        mean_rect,
+                                        [mean_series[idx]] if idx < len(mean_series) else [[]],
+                                    )
+                                    if picked:
+                                        picked["scope"] = "sim"
+                                        picked["sim_index"] = idx
+                                        selected_mean_point = picked
+                                    else:
+                                        selected_mean_point = None
+                                    handled_chart_click = True
+                    if handled_chart_click:
+                        continue
+                if handled_click:
+                    continue
+                if content_y < header_h:
                     selected_row = 0
                     active_sim_index = master_active_index
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
@@ -685,193 +944,218 @@ def main() -> None:
                     else:
                         scroll_offset = min(max_scroll, scroll_offset + scroll_step)
 
-        screen.fill((20, 20, 20))
-        y_offset = -scroll_offset
-        title = font.render("Simulation Master", True, (240, 240, 240))
-        if selected_row == 0:
-            status_text = "Selected: MASTER (0)"
-        else:
-            status_text = f"Selected: Sim {selected_row} / {count}"
-        status = font.render(status_text, True, (0, 200, 255))
-        hint1 = small_font.render("Up/Down: select sim", True, (200, 200, 200))
-        hint2 = small_font.render("Left/Right or click: on/off", True, (200, 200, 200))
-        cap_label = "CAPPED" if master_capped else "UNCAPPED"
-        hint3 = small_font.render("D: draw  M: mode  S: update  F: cap  Esc/Q: quit", True, (200, 200, 200))
-        hint4 = small_font.render(f"Master FPS: {cap_label}", True, (200, 200, 200))
-
-        screen.blit(title, (20, header_top + y_offset))
-        screen.blit(status, (20, header_top + 30 + y_offset))
-        screen.blit(hint1, (20, header_top + 60 + y_offset))
-        screen.blit(hint2, (20, header_top + 80 + y_offset))
-        screen.blit(hint3, (20, header_top + 100 + y_offset))
-        screen.blit(hint4, (20, header_top + 120 + y_offset))
-
-        for rect, label in [
-            (draw_btn, "Draw"),
-            (mode_btn, "Mode"),
-            (info_btn, "Info (S)"),
-            (fps_btn, "FPS Cap"),
-            (exit_btn, "Exit"),
-        ]:
-            draw_rect = rect.move(0, y_offset)
-            pygame.draw.rect(screen, (40, 40, 40), draw_rect)
-            pygame.draw.rect(screen, (120, 120, 120), draw_rect, 1)
-            text = small_font.render(label, True, (220, 220, 220))
-            screen.blit(text, (draw_rect.x + 8, draw_rect.y + 5))
-
-        margin = 20
-        gap = 20
-        chart_w = (window_w - margin * 2 - gap) // 2
-        master_line_y = header_top + master_line_offset
-        global_chart_y = master_line_y + global_chart_gap
-        fps_all_rect = pygame.Rect(margin, global_chart_y + y_offset, chart_w, global_chart_h)
-        mean_all_rect = pygame.Rect(margin + chart_w + gap, global_chart_y + y_offset, chart_w, global_chart_h)
-
-        now = time.time()
-        if now - last_chart_refresh >= chart_refresh_s:
-            last_chart_refresh = now
-            for idx in range(count):
-                fps_points = _get_cached_points(
-                    fps_cache,
-                    fps_paths[idx],
-                    lambda p: _load_fps_points(p, max_points=chart_w),
-                )
-                fps_series[idx] = fps_points
-
-                mean_path = (
-                    results_dir
-                    / str(run_nums[idx])
-                    / f"parsedArithmeticMeanSimulatino{run_nums[idx]}_Log.csv"
-                )
-                mean_points = _get_cached_points(
-                    arithmetic_cache,
-                    mean_path,
-                    lambda p: _load_arithmetic_points(results_dir, run_nums[idx]),
-                    max_age=1.0,
-                )
-                mean_series[idx] = mean_points
-
-                meta_path = results_dir / str(run_nums[idx]) / "run_meta.json"
-                meta_series[idx] = _get_cached_points(
-                    arithmetic_cache,
-                    meta_path,
-                    _load_run_meta,
-                    max_age=1.0,
-                )
-        enabled_all = all(enabled)
-        enabled_any = any(enabled)
-        if enabled_all:
-            master_state = "ALL ON"
-        elif not enabled_any:
-            master_state = "ALL OFF"
-        else:
-            master_state = "MIXED"
-        if len(set(draw_modes)) == 1:
-            master_draw_mode = draw_modes[0]
-            if master_draw_mode == 0:
-                master_draw = "DRAW"
-            elif master_draw_mode == 1:
-                master_draw = f"DRAW/{draw_every[0]}"
+        if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+            screen.fill((20, 20, 20))
+            y_offset = -scroll_offset
+            title = font.render("Simulation Master", True, (240, 240, 240))
+            if selected_row == 0:
+                status_text = "Selected: MASTER (0)"
             else:
-                master_draw = "NO-DRAW"
-        else:
-            master_draw = "MIXED"
-        if len(set(mode_values)) == 1:
-            master_mode = f"MODE {mode_values[0]}"
-        else:
-            master_mode = "MODE MIXED"
-
-        master_color = (0, 200, 255) if selected_row == 0 else (200, 200, 200)
-        frame_vals = [
-            m.get("frame_count")
-            for m in meta_series
-            if isinstance(m, dict) and isinstance(m.get("frame_count"), (int, float))
-        ]
-        species_vals = [
-            m.get("amnt_of_species")
-            for m in meta_series
-            if isinstance(m, dict) and isinstance(m.get("amnt_of_species"), (int, float))
-        ]
-        now_perf = time.perf_counter()
-        elapsed_vals = []
-        for idx in range(count):
-            meta = meta_series[idx] if idx < len(meta_series) else {}
-            elapsed = None
-            if isinstance(meta, dict):
-                meta_elapsed = meta.get("elapsed_seconds")
-                if isinstance(meta_elapsed, (int, float)):
-                    elapsed = float(meta_elapsed)
-            if idx < len(sim_start_times):
-                fallback = max(0.0, now_perf - sim_start_times[idx])
-                elapsed = fallback if elapsed is None else max(elapsed, fallback)
-            if elapsed is not None:
-                elapsed_vals.append(elapsed)
-        
-        mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
-        mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
-        mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
-
-        master_line = small_font.render(
-            f"MASTER (0): {master_state} | {master_draw} | {master_mode}",
-            True,
-            master_color,
-        )
-        master_stats = small_font.render(
-            f"Frames mean: {mean_frames:.0f} | Species mean: {mean_species:.1f} | Runtime: {_format_duration(mean_elapsed)}",
-            True,
-            master_color,
-        )
-        screen.blit(master_line, (margin, master_line_y + y_offset))
-        screen.blit(master_stats, (margin, master_line_y + 16 + y_offset))
-        _draw_multi_fps_chart(screen, small_font, fps_all_rect, fps_series)
-        _draw_multi_arithmetic_chart(screen, small_font, mean_all_rect, mean_series)
-
-        y = header_h + y_offset
-        for idx in range(count):
-            if y + panel_h < 0:
-                y += panel_h
-                continue
-            if y > window_h:
-                break
-            color = (0, 200, 255) if selected_row == idx + 1 else (200, 200, 200)
-            state = "ON" if enabled[idx] else "OFF"
-            if draw_modes[idx] == 0:
-                draw_state = "DRAW"
-            elif draw_modes[idx] == 1:
-                draw_state = f"DRAW/{draw_every[idx]}"
+                status_text = f"Selected: Sim {selected_row} / {count}"
+            status = font.render(status_text, True, (0, 200, 255))
+            hint1 = small_font.render("Up/Down: select sim", True, (200, 200, 200))
+            hint2 = small_font.render("Left/Right or click: on/off", True, (200, 200, 200))
+            if master_fps_mode == _FPS_MODE_CAPPED:
+                cap_label = "CAPPED"
+            elif master_fps_mode == _FPS_MODE_UNCAPPED:
+                cap_label = "UNCAPPED"
             else:
-                draw_state = "NO-DRAW"
-            mode_state = f"MODE {mode_values[idx]}"
-            label = f"Sim {idx + 1}"
-            meta = meta_series[idx] if idx < len(meta_series) and isinstance(meta_series[idx], dict) else {}
-            species_count = meta.get("amnt_of_species")
-            big_species_count = meta.get("amnt_of_big_species")
-            species_text = (
-                f"{int(species_count)}" if isinstance(species_count, (int, float)) else "--"
-            )
-            big_species_text = (
-                f"{int(big_species_count)}" if isinstance(big_species_count, (int, float)) else "--"
-            )
-            line = small_font.render(
-                f"{label}: {state} | {draw_state} | {mode_state} | Species: {species_text} | Big: {big_species_text}",
+                cap_label = "FULL"
+            hint3 = small_font.render(
+                "D: draw  M: mode  S: update  F: fps mode  Esc/Q: quit",
                 True,
-                color,
+                (200, 200, 200),
             )
-            screen.blit(line, (margin, y))
+            hint4 = small_font.render(
+                f"Mean: {mean_kind} | Master FPS: {cap_label} | Click dot: value",
+                True,
+                (200, 200, 200),
+            )
 
-            chart_y = y + 20
-            fps_rect = pygame.Rect(margin, chart_y, chart_w, chart_h)
-            mean_rect = pygame.Rect(margin + chart_w + gap, chart_y, chart_w, chart_h)
+            screen.blit(title, (20, header_top + y_offset))
+            screen.blit(status, (20, header_top + 30 + y_offset))
+            screen.blit(hint1, (20, header_top + 60 + y_offset))
+            screen.blit(hint2, (20, header_top + 80 + y_offset))
+            screen.blit(hint3, (20, header_top + 100 + y_offset))
+            screen.blit(hint4, (20, header_top + 120 + y_offset))
 
-            sim_color = _sim_color(idx)
-            fps_points = fps_series[idx] if idx < len(fps_series) else []
-            _draw_fps_chart(screen, small_font, fps_rect, fps_points, sim_color)
+            for rect, label in [
+                (draw_btn, "Draw"),
+                (mode_btn, "Mode"),
+                (info_btn, "Info (S)"),
+                (mean_btn, f"Mean {mean_kind[:4]}"),
+                (fps_btn, "FPS Mode"),
+                (exit_btn, "Exit"),
+            ]:
+                draw_rect = rect.move(0, y_offset)
+                pygame.draw.rect(screen, (40, 40, 40), draw_rect)
+                pygame.draw.rect(screen, (120, 120, 120), draw_rect, 1)
+                text = small_font.render(label, True, (220, 220, 220))
+                screen.blit(text, (draw_rect.x + 8, draw_rect.y + 5))
 
-            mean_points = mean_series[idx] if idx < len(mean_series) else []
-            _draw_arithmetic_chart(screen, small_font, mean_rect, mean_points, sim_color)
+            fps_all_rect = pygame.Rect(margin, global_chart_y + y_offset, chart_w, global_chart_h)
+            mean_all_rect = pygame.Rect(margin + chart_w + gap, global_chart_y + y_offset, chart_w, global_chart_h)
 
-            y += panel_h
-        pygame.display.flip()
+            now = time.time()
+            if now - last_chart_refresh >= chart_refresh_s:
+                last_chart_refresh = now
+                mean_value_field = _mean_value_field(mean_kind)
+                for idx in range(count):
+                    fps_points = _get_cached_points(
+                        fps_cache,
+                        fps_paths[idx],
+                        lambda p: _load_fps_points(p, max_points=chart_w),
+                    )
+                    fps_series[idx] = fps_points
+
+                    mean_path = (
+                        results_dir
+                        / str(run_nums[idx])
+                        / f"parsed{mean_kind}MeanSimulatino{run_nums[idx]}_Log.csv"
+                    )
+                    mean_points = _get_cached_points(
+                        arithmetic_cache,
+                        mean_path,
+                        lambda p, field=mean_value_field: _load_mean_points(p, field),
+                        max_age=1.0,
+                    )
+                    mean_series[idx] = mean_points
+
+                    meta_path = results_dir / str(run_nums[idx]) / "run_meta.json"
+                    meta_series[idx] = _get_cached_points(
+                        arithmetic_cache,
+                        meta_path,
+                        _load_run_meta,
+                        max_age=1.0,
+                    )
+            enabled_all = all(enabled)
+            enabled_any = any(enabled)
+            if enabled_all:
+                master_state = "ALL ON"
+            elif not enabled_any:
+                master_state = "ALL OFF"
+            else:
+                master_state = "MIXED"
+            if len(set(draw_modes)) == 1:
+                master_draw_mode = draw_modes[0]
+                if master_draw_mode == 0:
+                    master_draw = "DRAW"
+                elif master_draw_mode == 1:
+                    master_draw = f"DRAW/{draw_every[0]}"
+                else:
+                    master_draw = "NO-DRAW"
+            else:
+                master_draw = "MIXED"
+            if len(set(mode_values)) == 1:
+                master_mode = f"MODE {mode_values[0]}"
+            else:
+                master_mode = "MODE MIXED"
+
+            master_color = (0, 200, 255) if selected_row == 0 else (200, 200, 200)
+            frame_vals = [
+                m.get("frame_count")
+                for m in meta_series
+                if isinstance(m, dict) and isinstance(m.get("frame_count"), (int, float))
+            ]
+            species_vals = [
+                m.get("amnt_of_species")
+                for m in meta_series
+                if isinstance(m, dict) and isinstance(m.get("amnt_of_species"), (int, float))
+            ]
+            now_perf = time.perf_counter()
+            elapsed_vals = []
+            for idx in range(count):
+                meta = meta_series[idx] if idx < len(meta_series) else {}
+                elapsed = None
+                if isinstance(meta, dict):
+                    meta_elapsed = meta.get("elapsed_seconds")
+                    if isinstance(meta_elapsed, (int, float)):
+                        elapsed = float(meta_elapsed)
+                if idx < len(sim_start_times):
+                    fallback = max(0.0, now_perf - sim_start_times[idx])
+                    elapsed = fallback if elapsed is None else max(elapsed, fallback)
+                if elapsed is not None:
+                    elapsed_vals.append(elapsed)
+            
+            mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
+            mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
+            mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
+
+            master_line = small_font.render(
+                f"MASTER (0): {master_state} | {master_draw} | {master_mode}",
+                True,
+                master_color,
+            )
+            master_stats = small_font.render(
+                f"Frames mean: {mean_frames:.0f} | Species mean: {mean_species:.1f} | Runtime: {_format_duration(mean_elapsed)}",
+                True,
+                master_color,
+            )
+            screen.blit(master_line, (margin, master_line_y + y_offset))
+            screen.blit(master_stats, (margin, master_line_y + 16 + y_offset))
+            _draw_multi_fps_chart(screen, small_font, fps_all_rect, fps_series)
+            _draw_multi_arithmetic_chart(
+                screen,
+                small_font,
+                mean_all_rect,
+                mean_series,
+                selected_point=selected_mean_point,
+            )
+
+            y = header_h + y_offset
+            for idx in range(count):
+                if y + panel_h < 0:
+                    y += panel_h
+                    continue
+                if y > window_h:
+                    break
+                color = (0, 200, 255) if selected_row == idx + 1 else (200, 200, 200)
+                state = "ON" if enabled[idx] else "OFF"
+                if draw_modes[idx] == 0:
+                    draw_state = "DRAW"
+                elif draw_modes[idx] == 1:
+                    draw_state = f"DRAW/{draw_every[idx]}"
+                else:
+                    draw_state = "NO-DRAW"
+                mode_state = f"MODE {mode_values[idx]}"
+                label = f"Sim {idx + 1}"
+                meta = meta_series[idx] if idx < len(meta_series) and isinstance(meta_series[idx], dict) else {}
+                species_count = meta.get("amnt_of_species")
+                big_species_count = meta.get("amnt_of_big_species")
+                species_text = (
+                    f"{int(species_count)}" if isinstance(species_count, (int, float)) else "--"
+                )
+                big_species_text = (
+                    f"{int(big_species_count)}" if isinstance(big_species_count, (int, float)) else "--"
+                )
+                line = small_font.render(
+                    f"{label}: {state} | {draw_state} | {mode_state} | Species: {species_text} | Big: {big_species_text}",
+                    True,
+                    color,
+                )
+                screen.blit(line, (margin, y))
+
+                chart_y = y + 20
+                fps_rect = pygame.Rect(margin, chart_y, chart_w, chart_h)
+                mean_rect = pygame.Rect(margin + chart_w + gap, chart_y, chart_w, chart_h)
+
+                sim_color = _sim_color(idx)
+                fps_points = fps_series[idx] if idx < len(fps_series) else []
+                _draw_fps_chart(screen, small_font, fps_rect, fps_points, sim_color)
+
+                mean_points = mean_series[idx] if idx < len(mean_series) else []
+                _draw_arithmetic_chart(
+                    screen,
+                    small_font,
+                    mean_rect,
+                    mean_points,
+                    sim_color,
+                    selected_point=selected_mean_point,
+                    selected_idx=idx,
+                )
+
+                y += panel_h
+            pygame.display.flip()
         clock.tick(master_fps)
 
         for proc in procs:
@@ -897,9 +1181,23 @@ def main() -> None:
 
     try:
         _combine_master_logs(results_dir, master_dir, master_label, run_nums)
-        parse_run(results_dir, master_label, quiet=True)
     except Exception as e:
         print(f"Failed to build master logs: {e}")
+    else:
+        try:
+            parse_run(results_dir, master_label, quiet=True)
+        except Exception as e:
+            print(f"Failed to parse master logs (step 0.001): {e}")
+        try:
+            parse_run(
+                results_dir,
+                master_label,
+                step=0.01,
+                quiet=True,
+                output_tag="step0p01",
+            )
+        except Exception as e:
+            print(f"Failed to parse master logs (step 0.01): {e}")
     try:
         _combine_master_means(results_dir, master_dir, master_label, run_nums)
     except Exception as e:

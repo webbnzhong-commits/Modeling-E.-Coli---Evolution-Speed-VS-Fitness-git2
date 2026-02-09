@@ -86,6 +86,7 @@ def parse_run(
     max_speed: float = 0.4,
     fps: float = 60.0,
     quiet: bool = False,
+    output_tag: str | None = None,
 ) -> Tuple[Path, Path]:
     run_dir = results_dir / str(run_num)
     raw_dir = run_dir / "raw_data"
@@ -99,9 +100,12 @@ def parse_run(
     if base_input.exists():
         input_files.append(base_input)
     input_files.extend(part_files)
-    output_file_geo = run_dir / f"parsedGeometricMeanSimulatino{run_num}_Log.csv"
-    output_file_mean = run_dir / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
-    summary_file = run_dir / f"stats_summary_{run_num}.txt"
+    tag = ""
+    if output_tag:
+        tag = output_tag if output_tag.startswith("_") else f"_{output_tag}"
+    output_file_geo = run_dir / f"parsedGeometricMeanSimulatino{run_num}{tag}_Log.csv"
+    output_file_mean = run_dir / f"parsedArithmeticMeanSimulatino{run_num}{tag}_Log.csv"
+    summary_file = run_dir / f"stats_summary_{run_num}{tag}.txt"
 
     if not input_files:
         raise FileNotFoundError(

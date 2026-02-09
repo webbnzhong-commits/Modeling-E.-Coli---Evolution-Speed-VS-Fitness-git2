@@ -704,7 +704,12 @@ def _spawn_child_from_parent(parent):
     child.evolution_speed = max(0.001, parent.evolution_speed)
     child.size = max(1, parent.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
     child.favored_resource = parent.favored_resource
-    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -3.5, child.evolution_speed * 3.5))#can start at 0.14 so
+    '''
+    if (child.immune_system > 0.17):
+        child.immune_system = 0 - 5
+    
+    '''
+    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -4.7, child.evolution_speed * 4.7 ) ** 3)#can start at 0.14 so
     
     child.immune_system = child.immune_system % 5
 
@@ -715,6 +720,9 @@ def _spawn_child_from_parent(parent):
     if parent.evolution_speed > 0.17:
         child.immune_system = random.randint(0, 5)
 
+
+
+    
     total = 0
     total2 = 0
     for r in ["o", "c", "n"]:
@@ -733,7 +741,7 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
-    if random.uniform(0, child.evolution_speed) < 0.10:
+    if random.uniform(0, child.evolution_speed) < 0.09:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
