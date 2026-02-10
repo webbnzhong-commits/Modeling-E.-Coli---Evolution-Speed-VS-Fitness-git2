@@ -707,6 +707,9 @@ def main() -> None:
     full_throttle_active = False
     saved_draw_modes = None
     saved_mode_values = None
+    pressed_button = None
+    show_settings = True
+    confirm_quit = False
 
 
     max_scroll = max(0, content_h - window_h)
@@ -763,6 +766,24 @@ def main() -> None:
                 chart_refresh_s = 0.0
                 master_fps = uncapped_fps
 
+    def _ensure_selected_visible() -> None:
+        nonlocal scroll_offset
+        if max_scroll <= 0:
+            return
+        if selected_row == 0:
+            scroll_offset = 0
+            return
+        if selected_row == count:
+            scroll_offset = max_scroll
+            return
+        row_top = header_h + (selected_row - 1) * panel_h
+        row_bottom = row_top + panel_h
+        if row_top < scroll_offset:
+            scroll_offset = row_top
+        if row_bottom > scroll_offset + window_h:
+            scroll_offset = row_bottom - window_h
+        scroll_offset = max(0, min(max_scroll, scroll_offset))
+
     while running:
         margin = 20
         gap = 20
@@ -783,37 +804,36 @@ def main() -> None:
         info_btn = pygame.Rect(button_x, button_y + 2 * (button_h + button_gap), button_w, button_h)
         mean_btn = pygame.Rect(button_x, button_y + 3 * (button_h + button_gap), button_w, button_h)
         fps_btn = pygame.Rect(button_x, button_y + 4 * (button_h + button_gap), button_w, button_h)
-        exit_btn = pygame.Rect(button_x, button_y + 5 * (button_h + button_gap), button_w, button_h)
+        onoff_btn = pygame.Rect(button_x, button_y + 5 * (button_h + button_gap), button_w, button_h)
+        settings_btn = pygame.Rect(button_x, button_y + 6 * (button_h + button_gap), button_w, button_h)
+        exit_btn = pygame.Rect(button_x, button_y + 7 * (button_h + button_gap), button_w, button_h)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                running = False
+                if confirm_quit:
+                    running = False
+                else:
+                    confirm_quit = True
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE or event.key == pygame.K_q:
-                    running = False
+                    if confirm_quit:
+                        running = False
+                    else:
+                        confirm_quit = True
+                elif event.key == pygame.K_y:
+                    if confirm_quit:
+                        running = False
+                elif event.key == pygame.K_n:
+                    confirm_quit = False
                 elif event.key == pygame.K_UP:
                     selected_row = (selected_row - 1) % (count + 1)
                     active_sim_index = master_active_index if selected_row == 0 else selected_row - 1
-                    if max_scroll > 0:
-                        if selected_row == 0:
-                            scroll_offset = 0
-                        else:
-                            row_top = header_h + (selected_row - 1) * panel_h
-                            if row_top < scroll_offset:
-                                scroll_offset = row_top
-                            scroll_offset = max(0, min(max_scroll, scroll_offset))
+                    _ensure_selected_visible()
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_DOWN:
                     selected_row = (selected_row + 1) % (count + 1)
                     active_sim_index = master_active_index if selected_row == 0 else selected_row - 1
-                    if max_scroll > 0:
-                        if selected_row == 0:
-                            scroll_offset = 0
-                        else:
-                            row_bottom = header_h + selected_row * panel_h
-                            if row_bottom > scroll_offset + window_h:
-                                scroll_offset = row_bottom - window_h
-                            scroll_offset = max(0, min(max_scroll, scroll_offset))
+                    _ensure_selected_visible()
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_PAGEUP:
                     if max_scroll > 0:
@@ -847,6 +867,78 @@ def main() -> None:
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_f:
                     _apply_master_fps_mode((master_fps_mode + 1) % 3)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if pressed_button is not None:
+                    mx, my = event.pos
+                    content_y = my + scroll_offset
+                    if pressed_button == "draw" and draw_btn.collidepoint(mx, content_y):
+                        if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                            _apply_draw_toggle(selected_row, draw_modes)
+                            _write_control(
+                                control_path,
+                                active_sim_index,
+                                enabled,
+                                draw_modes,
+                                draw_every,
+                                mode_values,
+                                update_tokens,
+                            )
+                    elif pressed_button == "mode" and mode_btn.collidepoint(mx, content_y):
+                        if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                            _apply_mode_toggle(selected_row, mode_values)
+                            _write_control(
+                                control_path,
+                                active_sim_index,
+                                enabled,
+                                draw_modes,
+                                draw_every,
+                                mode_values,
+                                update_tokens,
+                            )
+                    elif pressed_button == "info" and info_btn.collidepoint(mx, content_y):
+                        _apply_update(selected_row, update_tokens)
+                        _write_control(
+                            control_path,
+                            active_sim_index,
+                            enabled,
+                            draw_modes,
+                            draw_every,
+                            mode_values,
+                            update_tokens,
+                        )
+                    elif pressed_button == "mean" and mean_btn.collidepoint(mx, content_y):
+                        mean_kind = "Geometric" if mean_kind == "Arithmetic" else "Arithmetic"
+                        selected_mean_point = None
+                        last_chart_refresh = 0.0
+                    elif pressed_button == "fps" and fps_btn.collidepoint(mx, content_y):
+                        _apply_master_fps_mode((master_fps_mode + 1) % 3)
+                    elif pressed_button == "onoff" and onoff_btn.collidepoint(mx, content_y):
+                        if selected_row == 0:
+                            new_state = not all(enabled)
+                            for i in range(count):
+                                enabled[i] = new_state
+                        else:
+                            idx = selected_row - 1
+                            if 0 <= idx < count:
+                                enabled[idx] = not enabled[idx]
+                        _write_control(
+                            control_path,
+                            active_sim_index,
+                            enabled,
+                            draw_modes,
+                            draw_every,
+                            mode_values,
+                            update_tokens,
+                        )
+                    elif pressed_button == "settings" and settings_btn.collidepoint(mx, content_y):
+                        show_settings = True
+                    elif pressed_button == "exit" and exit_btn.collidepoint(mx, content_y):
+                        if confirm_quit:
+                            running = False
+                        else:
+                            confirm_quit = True
+                    pressed_button = None
+                    continue
             elif event.type == pygame.MOUSEWHEEL:
                 if max_scroll > 0:
                     scroll_offset = max(
@@ -856,31 +948,33 @@ def main() -> None:
                 mx, my = event.pos
                 content_y = my + scroll_offset
                 handled_click = False
+                pressed_button = None
                 if draw_btn.collidepoint(mx, content_y):
+                    pressed_button = "draw"
                     handled_click = True
-                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
-                        _apply_draw_toggle(selected_row, draw_modes)
-                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif mode_btn.collidepoint(mx, content_y):
+                    pressed_button = "mode"
                     handled_click = True
-                    if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
-                        _apply_mode_toggle(selected_row, mode_values)
-                        _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif info_btn.collidepoint(mx, content_y):
-                    _apply_update(selected_row, update_tokens)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    pressed_button = "info"
                     handled_click = True
                 elif mean_btn.collidepoint(mx, content_y):
-                    mean_kind = "Geometric" if mean_kind == "Arithmetic" else "Arithmetic"
-                    selected_mean_point = None
-                    last_chart_refresh = 0.0
+                    pressed_button = "mean"
                     handled_click = True
                 elif fps_btn.collidepoint(mx, content_y):
-                    _apply_master_fps_mode((master_fps_mode + 1) % 3)
+                    pressed_button = "fps"
+                    handled_click = True
+                elif onoff_btn.collidepoint(mx, content_y):
+                    pressed_button = "onoff"
+                    handled_click = True
+                elif settings_btn.collidepoint(mx, content_y):
+                    pressed_button = "settings"
                     handled_click = True
                 elif exit_btn.collidepoint(mx, content_y):
-                    running = False
+                    pressed_button = "exit"
                     handled_click = True
+                if pressed_button is not None:
+                    continue
                 else:
                     handled_chart_click = False
                     if mean_all_rect_content.collidepoint(mx, content_y):
@@ -925,6 +1019,7 @@ def main() -> None:
                 if content_y < header_h:
                     selected_row = 0
                     active_sim_index = master_active_index
+                    _ensure_selected_visible()
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 else:
                     row_start = header_h
@@ -935,7 +1030,7 @@ def main() -> None:
                     if 0 <= idx < count:
                         selected_row = idx + 1
                         active_sim_index = idx
-                        enabled[idx] = not enabled[idx]
+                        _ensure_selected_visible()
                         _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
                 if max_scroll > 0:
@@ -943,7 +1038,7 @@ def main() -> None:
                         scroll_offset = max(0, scroll_offset - scroll_step)
                     else:
                         scroll_offset = min(max_scroll, scroll_offset + scroll_step)
-
+        
         if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
             screen.fill((20, 20, 20))
             y_offset = -scroll_offset
@@ -954,7 +1049,7 @@ def main() -> None:
                 status_text = f"Selected: Sim {selected_row} / {count}"
             status = font.render(status_text, True, (0, 200, 255))
             hint1 = small_font.render("Up/Down: select sim", True, (200, 200, 200))
-            hint2 = small_font.render("Left/Right or click: on/off", True, (200, 200, 200))
+            hint2 = small_font.render("Left/Right or button: on/off", True, (200, 200, 200))
             if master_fps_mode == _FPS_MODE_CAPPED:
                 cap_label = "CAPPED"
             elif master_fps_mode == _FPS_MODE_UNCAPPED:
@@ -982,9 +1077,11 @@ def main() -> None:
             for rect, label in [
                 (draw_btn, "Draw"),
                 (mode_btn, "Mode"),
-                (info_btn, "Info (S)"),
+                (info_btn, "Info"),
                 (mean_btn, f"Mean {mean_kind[:4]}"),
                 (fps_btn, "FPS Mode"),
+                (onoff_btn, "On/Off"),
+                (settings_btn, "Settings"),
                 (exit_btn, "Exit"),
             ]:
                 draw_rect = rect.move(0, y_offset)
@@ -1101,6 +1198,62 @@ def main() -> None:
                 mean_series,
                 selected_point=selected_mean_point,
             )
+
+            if show_settings:
+                header_lines = [f"Master run: {master_run_num}", "Settings:"]
+                lines = header_lines
+                lines.append(f"quan: {settings.get('quan')}")
+                lines.append(f"enviormentChangeRate: {settings.get('enviormentChangeRate')}")
+                ph = settings.get("ph_effect", {})
+                temp = settings.get("temp_effect", {})
+                lines.append(f"ph_effect.scale: {ph.get('scale')}")
+                lines.append(f"ph_effect.divisor: {ph.get('divisor')}")
+                lines.append(f"temp_effect.scale: {temp.get('scale')}")
+                lines.append(f"temp_effect.divisor: {temp.get('divisor')}")
+                lines.append(f"population_cap: {settings.get('population_cap')}")
+                max_text_w = 0
+                line_h = small_font.get_height()
+                for line in lines:
+                    max_text_w = max(max_text_w, small_font.size(line)[0])
+                pad = 10
+                box_w = min(window_w - 2 * margin, max_text_w + pad * 2)
+                box_h = min(window_h - 2 * margin, line_h * len(lines) + pad * 2)
+                right_limit = button_x - 10
+                box_x = max(margin, right_limit - box_w)
+                box_y = header_top - 10 + y_offset
+                overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+                overlay.fill((10, 10, 10, 220))
+                screen.blit(overlay, (box_x, box_y))
+                pygame.draw.rect(screen, (140, 140, 140), (box_x, box_y, box_w, box_h), 1)
+                y_text = box_y + pad
+                for line in lines:
+                    if y_text + line_h > box_y + box_h - pad:
+                        break
+                    text = small_font.render(line, True, (230, 230, 230))
+                    screen.blit(text, (box_x + pad, y_text))
+                    y_text += line_h
+
+            if confirm_quit:
+                prompt_lines = [
+                    "Quit master?",
+                    "Press Y to quit or N to cancel.",
+                ]
+                pad = 10
+                line_h = small_font.get_height()
+                max_w = max(small_font.size(line)[0] for line in prompt_lines)
+                box_w = max_w + pad * 2
+                box_h = line_h * len(prompt_lines) + pad * 2
+                box_x = (window_w - box_w) // 2
+                box_y = header_top + 40 + y_offset
+                overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+                overlay.fill((10, 10, 10, 230))
+                screen.blit(overlay, (box_x, box_y))
+                pygame.draw.rect(screen, (180, 180, 180), (box_x, box_y, box_w, box_h), 1)
+                y_text = box_y + pad
+                for line in prompt_lines:
+                    text = small_font.render(line, True, (230, 230, 230))
+                    screen.blit(text, (box_x + pad, y_text))
+                    y_text += line_h
 
             y = header_h + y_offset
             for idx in range(count):

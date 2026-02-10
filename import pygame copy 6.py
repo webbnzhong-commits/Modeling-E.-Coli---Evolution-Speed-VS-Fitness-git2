@@ -66,6 +66,7 @@ PH_EFFECT_DIVISOR = float(settings["ph_effect"]["divisor"])
 TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
 TEMP_EFFECT_DIVISOR = float(settings["temp_effect"]["divisor"])
 REPRO_DEBUF_MIN = float(settings["reproduction_debuf_min"])
+QUAN = float(settings.get("quan", 2.0))
 
 FPS_GRAPH_X = 400
 FPS_GRAPH_Y = 25
@@ -184,7 +185,7 @@ def apply_settings(new_settings, update_screen=False):
     global settings, WIDTH, HEIGHT, screen
     global display_mode, draw, drawSometimes, drawAmnt
     global population_cap, enviormentChangeRate
-    global PH_EFFECT_SCALE, PH_EFFECT_DIVISOR, TEMP_EFFECT_SCALE, TEMP_EFFECT_DIVISOR, REPRO_DEBUF_MIN
+    global PH_EFFECT_SCALE, PH_EFFECT_DIVISOR, TEMP_EFFECT_SCALE, TEMP_EFFECT_DIVISOR, REPRO_DEBUF_MIN, QUAN
 
     settings = new_settings
     new_width = int(settings["screen"]["width"])
@@ -209,6 +210,7 @@ def apply_settings(new_settings, update_screen=False):
     TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
     TEMP_EFFECT_DIVISOR = float(settings["temp_effect"]["divisor"])
     REPRO_DEBUF_MIN = float(settings["reproduction_debuf_min"])
+    QUAN = float(settings.get("quan", 2.0))
 
 
 def reload_settings():
@@ -709,7 +711,14 @@ def _spawn_child_from_parent(parent):
         child.immune_system = 0 - 5
     
     '''
-    child.immune_system = parent.immune_system + int(random.uniform(child.evolution_speed * -4.3, child.evolution_speed * 4.1 ) ** 2)#can start at 0.14 so. pow of 2 - 4.1, pow of 1, 3.5, pow of 3, 4.7
+    maxAmnt = child.evolution_speed * QUAN + (0.5 - 0.17 * QUAN)  # 3.5 for 0
+
+
+
+    #maxAmnt = child.evolution_speed * -4.1#can start at 0.14 so. pow of 2 - 4.1, pow of 1, 3.5, pow of 3, 4.7
+    
+    changeAmnt = int(round(random.uniform(-maxAmnt, maxAmnt)))
+    child.immune_system = parent.immune_system + changeAmnt
     
     child.immune_system = child.immune_system % 5
 
@@ -717,8 +726,13 @@ def _spawn_child_from_parent(parent):
     child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
     child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
     child.color = parent.color.copy()
+    '''
+
     if parent.evolution_speed > 0.17:
+        
         child.immune_system = random.randint(0, 5)
+        
+    '''
 
 
 
@@ -990,7 +1004,7 @@ while running:
     for evo_val, data in list(species_trackers.items()):
         if data["lifespan"] > 4000:
             #reset simulation
-            print("Resetting simulation due to long-lived species")
+            print(f"[{time.strftime('%H:%M:%S')}] Resetting simulation due to long-lived species")
             for evo_val, data in list(species_trackers.items()):
                 if data["alive"]:
                     data["alive"] = False

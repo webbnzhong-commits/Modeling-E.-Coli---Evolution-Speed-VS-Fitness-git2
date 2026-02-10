@@ -13,6 +13,7 @@ DEFAULT_SETTINGS = {
     "ph_effect": {"scale": 1.0, "divisor": 2.0},
     "temp_effect": {"scale": 1.0, "divisor": 4.0},
     "reproduction_debuf_min": 0.001,
+    "quan": 2.0,
     "simulations": {"count": 3},
 }
 
