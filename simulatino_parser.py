@@ -256,6 +256,19 @@ def parse_run(
     _add_line(f"Parsed geometric-mean data saved to {output_file_geo}")
     _add_line(f"Parsed arithmetic-mean data saved to {output_file_mean}")
 
+    species_count_log = len(data)
+    medium_count_log = sum(
+        1
+        for row in data
+        if row["length lived"] > 500 and row["length lived"] <= 1999
+    )
+    big_count_log = sum(1 for row in data if row["length lived"] > 1999)
+    _add_line("")
+    _add_line("--- Species Summary (from logs) ---")
+    _add_line(f"Species count: {species_count_log}")
+    _add_line(f"Medium species count: {medium_count_log}")
+    _add_line(f"Big species count: {big_count_log}")
+
     meta_path = run_dir / "run_meta.json"
     if meta_path.exists():
         try:

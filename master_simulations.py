@@ -25,7 +25,8 @@ _SIM_COLORS = [
     (120, 255, 160),
     (255, 220, 120),
 ]
-_DOT_ALPHA = 128
+_DOT_ALPHA = 110
+_DOT_RADIUS = 3
 _FPS_MODE_CAPPED = 0
 _FPS_MODE_UNCAPPED = 1
 _FPS_MODE_FULL_THROTTLE = 2
@@ -332,7 +333,7 @@ def _draw_fps_chart(
         t_clamped = max(0.0, min(max_seconds, tval))
         px = i
         py = rect.height - int((t_clamped / max_seconds) * rect.height)
-        pygame.draw.circle(overlay, color, (px, py), 2)
+        pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, rect.topleft)
 
 
@@ -384,7 +385,7 @@ def _draw_arithmetic_chart(
     color = (color[0], color[1], color[2], _DOT_ALPHA)
     for x, y in points_sorted:
         px, py = _scale_point(x, y)
-        pygame.draw.circle(overlay, color, (px, py), 2)
+        pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, (plot_left, plot_top))
 
     max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
@@ -431,7 +432,7 @@ def _draw_multi_fps_chart(
             t_clamped = max(0.0, min(max_seconds, tval))
             px = i
             py = rect.height - int((t_clamped / max_seconds) * rect.height)
-            pygame.draw.circle(overlay, color, (px, py), 2)
+            pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, rect.topleft)
 
 
@@ -485,7 +486,7 @@ def _draw_multi_arithmetic_chart(
         points_sorted = sorted(points, key=lambda p: p[0])
         for x, y in points_sorted:
             px, py = _scale_point(x, y)
-            pygame.draw.circle(overlay, color, (px, py), 2)
+            pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, (plot_left, plot_top))
 
     max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
