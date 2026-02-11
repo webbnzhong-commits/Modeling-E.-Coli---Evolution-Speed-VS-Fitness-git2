@@ -2,6 +2,9 @@ import time
 from pathlib import Path
 import pygame
 
+_DOT_ALPHA = 110
+_DOT_RADIUS = 3
+
 
 class FPSTracker:
     def __init__(
@@ -15,6 +18,7 @@ class FPSTracker:
         self.last_start = time.perf_counter()
         self.last_interval_time = None
         self.iter_times = []
+        self.iter_timestamps = []
         self.log_path = Path(log_path) if log_path else None
         self._log_ready = False
 
@@ -44,6 +48,7 @@ class FPSTracker:
         self.last_interval_time = now - self.last_start
         if display_mode >= 1:
             self.iter_times.append(self.last_interval_time)
+            self.iter_timestamps.append(time.time())
         self.last_start = now
         self._append_log()
 
@@ -51,6 +56,11 @@ class FPSTracker:
         if self.last_interval_time is None or self.last_interval_time <= 0:
             return None
         return self.sample_interval / self.last_interval_time
+
+    @staticmethod
+    def _format_time(ts: float) -> str:
+        label = time.strftime("%I:%M:%S %p", time.localtime(ts))
+        return label.lstrip("0").lower()
 
     def draw_graph(self, surface, font, x: int, y: int, w: int, h: int) -> None:
         pygame.draw.rect(surface, (80, 80, 80), (x, y, w, h), 1)
@@ -68,9 +78,25 @@ class FPSTracker:
                 (x + w + 5, y - mean_1000 + h - mean_text.get_height()),
             )
             max_points = w
-            recent = self.iter_times[-max_points:]
+            count = min(len(self.iter_times), len(self.iter_timestamps), max_points)
+            recent = self.iter_times[-count:]
+            recent_ts = self.iter_timestamps[-count:]
+            overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+            dot_color = (0, 200, 255, _DOT_ALPHA)
             for i, tval in enumerate(recent):
                 t_clamped = max(0.0, min(self.graph_max_seconds, tval))
-                px = x + i
-                py = y + h - int((t_clamped / self.graph_max_seconds) * h)
-                pygame.draw.circle(surface, (0, 200, 255), (px, py), 2)
+                px = i
+                py = h - int((t_clamped / self.graph_max_seconds) * h)
+                pygame.draw.circle(overlay, dot_color, (px, py), _DOT_RADIUS)
+            surface.blit(overlay, (x, y))
+            if recent_ts:
+                start_label = font.render(
+                    self._format_time(recent_ts[0]), True, (200, 200, 200)
+                )
+                end_label = font.render(
+                    self._format_time(recent_ts[-1]), True, (200, 200, 200)
+                )
+                surface.blit(start_label, (x, y + h + 2))
+                surface.blit(
+                    end_label, (x + w - end_label.get_width(), y + h + 2)
+                )

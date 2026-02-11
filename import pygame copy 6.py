@@ -72,6 +72,8 @@ FPS_GRAPH_X = 400
 FPS_GRAPH_Y = 25
 FPS_GRAPH_H = 80
 CANCER_ALPHA = 128
+GRAPH_DOT_ALPHA = 110
+GRAPH_DOT_RADIUS = 3
 
 
 def _recalc_graph_width():
@@ -311,7 +313,12 @@ def _draw_arithmetic_mean_overlay(surface, font, points, rect, error_text=""):
         px, py = _scale_point(x, y)
         if last_pt is not None:
             pygame.draw.line(surface, (0, 200, 255), last_pt, (px, py), 2)
-        pygame.draw.circle(surface, (0, 220, 255), (px, py), 2)
+        pygame.draw.circle(
+            surface,
+            (0, 220, 255, GRAPH_DOT_ALPHA),
+            (px, py),
+            GRAPH_DOT_RADIUS,
+        )
         last_pt = (px, py)
 
     
@@ -700,6 +707,20 @@ def _update_stats_snapshot():
         arithmetic_graph_error,
     )
 
+def _update_all_stats_snapshot():
+    _update_stats_snapshot()
+    _write_run_meta()
+    if tracker.master_csv_file is not None:
+        try:
+            tracker.master_csv_file.flush()
+        except Exception:
+            pass
+    if tracker.master_dir:
+        try:
+            parse_run(Path(tracker.master_dir), tracker.run_num, quiet=True)
+        except Exception as e:
+            print(f"Master parse error: {e}")
+
 
 def _spawn_child_from_parent(parent):
     child = Dot(parent.x, parent.y)
@@ -883,7 +904,7 @@ while running:
             if event.key == pygame.K_u:
                 reload_settings()
             if event.key == pygame.K_s:
-                _update_stats_snapshot()
+                _update_all_stats_snapshot()
     if SIM_CONTROL_FILE and frame_count % CONTROL_CHECK_INTERVAL == 0:
         (
             control_active_index,
