@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -138,9 +139,12 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
     editing = False
     edit_text = ""
     error_text = ""
+    editing_message = False
+    message_text = ""
+    message_value = ""
 
     list_top = 70
-    list_bottom = screen_h - 90
+    list_bottom = screen_h - 120
     line_h = small_font.get_height() + 6
     visible_count = max(1, (list_bottom - list_top) // line_h)
 
@@ -148,6 +152,11 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
     upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
     upload_notice = ""
     upload_notice_time = 0.0
+    message_rect = pygame.Rect(20, list_bottom + 8, screen_w - 40, 24)
+
+    if master_dir is not None:
+        message_value = _read_master_message(master_dir)
+        message_text = message_value
 
     def _ensure_visible():
         nonlocal scroll
@@ -164,7 +173,21 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
             if event.type == pygame.QUIT:
                 return None
             if event.type == pygame.KEYDOWN:
-                if editing:
+                if editing_message:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        message_value = message_text.strip() or "debug run"
+                        _write_master_message(master_dir, message_value)
+                        editing_message = False
+                    elif event.key == pygame.K_ESCAPE:
+                        editing_message = False
+                        message_text = message_value
+                    elif event.key == pygame.K_BACKSPACE:
+                        message_text = message_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable() and len(message_text) < 80:
+                            message_text += ch
+                elif editing:
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         original = items[selected]["value"]
                         new_val = _parse_numeric(edit_text.strip(), original)
@@ -189,6 +212,10 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
                 else:
                     if event.key == pygame.K_ESCAPE:
                         return None
+                    if master_dir is not None and event.key == pygame.K_m:
+                        editing_message = True
+                        message_text = message_value
+                        continue
                     if event.key == pygame.K_UP:
                         selected = (selected - 1) % len(items)
                         _ensure_visible()
@@ -222,6 +249,11 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if confirm_rect.collidepoint(mx, my):
+                    if master_dir is not None:
+                        if editing_message:
+                            message_value = message_text.strip() or "debug run"
+                            editing_message = False
+                        _write_master_message(master_dir, message_value)
                     if master_dir is not None:
                         try:
                             master_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +290,10 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
                     #save_settings(global_settings)
                     upload_notice = "Uploaded counters to global settings"
                     upload_notice_time = time.time()
+                if master_dir is not None and message_rect.collidepoint(mx, my):
+                    editing_message = True
+                    message_text = message_value
+                    continue
                 if list_top <= my <= list_bottom:
                     idx = (my - list_top) // line_h + scroll
                     if 0 <= idx < len(items):
@@ -282,11 +318,10 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
             text = small_font.render(line, True, color)
             screen.blit(text, (22, y))
 
-        hint = small_font.render(
-            "Up/Down: select  Left/Right: adjust  Enter: edit  Esc: cancel",
-            True,
-            (180, 180, 180),
-        )
+        hint_text = "Up/Down: select  Left/Right: adjust  Enter: edit  Esc: cancel"
+        if master_dir is not None:
+            hint_text += "  M: edit message"
+        hint = small_font.render(hint_text, True, (180, 180, 180))
         screen.blit(hint, (20, screen_h - 80))
 
         if editing:
@@ -297,6 +332,14 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
         if error_text:
             err_surf = small_font.render(error_text, True, (255, 160, 160))
             screen.blit(err_surf, (20, screen_h - 35))
+
+        if master_dir is not None:
+            msg_display = message_text if editing_message else message_value
+            msg_color = (255, 220, 160) if editing_message else (210, 210, 210)
+            pygame.draw.rect(screen, (28, 28, 28), message_rect)
+            pygame.draw.rect(screen, (120, 120, 120), message_rect, 1)
+            msg_line = small_font.render(f"Message: {msg_display}", True, msg_color)
+            screen.blit(msg_line, (message_rect.x + 6, message_rect.y + 3))
 
         pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
         pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
@@ -334,6 +377,58 @@ def _master_settings_path(master_dir: Path) -> Path:
     return master_dir / "settings.json"
 
 
+def _master_message_path(master_dir: Path) -> Path:
+    return master_dir / "message"
+
+
+def _ensure_master_message(master_dir: Path, default_message: str = "debug run") -> None:
+    path = _master_message_path(master_dir)
+    try:
+        if path.exists() and path.stat().st_size > 0:
+            return
+        path.write_text(default_message)
+    except Exception:
+        pass
+
+
+def _read_master_message(master_dir: Path, default_message: str = "debug run") -> str:
+    _ensure_master_message(master_dir, default_message)
+    path = _master_message_path(master_dir)
+    try:
+        text = path.read_text().strip()
+        return text if text else default_message
+    except Exception:
+        return default_message
+
+
+def _write_master_message(master_dir: Path, message: str, default_message: str = "debug run") -> None:
+    text = str(message).strip()
+    if not text:
+        text = default_message
+    try:
+        _master_message_path(master_dir).write_text(text)
+    except Exception:
+        pass
+
+
+def _maybe_autoupdate_master_message(
+    master_dir: Path,
+    elapsed_seconds: float,
+    threshold_seconds: float = 20 * 60,
+    default_message: str = "debug run",
+    new_message: str = "prob good",
+) -> None:
+    try:
+        elapsed_val = float(elapsed_seconds)
+    except Exception:
+        return
+    if elapsed_val < threshold_seconds:
+        return
+    current = _read_master_message(master_dir, default_message=default_message)
+    if current.strip().lower() == default_message.lower():
+        _write_master_message(master_dir, new_message, default_message=default_message)
+
+
 def _strip_local_settings(settings: dict) -> dict:
     cleaned = dict(settings) if isinstance(settings, dict) else {}
     cleaned.pop("num_tries", None)
@@ -364,6 +459,7 @@ def _save_master_meta(
         master_dir.mkdir(parents=True, exist_ok=True)
         _master_meta_path(master_dir).write_text(json.dumps(payload, indent=2))
         _master_settings_path(master_dir).write_text(json.dumps(local_settings, indent=2))
+        _ensure_master_message(master_dir)
         if update_global:
             save_settings(settings)
     except Exception:
@@ -392,12 +488,31 @@ def _select_master_run_ui(results_dir: Path):
 
     selected = 0
     scroll = 0
+    editing_message = False
+    message_text = ""
+    message_value = ""
+    confirm_delete = False
+    delete_target = None
     list_top = 70
     list_bottom = screen_h - 80
     list_left = 20
     list_width = 320
     line_h = small_font.get_height() + 6
     visible_count = max(1, (list_bottom - list_top) // line_h)
+    detail_x = list_left + list_width + 20
+    detail_y = list_top
+    detail_w = screen_w - detail_x - 20
+    detail_h = list_bottom - list_top
+    message_line_idx = 4
+    message_rect = pygame.Rect(
+        detail_x + 8,
+        detail_y + 10 + line_h * message_line_idx,
+        detail_w - 16,
+        line_h,
+    )
+    delete_rect = pygame.Rect(screen_w - 160, screen_h - 55, 140, 32)
+    delete_yes_rect = pygame.Rect(screen_w - 310, screen_h - 55, 70, 32)
+    delete_no_rect = pygame.Rect(screen_w - 230, screen_h - 55, 70, 32)
 
     def _ensure_visible():
         nonlocal scroll
@@ -414,47 +529,109 @@ def _select_master_run_ui(results_dir: Path):
             if event.type == pygame.QUIT:
                 return None, None
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    return None, None
-                if event.key == pygame.K_UP:
-                    selected = (selected - 1) % len(masters)
-                    _ensure_visible()
-                elif event.key == pygame.K_DOWN:
-                    selected = (selected + 1) % len(masters)
-                    _ensure_visible()
-                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                    run_num, path = masters[selected]
-                    settings_snapshot = None
-                    settings_path = _master_settings_path(path)
-                    if settings_path.exists():
-                        try:
-                            settings_snapshot = json.loads(settings_path.read_text())
-                        except Exception:
-                            settings_snapshot = None
-                    if settings_snapshot is None:
-                        meta = _load_master_meta(path)
-                        settings_snapshot = (
-                            meta.get("settings") if isinstance(meta, dict) else None
-                        )
-                    return run_num, settings_snapshot
+                if editing_message:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        run_num, path = masters[selected]
+                        message_value = message_text.strip() or "debug run"
+                        _write_master_message(path, message_value)
+                        editing_message = False
+                    elif event.key == pygame.K_ESCAPE:
+                        editing_message = False
+                        message_text = message_value
+                    elif event.key == pygame.K_BACKSPACE:
+                        message_text = message_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable() and len(message_text) < 80:
+                            message_text += ch
+                else:
+                    if event.key == pygame.K_ESCAPE:
+                        return None, None
+                    if event.key == pygame.K_UP:
+                        selected = (selected - 1) % len(masters)
+                        editing_message = False
+                        _ensure_visible()
+                    elif event.key == pygame.K_DOWN:
+                        selected = (selected + 1) % len(masters)
+                        editing_message = False
+                        _ensure_visible()
+                    elif event.key == pygame.K_m:
+                        run_num, path = masters[selected]
+                        message_value = _read_master_message(path)
+                        message_text = message_value
+                        editing_message = True
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        run_num, path = masters[selected]
+                        settings_snapshot = None
+                        settings_path = _master_settings_path(path)
+                        if settings_path.exists():
+                            try:
+                                settings_snapshot = json.loads(settings_path.read_text())
+                            except Exception:
+                                settings_snapshot = None
+                        if settings_snapshot is None:
+                            meta = _load_master_meta(path)
+                            settings_snapshot = (
+                                meta.get("settings") if isinstance(meta, dict) else None
+                            )
+                        return run_num, settings_snapshot
+                    elif event.key == pygame.K_DELETE:
+                        confirm_delete = True
+                        delete_target = masters[selected]
             if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:
                     selected = (selected - 1) % len(masters)
                 elif event.y < 0:
                     selected = (selected + 1) % len(masters)
+                editing_message = False
                 _ensure_visible()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                if confirm_delete:
+                    if delete_yes_rect.collidepoint(mx, my):
+                        if delete_target is None:
+                            delete_target = masters[selected]
+                        run_num, path = delete_target
+                        try:
+                            shutil.rmtree(path)
+                        except Exception:
+                            pass
+                        masters = [m for m in masters if m[1] != path]
+                        if not masters:
+                            return None, None
+                        selected = max(0, min(selected, len(masters) - 1))
+                        confirm_delete = False
+                        delete_target = None
+                        editing_message = False
+                        _ensure_visible()
+                        continue
+                    if delete_no_rect.collidepoint(mx, my):
+                        confirm_delete = False
+                        delete_target = None
+                        continue
+                if message_rect.collidepoint(mx, my):
+                    run_num, path = masters[selected]
+                    message_value = _read_master_message(path)
+                    message_text = message_value
+                    editing_message = True
+                    continue
                 if list_top <= my <= list_bottom:
                     idx = (my - list_top) // line_h + scroll
                     if 0 <= idx < len(masters):
                         selected = int(idx)
+                        editing_message = False
                         _ensure_visible()
+                if delete_rect.collidepoint(mx, my):
+                    confirm_delete = True
+                    delete_target = masters[selected]
 
         screen.fill((18, 18, 18))
         title = font.render("Select Master Run", True, (230, 230, 230))
         screen.blit(title, (20, 20))
-        hint = small_font.render("Enter: select  Esc: cancel", True, (180, 180, 180))
+        hint_text = "Enter: select  Esc: cancel  M: edit message  Del: delete"
+        if editing_message:
+            hint_text = "Editing message: Enter=save  Esc=cancel"
+        hint = small_font.render(hint_text, True, (180, 180, 180))
         screen.blit(hint, (20, screen_h - 50))
 
         for idx in range(scroll, min(len(masters), scroll + visible_count)):
@@ -471,10 +648,6 @@ def _select_master_run_ui(results_dir: Path):
 
         # Detail panel for selected master
         sel_run, sel_path = masters[selected]
-        detail_x = list_left + list_width + 20
-        detail_y = list_top
-        detail_w = screen_w - detail_x - 20
-        detail_h = list_bottom - list_top
         pygame.draw.rect(screen, (30, 30, 30), (detail_x, detail_y, detail_w, detail_h))
         pygame.draw.rect(screen, (80, 80, 80), (detail_x, detail_y, detail_w, detail_h), 1)
 
@@ -504,6 +677,12 @@ def _select_master_run_ui(results_dir: Path):
                 if isinstance(species, (int, float)):
                     species_vals.append(float(species))
 
+        max_elapsed = max(elapsed_vals) if elapsed_vals else 0.0
+        _maybe_autoupdate_master_message(sel_path, max_elapsed)
+        if not editing_message:
+            message_value = _read_master_message(sel_path)
+        message_display = message_text if editing_message else message_value
+
         mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
         mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
 
@@ -515,12 +694,48 @@ def _select_master_run_ui(results_dir: Path):
             f"Runs: {len(run_nums)}",
             f"Runtime mean: {_format_duration(mean_elapsed)}",
             f"Species mean: {mean_species:.1f}",
+            f"Message: {message_display}",
         ]
         text_y = detail_y + 10
         for line in detail_lines:
             text = small_font.render(line, True, (220, 220, 220))
             screen.blit(text, (detail_x + 10, text_y))
             text_y += line_h
+
+        if confirm_delete:
+            pygame.draw.rect(screen, (80, 40, 40), delete_yes_rect)
+            pygame.draw.rect(screen, (200, 200, 200), delete_yes_rect, 1)
+            yes_text = small_font.render("Yes", True, (230, 230, 230))
+            screen.blit(
+                yes_text,
+                (
+                    delete_yes_rect.x + (delete_yes_rect.width - yes_text.get_width()) // 2,
+                    delete_yes_rect.y + 6,
+                ),
+            )
+            pygame.draw.rect(screen, (60, 60, 60), delete_no_rect)
+            pygame.draw.rect(screen, (200, 200, 200), delete_no_rect, 1)
+            no_text = small_font.render("No", True, (230, 230, 230))
+            screen.blit(
+                no_text,
+                (
+                    delete_no_rect.x + (delete_no_rect.width - no_text.get_width()) // 2,
+                    delete_no_rect.y + 6,
+                ),
+            )
+            prompt = small_font.render("Delete selected master?", True, (230, 200, 200))
+            screen.blit(prompt, (delete_yes_rect.x - 170, delete_yes_rect.y + 6))
+        else:
+            pygame.draw.rect(screen, (70, 40, 40), delete_rect)
+            pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
+            del_text = small_font.render("Delete", True, (230, 230, 230))
+            screen.blit(
+                del_text,
+                (
+                    delete_rect.x + (delete_rect.width - del_text.get_width()) // 2,
+                    delete_rect.y + 6,
+                ),
+            )
 
         # Arithmetic mean preview
         preview_rect = pygame.Rect(detail_x + 10, text_y + 10, detail_w - 20, 180)
@@ -581,10 +796,14 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
 
     selected = 0
     editing = False
+    editing_message = False
     edit_text = ""
+    message_text = ""
     error_text = ""
     continue_master_run = None
     continue_settings = None
+    message_for_new = "debug run"
+    message_value = message_for_new
 
     confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
     select_rect = pygame.Rect(screen_w - 160, 220, 140, 32)
@@ -594,6 +813,7 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
 
     def _apply_edit():
         nonlocal num_tries, num_master, editing, edit_text, error_text
+        nonlocal continue_master_run, continue_settings, message_value
         target = "num_tries" if selected == 1 else "num_master"
         original = num_tries if target == "num_tries" else num_master
         new_val = _parse_numeric(edit_text.strip(), original)
@@ -604,6 +824,9 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             num_tries = max(0, int(new_val))
         else:
             num_master = max(0, int(new_val))
+            continue_master_run = None
+            continue_settings = None
+            message_value = message_for_new
         editing = False
         edit_text = ""
         error_text = ""
@@ -613,7 +836,27 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             if event.type == pygame.QUIT:
                 return None
             if event.type == pygame.KEYDOWN:
-                if editing:
+                if editing_message:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        message_value = message_text.strip() or "debug run"
+                        if continue_master_run is None:
+                            message_for_new = message_value
+                        else:
+                            _write_master_message(
+                                results_dir / f"master_{continue_master_run}",
+                                message_value,
+                            )
+                        editing_message = False
+                    elif event.key == pygame.K_ESCAPE:
+                        editing_message = False
+                        message_text = message_value
+                    elif event.key == pygame.K_BACKSPACE:
+                        message_text = message_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable() and len(message_text) < 80:
+                            message_text += ch
+                elif editing:
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         _apply_edit()
                     elif event.key == pygame.K_ESCAPE:
@@ -629,10 +872,18 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                 else:
                     if event.key == pygame.K_ESCAPE:
                         return None
+                    if event.key == pygame.K_m:
+                        selected = 3
+                        editing = False
+                        edit_text = ""
+                        error_text = ""
+                        editing_message = True
+                        message_text = message_value
+                        continue
                     if event.key == pygame.K_UP:
-                        selected = (selected - 1) % 3
+                        selected = (selected - 1) % 4
                     elif event.key == pygame.K_DOWN:
-                        selected = (selected + 1) % 3
+                        selected = (selected + 1) % 4
                     elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                         if selected == 0:
                             draw_value = not draw_value
@@ -646,11 +897,18 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                             num_master = max(0, int(round(num_master + delta)))
                             continue_master_run = None
                             continue_settings = None
+                            message_value = message_for_new
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         if selected in (1, 2):
                             editing = True
                             edit_text = str(num_tries if selected == 1 else num_master)
                             error_text = ""
+                        elif selected == 3:
+                            editing = False
+                            edit_text = ""
+                            error_text = ""
+                            editing_message = True
+                            message_text = message_value
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if confirm_rect.collidepoint(mx, my):
@@ -658,7 +916,7 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     settings["num_tries"] = num_tries
                     settings["num_tries_master"] = num_master
                     save_settings(settings)
-                    return settings, continue_master_run, continue_settings
+                    return settings, continue_master_run, continue_settings, message_for_new
                 if upload_rect.collidepoint(mx, my):
                     try:
                         global_settings = load_settings()
@@ -674,12 +932,24 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     if picked_run is not None:
                         continue_master_run = picked_run
                         continue_settings = picked_settings
-                if 120 <= my <= 145:
-                    selected = 0
-                elif 170 <= my <= 195:
-                    selected = 1
-                elif 220 <= my <= 245:
-                    selected = 2
+                        message_value = _read_master_message(
+                            results_dir / f"master_{continue_master_run}"
+                        )
+                        message_text = message_value
+                        editing_message = False
+                line_start = 120
+                line_gap = 50
+                for idx in range(4):
+                    rect = pygame.Rect(16, line_start + idx * line_gap - 4, screen_w - 32, 32)
+                    if rect.collidepoint(mx, my):
+                        selected = idx
+                        if idx == 3:
+                            editing = False
+                            edit_text = ""
+                            error_text = ""
+                            editing_message = True
+                            message_text = message_value
+                        break
 
         screen.fill((18, 18, 18))
         title = font.render("Startup Options", True, (230, 230, 230))
@@ -697,8 +967,12 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
         master_label = f"num_tries_master: {num_master}"
         if continue_master_run is None:
             master_label = f"{master_label} (new)"
+        if continue_master_run is None:
+            message_label = f"message (new): {message_value}"
+        else:
+            message_label = f"message (master_{continue_master_run}): {message_value}"
 
-        for idx, line in enumerate([draw_label, num_label, master_label]):
+        for idx, line in enumerate([draw_label, num_label, master_label, message_label]):
             y = 120 + idx * 50
             color = (0, 200, 255) if idx == selected else (220, 220, 220)
             if idx == selected:
@@ -721,18 +995,17 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             cont_text = small_font.render(
                 f"Continuing master_{continue_master_run}", True, (180, 220, 180)
             )
-            screen.blit(cont_text, (22, 280))
+            screen.blit(cont_text, (22, 320))
         else:
             cont_text = small_font.render(
                 "Starting a new master run", True, (180, 180, 220)
             )
-            screen.blit(cont_text, (22, 280))
+            screen.blit(cont_text, (22, 320))
 
-        hint = small_font.render(
-            "Up/Down select  Left/Right adjust  Enter edit  Esc cancel",
-            True,
-            (180, 180, 180),
-        )
+        hint_text = "Up/Down select  Left/Right adjust  Enter edit  Esc cancel  M edit message"
+        if editing_message:
+            hint_text = "Editing message: Enter=save  Esc=cancel"
+        hint = small_font.render(hint_text, True, (180, 180, 180))
         screen.blit(hint, (20, screen_h - 80))
 
         if editing:
@@ -740,6 +1013,11 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
             edit_text_surf = small_font.render(edit_line, True, edit_color)
             screen.blit(edit_text_surf, (20, screen_h - 55))
+        if editing_message:
+            msg_line = f"Message: {message_text}"
+            msg_color = (255, 220, 160)
+            msg_surf = small_font.render(msg_line, True, msg_color)
+            screen.blit(msg_surf, (20, screen_h - 55))
         if error_text:
             err_surf = small_font.render(error_text, True, (255, 160, 160))
             screen.blit(err_surf, (20, screen_h - 35))
@@ -816,8 +1094,8 @@ def _format_fps_label(sim_index: int, timestamp, interval, meta: dict, now_time:
             since_start = _format_duration(max(0.0, float(timestamp) - start_time))
         since_now = _format_duration(max(0.0, now_time - float(timestamp)))
     return (
-        f"Sim {sim_index + 1} | since start {since_start} | "
-        f"since now {since_now} | 1000 iters {interval_label}"
+        f"start {since_start} | "
+        f"since now {since_now} | 1KFrame {interval_label}"
     )
 
 
@@ -1541,7 +1819,7 @@ def main() -> None:
     if startup is None:
         pygame.quit()
         return
-    settings, continue_master_run, continue_settings = startup
+    settings, continue_master_run, continue_settings, startup_message = startup
     if continue_master_run is not None:
         if isinstance(continue_settings, dict):
             preserved_draw = settings.get("draw", True)
@@ -1615,6 +1893,8 @@ def main() -> None:
         settings,
         update_global=(continue_master_run is None),
     )
+    if continue_master_run is None and startup_message:
+        _write_master_message(master_dir, startup_message)
 
     control_path = Path(tempfile.gettempdir()) / f"sim_master_active_{os.getpid()}.txt"
     selected_row = 0
@@ -1686,6 +1966,7 @@ def main() -> None:
     mean_series = [[] for _ in range(count)]
     meta_series = [{} for _ in range(count)]
     last_chart_refresh = 0.0
+    last_message_check = 0.0
     base_chart_refresh_s = 2.0
     base_master_fps = 1
     uncapped_fps = 240
@@ -2231,6 +2512,10 @@ def main() -> None:
                     elapsed = fallback if elapsed is None else max(elapsed, fallback)
                 if elapsed is not None:
                     elapsed_vals.append(elapsed)
+            max_elapsed = max(elapsed_vals) if elapsed_vals else 0.0
+            if master_dir is not None and (now_perf - last_message_check) >= 2.0:
+                _maybe_autoupdate_master_message(master_dir, max_elapsed)
+                last_message_check = now_perf
             
             mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
             mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
