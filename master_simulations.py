@@ -117,7 +117,7 @@ def _parse_numeric(text: str, original):
     return None
 
 
-def _edit_settings_ui(settings: dict):
+def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: bool = True):
     items = _collect_setting_items(settings)
     if not items:
         return settings
@@ -222,11 +222,41 @@ def _edit_settings_ui(settings: dict):
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if confirm_rect.collidepoint(mx, my):
-                    save_settings(settings)
+                    if master_dir is not None:
+                        try:
+                            master_dir.mkdir(parents=True, exist_ok=True)
+                            local_settings = _strip_local_settings(settings)
+                            _master_settings_path(master_dir).write_text(
+                                json.dumps(local_settings, indent=2)
+                            )
+                            meta = _load_master_meta(master_dir)
+                            if isinstance(meta, dict):
+                                meta["settings"] = local_settings
+                                _master_meta_path(master_dir).write_text(
+                                    json.dumps(meta, indent=2)
+                                )
+                        except Exception:
+                            pass
+                    elif write_global_on_confirm:
+                        save_settings(settings)
                     return settings
                 if upload_rect.collidepoint(mx, my):
-                    save_settings(settings)
-                    upload_notice = "Uploaded to master settings"
+                    try:
+                        global_settings = load_settings()
+                    except Exception:
+                        global_settings = {}
+                    try:
+                        global_settings["num_tries"] = int(settings.get("num_tries", 0))
+                    except Exception:
+                        pass
+                    try:
+                        global_settings["num_tries_master"] = int(
+                            settings.get("num_tries_master", 0)
+                        )
+                    except Exception:
+                        pass
+                    #save_settings(global_settings)
+                    upload_notice = "Uploaded counters to global settings"
                     upload_notice_time = time.time()
                 if list_top <= my <= list_bottom:
                     idx = (my - list_top) // line_h + scroll
@@ -304,6 +334,13 @@ def _master_settings_path(master_dir: Path) -> Path:
     return master_dir / "settings.json"
 
 
+def _strip_local_settings(settings: dict) -> dict:
+    cleaned = dict(settings) if isinstance(settings, dict) else {}
+    cleaned.pop("num_tries", None)
+    cleaned.pop("num_tries_master", None)
+    return cleaned
+
+
 def _load_master_meta(master_dir: Path) -> dict:
     path = _master_meta_path(master_dir)
     if not path.exists():
@@ -317,15 +354,16 @@ def _load_master_meta(master_dir: Path) -> dict:
 def _save_master_meta(
     master_dir: Path, run_nums: list[int], settings: dict, update_global: bool = False
 ) -> None:
+    local_settings = _strip_local_settings(settings)
     payload = {
         "run_nums": [int(n) for n in run_nums],
-        "settings": settings,
+        "settings": local_settings,
         "updated_at": time.time(),
     }
     try:
         master_dir.mkdir(parents=True, exist_ok=True)
         _master_meta_path(master_dir).write_text(json.dumps(payload, indent=2))
-        _master_settings_path(master_dir).write_text(json.dumps(settings, indent=2))
+        _master_settings_path(master_dir).write_text(json.dumps(local_settings, indent=2))
         if update_global:
             save_settings(settings)
     except Exception:
@@ -622,11 +660,14 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     save_settings(settings)
                     return settings, continue_master_run, continue_settings
                 if upload_rect.collidepoint(mx, my):
-                    settings["draw"] = draw_value
-                    settings["num_tries"] = num_tries
-                    settings["num_tries_master"] = num_master
-                    save_settings(settings)
-                    upload_notice = "Uploaded to master settings"
+                    try:
+                        global_settings = load_settings()
+                    except Exception:
+                        global_settings = {}
+                    global_settings["num_tries"] = num_tries
+                    global_settings["num_tries_master"] = num_master
+                    save_settings(global_settings)
+                    upload_notice = "Uploaded counters to global settings"
                     upload_notice_time = time.time()
                 if select_rect.collidepoint(mx, my):
                     picked_run, picked_settings = _select_master_run_ui(results_dir)
@@ -1522,7 +1563,6 @@ def main() -> None:
                 )
             except Exception:
                 pass
-            save_settings(settings)
     else:
         settings = _edit_settings_ui(settings)
         if settings is None:
@@ -1533,12 +1573,48 @@ def main() -> None:
     except Exception:
         settings_count = 3
     count = args.count if args.count is not None else settings_count
-    count = max(1, count)
+    if count < 0:
+        count = 0
     sim_path = Path(args.script)
     if not sim_path.exists():
         raise FileNotFoundError(f"Simulation script not found: {sim_path}")
 
     interpreter = sys.executable
+
+    results_dir = Path("results")
+    if continue_master_run is not None:
+        master_run_num = int(continue_master_run)
+        master_label = f"master_{master_run_num}"
+        master_dir = results_dir / master_label
+        master_dir.mkdir(parents=True, exist_ok=True)
+        master_meta = _load_master_meta(master_dir)
+        existing_run_nums = []
+        if isinstance(master_meta, dict):
+            raw_runs = master_meta.get("run_nums", [])
+            if isinstance(raw_runs, list):
+                for val in raw_runs:
+                    try:
+                        existing_run_nums.append(int(val))
+                    except Exception:
+                        continue
+        existing_run_nums = sorted(set(existing_run_nums))
+        run_nums = existing_run_nums
+        count = len(run_nums)
+        master_run_nums = existing_run_nums
+    else:
+        run_nums = _allocate_run_numbers(count)
+        master_run_num = _allocate_master_run_number(results_dir)
+        master_label = f"master_{master_run_num}"
+        master_dir = results_dir / master_label
+        master_dir.mkdir(parents=True, exist_ok=True)
+        master_run_nums = run_nums
+
+    _save_master_meta(
+        master_dir,
+        master_run_nums,
+        settings,
+        update_global=(continue_master_run is None),
+    )
 
     control_path = Path(tempfile.gettempdir()) / f"sim_master_active_{os.getpid()}.txt"
     selected_row = 0
@@ -1559,32 +1635,6 @@ def main() -> None:
         update_tokens,
     )
 
-    results_dir = Path("results")
-    run_nums = _allocate_run_numbers(count)
-    if continue_master_run is not None:
-        master_run_num = int(continue_master_run)
-    else:
-        master_run_num = _allocate_master_run_number(results_dir)
-    master_label = f"master_{master_run_num}"
-    master_dir = results_dir / master_label
-    master_dir.mkdir(parents=True, exist_ok=True)
-    master_meta = _load_master_meta(master_dir)
-    existing_run_nums = []
-    if isinstance(master_meta, dict):
-        raw_runs = master_meta.get("run_nums", [])
-        if isinstance(raw_runs, list):
-            for val in raw_runs:
-                try:
-                    existing_run_nums.append(int(val))
-                except Exception:
-                    continue
-    master_run_nums = existing_run_nums + [n for n in run_nums if n not in existing_run_nums]
-    _save_master_meta(
-        master_dir,
-        master_run_nums,
-        settings,
-        update_global=(continue_master_run is None),
-    )
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
     header_top          = 30
     global_chart_h      = 90
@@ -1649,7 +1699,6 @@ def main() -> None:
     saved_draw_modes = None
     saved_mode_values = None
     pressed_button = None
-    show_settings = True
     confirm_quit = False
 
 
@@ -1662,7 +1711,7 @@ def main() -> None:
     def _open_settings_dialog() -> None:
         nonlocal settings, screen, font, small_font, label_font
         nonlocal max_window_h, window_h, max_scroll, scroll_offset
-        updated = _edit_settings_ui(settings)
+        updated = _edit_settings_ui(settings, master_dir=master_dir, write_global_on_confirm=False)
         if updated is None:
             return
         settings = updated
@@ -2048,9 +2097,14 @@ def main() -> None:
             screen.fill((20, 20, 20))
             title = font.render("Simulation Master", True, (240, 240, 240))
             if selected_row == 0:
-                status_text = "Selected: MASTER (0)"
+                status_text = f"Selected: MASTER (0) | master_{master_run_num}"
             else:
-                status_text = f"Selected: Sim {selected_row} / {count}"
+                run_label = "?"
+                if 0 <= (selected_row - 1) < len(run_nums):
+                    run_label = str(run_nums[selected_row - 1])
+                status_text = (
+                    f"Selected: Sim {selected_row} / {count} | run {run_label} | master_{master_run_num}"
+                )
             status = font.render(status_text, True, (0, 200, 255))
             hint1 = small_font.render("Up/Down: select sim", True, (200, 200, 200))
             hint2 = small_font.render("Left/Right or button: on/off", True, (200, 200, 200))
@@ -2182,8 +2236,18 @@ def main() -> None:
             mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
             mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
 
+            if run_nums:
+                run_min = min(run_nums)
+                run_max = max(run_nums)
+                if run_min == run_max:
+                    run_range = f"run {run_min}"
+                else:
+                    run_range = f"runs {run_min}-{run_max}"
+            else:
+                run_range = "runs --"
+
             master_line = small_font.render(
-                f"MASTER (0): {master_state} | {master_draw} | {master_mode}",
+                f"MASTER (0) master_{master_run_num} ({run_range}): {master_state} | {master_draw} | {master_mode}",
                 True,
                 master_color,
             )
@@ -2223,40 +2287,6 @@ def main() -> None:
                 ),
                 label_font=label_font,
             )
-
-            if show_settings:
-                header_lines = [f"Master run: {master_run_num}", "Settings:"]
-                lines = header_lines
-                lines.append(f"quan: {settings.get('quan')}")
-                lines.append(f"enviormentChangeRate: {settings.get('enviormentChangeRate')}")
-                ph = settings.get("ph_effect", {})
-                temp = settings.get("temp_effect", {})
-                lines.append(f"ph_effect.scale: {ph.get('scale')}")
-                lines.append(f"ph_effect.divisor: {ph.get('divisor')}")
-                lines.append(f"temp_effect.scale: {temp.get('scale')}")
-                lines.append(f"temp_effect.divisor: {temp.get('divisor')}")
-                lines.append(f"population_cap: {settings.get('population_cap')}")
-                max_text_w = 0
-                line_h = small_font.get_height()
-                for line in lines:
-                    max_text_w = max(max_text_w, small_font.size(line)[0])
-                pad = 10
-                box_w = min(window_w - 2 * margin, max_text_w + pad * 2)
-                box_h = min(window_h - 2 * margin, line_h * len(lines) + pad * 2)
-                right_limit = button_x - 10
-                box_x = max(margin, right_limit - box_w)
-                box_y = header_top - 10 + y_offset
-                overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
-                overlay.fill((10, 10, 10, 220))
-                screen.blit(overlay, (box_x, box_y))
-                pygame.draw.rect(screen, (140, 140, 140), (box_x, box_y, box_w, box_h), 1)
-                y_text = box_y + pad
-                for line in lines:
-                    if y_text + line_h > box_y + box_h - pad:
-                        break
-                    text = small_font.render(line, True, (230, 230, 230))
-                    screen.blit(text, (box_x + pad, y_text))
-                    y_text += line_h
 
             if confirm_quit:
                 prompt_lines = confirm_layout["prompt_lines"]
@@ -2311,7 +2341,10 @@ def main() -> None:
                 else:
                     draw_state = "NO-DRAW"
                 mode_state = f"MODE {mode_values[idx]}"
-                label = f"Sim {idx + 1}"
+                run_label = "?"
+                if 0 <= idx < len(run_nums):
+                    run_label = str(run_nums[idx])
+                label = f"Sim {idx + 1} (run {run_label})"
                 meta = meta_series[idx] if idx < len(meta_series) and isinstance(meta_series[idx], dict) else {}
                 species_count = meta.get("amnt_of_species")
                 big_species_count = meta.get("amnt_of_big_species")
