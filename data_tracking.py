@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Union
 
 from simulatino_parser import parse_run
+from settings_manager import load_settings, save_settings
 
 
 _HEADER = [
@@ -24,7 +25,6 @@ class RunDataTracker:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.rows_per_file = max(1, rows_per_file)
 
-        counter_path = self.results_dir / "numTries"
         env_run_num = os.environ.get("SIM_RUN_NUM")
         run_num_override = None
         if env_run_num is not None:
@@ -33,20 +33,21 @@ class RunDataTracker:
             except ValueError:
                 run_num_override = None
 
+        settings = load_settings()
+        try:
+            current = int(settings.get("num_tries", -1))
+        except Exception:
+            current = -1
+
         if run_num_override is not None:
             self.run_num = run_num_override
-            try:
-                current = int(counter_path.read_text().strip())
-            except Exception:
-                current = -1
-            if self.run_num > current:
-                counter_path.write_text(str(self.run_num))
+            if (self.run_num + 1) > current:
+                settings["num_tries"] = self.run_num + 1
+                save_settings(settings)
         else:
-            try:
-                self.run_num = int(counter_path.read_text().strip()) + 1
-            except Exception:
-                self.run_num = 0
-            counter_path.write_text(str(self.run_num))
+            self.run_num = current
+            settings["num_tries"] = self.run_num + 1
+            save_settings(settings)
 
         print(self.run_num)
 

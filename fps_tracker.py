@@ -1,6 +1,5 @@
 import time
 from pathlib import Path
-import pygame
 
 _DOT_ALPHA = 110
 _DOT_RADIUS = 3
@@ -63,6 +62,7 @@ class FPSTracker:
         return label.lstrip("0").lower()
 
     def draw_graph(self, surface, font, x: int, y: int, w: int, h: int) -> None:
+        import pygame
         pygame.draw.rect(surface, (80, 80, 80), (x, y, w, h), 1)
         label_top = font.render(f"{self.graph_max_seconds:.1f}s", True, (200, 200, 200))
         label_bot = font.render("0.0s", True, (200, 200, 200))

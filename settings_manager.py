@@ -14,6 +14,9 @@ DEFAULT_SETTINGS = {
     "temp_effect": {"scale": 1.0, "divisor": 4.0},
     "reproduction_debuf_min": 0.001,
     "quan": 2.0,
+    "immune_system_quan_factor": 0.15,
+    "num_tries": 0,
+    "num_tries_master": 0,
     "simulations": {"count": 3},
 }
 
@@ -61,6 +64,19 @@ def load_settings():
         except Exception:
             loaded = {}
     merged = _merge_settings(DEFAULT_SETTINGS, loaded)
+    # Normalize counters to represent the next available run/master id.
+    try:
+        num_tries = int(merged.get("num_tries", 0))
+    except Exception:
+        num_tries = 0
+    try:
+        num_tries_master = int(merged.get("num_tries_master", 0))
+    except Exception:
+        num_tries_master = 0
+    if (Path("results") / str(num_tries)).exists():
+        merged["num_tries"] = max(0, num_tries + 1)
+    if (Path("results") / f"master_{num_tries_master}").exists():
+        merged["num_tries_master"] = max(0, num_tries_master + 1)
     if not SETTINGS_PATH.exists() or _has_missing_keys(DEFAULT_SETTINGS, loaded):
         save_settings(merged)
     return merged
