@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import re
+import time
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -270,19 +271,35 @@ def parse_run(
     _add_line(f"Big species count: {big_count_log}")
 
     meta_path = run_dir / "run_meta.json"
+    _add_line("")
+    _add_line("--- Run Summary ---")
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text())
             frame_count = meta.get("frame_count")
+            start_time = meta.get("start_time")
             elapsed = meta.get("elapsed_seconds")
             amnt_species = meta.get("amnt_of_species")
             amnt_medium = meta.get("amnt_of_medium_species")
             amnt_big = meta.get("amnt_of_big_species")
 
-            _add_line("")
-            _add_line("--- Run Summary ---")
             if frame_count is not None:
                 _add_line(f"Total frames: {frame_count}")
+            if start_time is not None:
+                try:
+                    start_ts = float(start_time)
+                    start_label = time.strftime(
+                        "%Y-%m-%d %I:%M:%S %p", time.localtime(start_ts)
+                    )
+                    _add_line(f"Start time: {start_label}")
+                    if isinstance(elapsed, (int, float)):
+                        end_ts = start_ts + float(elapsed)
+                        end_label = time.strftime(
+                            "%Y-%m-%d %I:%M:%S %p", time.localtime(end_ts)
+                        )
+                        _add_line(f"End time: {end_label}")
+                except Exception:
+                    _add_line(f"Start time (epoch): {start_time}")
             if elapsed is not None:
                 try:
                     elapsed = float(elapsed)
@@ -301,7 +318,9 @@ def parse_run(
             if amnt_big is not None:
                 _add_line(f"Big species count: {amnt_big}")
         except Exception:
-            pass
+            _add_line("Run metadata unreadable.")
+    else:
+        _add_line("Run metadata not found (run_meta.json missing).")
 
     summary_file.write_text("\n".join(summary_lines) + "\n")
 
@@ -309,12 +328,14 @@ def parse_run(
 
 
 def _infer_latest_run(results_dir: Path) -> int:
-    counter_path = results_dir / "numTries"
+    from settings_manager import load_settings
+
+    settings = load_settings()
     try:
-        current = int(counter_path.read_text().strip())
+        current = int(settings.get("num_tries", 0))
     except Exception:
         current = 0
-    return max(0, current)
+    return max(0, current - 1)
 
 
 if __name__ == "__main__":

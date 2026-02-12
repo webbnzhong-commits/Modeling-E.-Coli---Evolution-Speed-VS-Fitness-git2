@@ -2,6 +2,7 @@ import argparse
 import csv
 from collections import deque
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -11,7 +12,7 @@ import time
 
 import pygame
 
-from settings_manager import load_settings
+from settings_manager import load_settings, save_settings
 from simulatino_parser import parse_run
 
 _SIM_COLORS = [
@@ -26,10 +27,708 @@ _SIM_COLORS = [
     (255, 220, 120),
 ]
 _DOT_ALPHA = 110
+_DOT_ALPHA_HI = 220
+_DOT_ALPHA_DIM = 60
 _DOT_RADIUS = 3
 _FPS_MODE_CAPPED = 0
 _FPS_MODE_UNCAPPED = 1
 _FPS_MODE_FULL_THROTTLE = 2
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_bool(value) -> bool:
+    return isinstance(value, bool)
+
+
+def _numeric_step(value: float) -> float:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return 1.0
+    try:
+        abs_val = abs(float(value))
+    except Exception:
+        return 1.0
+    if abs_val == 0.0:
+        return 0.01
+    exp = math.floor(math.log10(abs_val))
+    decimals = max(2, -exp)
+    return 10 ** (-decimals)
+
+
+def _step_decimals(step: float) -> int:
+    try:
+        step = abs(float(step))
+    except Exception:
+        return 2
+    if step == 0:
+        return 2
+    exp = math.floor(math.log10(step))
+    return max(0, -exp)
+
+
+def _collect_setting_items(settings: dict) -> list[dict]:
+    items = []
+
+    def _walk(obj, path):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                _walk(value, path + [key])
+            return
+        label = ".".join(path) if path else ""
+        items.append(
+            {
+                "path": path,
+                "label": label,
+                "value": obj,
+                "is_number": _is_number(obj),
+                "is_bool": _is_bool(obj),
+            }
+        )
+
+    _walk(settings, [])
+    return items
+
+
+def _set_setting_value(settings: dict, path: list[str], value) -> None:
+    if not path:
+        return
+    node = settings
+    for key in path[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[path[-1]] = value
+
+
+def _parse_numeric(text: str, original):
+    try:
+        if isinstance(original, int) and not isinstance(original, bool):
+            if any(ch in text for ch in [".", "e", "E"]):
+                return int(float(text))
+            return int(text)
+        if isinstance(original, float):
+            return float(text)
+    except Exception:
+        return None
+    return None
+
+
+def _edit_settings_ui(settings: dict):
+    items = _collect_setting_items(settings)
+    if not items:
+        return settings
+    priority = {"num_tries": 0, "num_tries_master": 1}
+    items.sort(key=lambda item: (priority.get(item["label"], 2), item["label"]))
+
+    screen_w = 900
+    screen_h = 700
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption("Master Settings")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+    pygame.key.set_repeat(250, 40)
+
+    selected = 0
+    scroll = 0
+    editing = False
+    edit_text = ""
+    error_text = ""
+
+    list_top = 70
+    list_bottom = screen_h - 90
+    line_h = small_font.get_height() + 6
+    visible_count = max(1, (list_bottom - list_top) // line_h)
+
+    confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
+    upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
+    upload_notice = ""
+    upload_notice_time = 0.0
+
+    def _ensure_visible():
+        nonlocal scroll
+        if selected < scroll:
+            scroll = selected
+        elif selected >= scroll + visible_count:
+            scroll = selected - visible_count + 1
+        scroll = max(0, min(scroll, max(0, len(items) - visible_count)))
+
+    _ensure_visible()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if editing:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        original = items[selected]["value"]
+                        new_val = _parse_numeric(edit_text.strip(), original)
+                        if new_val is None:
+                            error_text = "Invalid number"
+                        else:
+                            _set_setting_value(settings, items[selected]["path"], new_val)
+                            items[selected]["value"] = new_val
+                            editing = False
+                            edit_text = ""
+                            error_text = ""
+                    elif event.key == pygame.K_ESCAPE:
+                        editing = False
+                        edit_text = ""
+                        error_text = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        edit_text = edit_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and (ch.isdigit() or ch in ".-+eE"):
+                            edit_text += ch
+                else:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    if event.key == pygame.K_UP:
+                        selected = (selected - 1) % len(items)
+                        _ensure_visible()
+                    elif event.key == pygame.K_DOWN:
+                        selected = (selected + 1) % len(items)
+                        _ensure_visible()
+                    elif event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT:
+                        item = items[selected]
+                        if item["is_bool"]:
+                            new_val = not bool(item["value"])
+                            _set_setting_value(settings, item["path"], new_val)
+                            item["value"] = new_val
+                        elif item["is_number"]:
+                            step = _numeric_step(item["value"])
+                            delta = step if event.key == pygame.K_RIGHT else -step
+                            new_val = float(item["value"]) + delta
+                            if isinstance(item["value"], int) and not isinstance(
+                                item["value"], bool
+                            ):
+                                new_val = int(round(new_val))
+                            else:
+                                decimals = _step_decimals(step)
+                                new_val = round(new_val, decimals)
+                            _set_setting_value(settings, item["path"], new_val)
+                            item["value"] = new_val
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        if items[selected]["is_number"]:
+                            editing = True
+                            edit_text = str(items[selected]["value"])
+                            error_text = ""
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if confirm_rect.collidepoint(mx, my):
+                    save_settings(settings)
+                    return settings
+                if upload_rect.collidepoint(mx, my):
+                    save_settings(settings)
+                    upload_notice = "Uploaded to master settings"
+                    upload_notice_time = time.time()
+                if list_top <= my <= list_bottom:
+                    idx = (my - list_top) // line_h + scroll
+                    if 0 <= idx < len(items):
+                        selected = int(idx)
+                        _ensure_visible()
+
+        screen.fill((18, 18, 18))
+        title = font.render("Master Settings (edit numbers, then confirm)", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+
+        for idx in range(scroll, min(len(items), scroll + visible_count)):
+            item = items[idx]
+            y = list_top + (idx - scroll) * line_h
+            label = item["label"]
+            value = item["value"]
+            value_text = f"{value}"
+            line = f"{label}: {value_text}"
+            color = (230, 230, 230) if (item["is_number"] or item["is_bool"]) else (160, 160, 160)
+            if idx == selected:
+                pygame.draw.rect(screen, (35, 35, 35), (16, y - 2, screen_w - 32, line_h))
+                color = (0, 200, 255) if (item["is_number"] or item["is_bool"]) else (180, 180, 180)
+            text = small_font.render(line, True, color)
+            screen.blit(text, (22, y))
+
+        hint = small_font.render(
+            "Up/Down: select  Left/Right: adjust  Enter: edit  Esc: cancel",
+            True,
+            (180, 180, 180),
+        )
+        screen.blit(hint, (20, screen_h - 80))
+
+        if editing:
+            edit_line = f"Edit {items[selected]['label']}: {edit_text}"
+            edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
+            edit_text_surf = small_font.render(edit_line, True, edit_color)
+            screen.blit(edit_text_surf, (20, screen_h - 55))
+        if error_text:
+            err_surf = small_font.render(error_text, True, (255, 160, 160))
+            screen.blit(err_surf, (20, screen_h - 35))
+
+        pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
+        pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
+        confirm_text = small_font.render("Confirm", True, (230, 230, 230))
+        screen.blit(
+            confirm_text,
+            (
+                confirm_rect.x + (confirm_rect.width - confirm_text.get_width()) // 2,
+                confirm_rect.y + 8,
+            ),
+        )
+        pygame.draw.rect(screen, (60, 60, 60), upload_rect)
+        pygame.draw.rect(screen, (160, 160, 160), upload_rect, 1)
+        upload_text = small_font.render("Upload", True, (230, 230, 230))
+        screen.blit(
+            upload_text,
+            (
+                upload_rect.x + (upload_rect.width - upload_text.get_width()) // 2,
+                upload_rect.y + 8,
+            ),
+        )
+        if upload_notice and (time.time() - upload_notice_time) < 2.0:
+            notice = small_font.render(upload_notice, True, (180, 220, 180))
+            screen.blit(notice, (20, screen_h - 30))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _master_meta_path(master_dir: Path) -> Path:
+    return master_dir / "master_meta.json"
+
+
+def _master_settings_path(master_dir: Path) -> Path:
+    return master_dir / "settings.json"
+
+
+def _load_master_meta(master_dir: Path) -> dict:
+    path = _master_meta_path(master_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _save_master_meta(
+    master_dir: Path, run_nums: list[int], settings: dict, update_global: bool = False
+) -> None:
+    payload = {
+        "run_nums": [int(n) for n in run_nums],
+        "settings": settings,
+        "updated_at": time.time(),
+    }
+    try:
+        master_dir.mkdir(parents=True, exist_ok=True)
+        _master_meta_path(master_dir).write_text(json.dumps(payload, indent=2))
+        _master_settings_path(master_dir).write_text(json.dumps(settings, indent=2))
+        if update_global:
+            save_settings(settings)
+    except Exception:
+        pass
+
+
+def _select_master_run_ui(results_dir: Path):
+    masters = []
+    for path in sorted(results_dir.glob("master_*")):
+        try:
+            run_num = int(path.name.split("_", 1)[1])
+        except Exception:
+            continue
+        masters.append((run_num, path))
+    if not masters:
+        return None, None
+    masters.sort(key=lambda item: item[0])
+
+    screen_w = 800
+    screen_h = 520
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption("Select Master Run")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+
+    selected = 0
+    scroll = 0
+    list_top = 70
+    list_bottom = screen_h - 80
+    list_left = 20
+    list_width = 320
+    line_h = small_font.get_height() + 6
+    visible_count = max(1, (list_bottom - list_top) // line_h)
+
+    def _ensure_visible():
+        nonlocal scroll
+        if selected < scroll:
+            scroll = selected
+        elif selected >= scroll + visible_count:
+            scroll = selected - visible_count + 1
+        scroll = max(0, min(scroll, max(0, len(masters) - visible_count)))
+
+    _ensure_visible()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None, None
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None, None
+                if event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(masters)
+                    _ensure_visible()
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(masters)
+                    _ensure_visible()
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    run_num, path = masters[selected]
+                    settings_snapshot = None
+                    settings_path = _master_settings_path(path)
+                    if settings_path.exists():
+                        try:
+                            settings_snapshot = json.loads(settings_path.read_text())
+                        except Exception:
+                            settings_snapshot = None
+                    if settings_snapshot is None:
+                        meta = _load_master_meta(path)
+                        settings_snapshot = (
+                            meta.get("settings") if isinstance(meta, dict) else None
+                        )
+                    return run_num, settings_snapshot
+            if event.type == pygame.MOUSEWHEEL:
+                if event.y > 0:
+                    selected = (selected - 1) % len(masters)
+                elif event.y < 0:
+                    selected = (selected + 1) % len(masters)
+                _ensure_visible()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if list_top <= my <= list_bottom:
+                    idx = (my - list_top) // line_h + scroll
+                    if 0 <= idx < len(masters):
+                        selected = int(idx)
+                        _ensure_visible()
+
+        screen.fill((18, 18, 18))
+        title = font.render("Select Master Run", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+        hint = small_font.render("Enter: select  Esc: cancel", True, (180, 180, 180))
+        screen.blit(hint, (20, screen_h - 50))
+
+        for idx in range(scroll, min(len(masters), scroll + visible_count)):
+            run_num, _ = masters[idx]
+            y = list_top + (idx - scroll) * line_h
+            label = f"master_{run_num}"
+            color = (0, 200, 255) if idx == selected else (220, 220, 220)
+            if idx == selected:
+                pygame.draw.rect(
+                    screen, (35, 35, 35), (list_left - 4, y - 2, list_width, line_h)
+                )
+            text = small_font.render(label, True, color)
+            screen.blit(text, (list_left, y))
+
+        # Detail panel for selected master
+        sel_run, sel_path = masters[selected]
+        detail_x = list_left + list_width + 20
+        detail_y = list_top
+        detail_w = screen_w - detail_x - 20
+        detail_h = list_bottom - list_top
+        pygame.draw.rect(screen, (30, 30, 30), (detail_x, detail_y, detail_w, detail_h))
+        pygame.draw.rect(screen, (80, 80, 80), (detail_x, detail_y, detail_w, detail_h), 1)
+
+        master_label = f"master_{sel_run}"
+        meta = _load_master_meta(sel_path)
+        run_nums = []
+        if isinstance(meta, dict):
+            raw_runs = meta.get("run_nums", [])
+            if isinstance(raw_runs, list):
+                for val in raw_runs:
+                    try:
+                        run_nums.append(int(val))
+                    except Exception:
+                        continue
+        run_nums.sort()
+
+        elapsed_vals = []
+        species_vals = []
+        for run_num in run_nums:
+            meta_path = results_dir / str(run_num) / "run_meta.json"
+            run_meta = _load_run_meta(meta_path)
+            if isinstance(run_meta, dict):
+                elapsed = run_meta.get("elapsed_seconds")
+                species = run_meta.get("amnt_of_species")
+                if isinstance(elapsed, (int, float)):
+                    elapsed_vals.append(float(elapsed))
+                if isinstance(species, (int, float)):
+                    species_vals.append(float(species))
+
+        mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
+        mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
+
+        title_label = master_label
+        if len(run_nums) == 0:
+            title_label = f"{master_label} (new)"
+        detail_lines = [
+            title_label,
+            f"Runs: {len(run_nums)}",
+            f"Runtime mean: {_format_duration(mean_elapsed)}",
+            f"Species mean: {mean_species:.1f}",
+        ]
+        text_y = detail_y + 10
+        for line in detail_lines:
+            text = small_font.render(line, True, (220, 220, 220))
+            screen.blit(text, (detail_x + 10, text_y))
+            text_y += line_h
+
+        # Arithmetic mean preview
+        preview_rect = pygame.Rect(detail_x + 10, text_y + 10, detail_w - 20, 180)
+        pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
+        mean_path = sel_path / f"combinedArithmeticMeanSimulatino{master_label}_Log.csv"
+        if not mean_path.exists():
+            mean_path = sel_path / f"parsedArithmeticMeanSimulatino{master_label}_Log.csv"
+        mean_points = _load_mean_points(mean_path, "arithmetic mean length lived")
+        if not mean_points:
+            msg = small_font.render("No arithmetic data", True, (160, 160, 160))
+            screen.blit(msg, (preview_rect.x + 6, preview_rect.y + 6))
+        else:
+            points_sorted = sorted(mean_points, key=lambda p: p[0])
+            xs = [p[0] for p in points_sorted]
+            ys = [p[1] for p in points_sorted]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            if max_x == min_x:
+                max_x = min_x + 1.0
+            if max_y == min_y:
+                max_y = min_y + 1.0
+            x_pad = (max_x - min_x) * 0.05
+            y_pad = (max_y - min_y) * 0.05
+            min_x -= x_pad
+            max_x += x_pad
+            min_y -= y_pad
+            max_y += y_pad
+            for x, y in points_sorted:
+                px = preview_rect.x + int(((x - min_x) / (max_x - min_x)) * preview_rect.width)
+                py = preview_rect.y + preview_rect.height - int(
+                    ((y - min_y) / (max_y - min_y)) * preview_rect.height
+                )
+                pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _edit_startup_ui(settings: dict, results_dir: Path):
+    screen_w = 700
+    screen_h = 420
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption("Startup Options")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+    pygame.key.set_repeat(250, 40)
+
+    draw_value = bool(settings.get("draw", True))
+    try:
+        num_tries = int(settings.get("num_tries", 0))
+    except Exception:
+        num_tries = 0
+    try:
+        num_master = int(settings.get("num_tries_master", 0))
+    except Exception:
+        num_master = 0
+
+    selected = 0
+    editing = False
+    edit_text = ""
+    error_text = ""
+    continue_master_run = None
+    continue_settings = None
+
+    confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
+    select_rect = pygame.Rect(screen_w - 160, 220, 140, 32)
+    upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
+    upload_notice = ""
+    upload_notice_time = 0.0
+
+    def _apply_edit():
+        nonlocal num_tries, num_master, editing, edit_text, error_text
+        target = "num_tries" if selected == 1 else "num_master"
+        original = num_tries if target == "num_tries" else num_master
+        new_val = _parse_numeric(edit_text.strip(), original)
+        if new_val is None:
+            error_text = "Invalid number"
+            return
+        if target == "num_tries":
+            num_tries = max(0, int(new_val))
+        else:
+            num_master = max(0, int(new_val))
+        editing = False
+        edit_text = ""
+        error_text = ""
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if editing:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        _apply_edit()
+                    elif event.key == pygame.K_ESCAPE:
+                        editing = False
+                        edit_text = ""
+                        error_text = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        edit_text = edit_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and (ch.isdigit() or ch in ".-+eE"):
+                            edit_text += ch
+                else:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    if event.key == pygame.K_UP:
+                        selected = (selected - 1) % 3
+                    elif event.key == pygame.K_DOWN:
+                        selected = (selected + 1) % 3
+                    elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                        if selected == 0:
+                            draw_value = not draw_value
+                        elif selected == 1:
+                            step = _numeric_step(num_tries)
+                            delta = step if event.key == pygame.K_RIGHT else -step
+                            num_tries = max(0, int(round(num_tries + delta)))
+                        elif selected == 2:
+                            step = _numeric_step(num_master)
+                            delta = step if event.key == pygame.K_RIGHT else -step
+                            num_master = max(0, int(round(num_master + delta)))
+                            continue_master_run = None
+                            continue_settings = None
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        if selected in (1, 2):
+                            editing = True
+                            edit_text = str(num_tries if selected == 1 else num_master)
+                            error_text = ""
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if confirm_rect.collidepoint(mx, my):
+                    settings["draw"] = draw_value
+                    settings["num_tries"] = num_tries
+                    settings["num_tries_master"] = num_master
+                    save_settings(settings)
+                    return settings, continue_master_run, continue_settings
+                if upload_rect.collidepoint(mx, my):
+                    settings["draw"] = draw_value
+                    settings["num_tries"] = num_tries
+                    settings["num_tries_master"] = num_master
+                    save_settings(settings)
+                    upload_notice = "Uploaded to master settings"
+                    upload_notice_time = time.time()
+                if select_rect.collidepoint(mx, my):
+                    picked_run, picked_settings = _select_master_run_ui(results_dir)
+                    if picked_run is not None:
+                        continue_master_run = picked_run
+                        continue_settings = picked_settings
+                if 120 <= my <= 145:
+                    selected = 0
+                elif 170 <= my <= 195:
+                    selected = 1
+                elif 220 <= my <= 245:
+                    selected = 2
+
+        screen.fill((18, 18, 18))
+        title = font.render("Startup Options", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+
+        draw_label = f"Draw: {'ON' if draw_value else 'OFF'}"
+        try:
+            sim_count = int(settings.get("simulations", {}).get("count", 3))
+        except Exception:
+            sim_count = 3
+        sim_count = max(1, sim_count)
+        range_start = num_tries
+        range_end = num_tries + sim_count - 1
+        num_label = f"num_tries (next {range_start}-{range_end}): {num_tries}"
+        master_label = f"num_tries_master: {num_master}"
+        if continue_master_run is None:
+            master_label = f"{master_label} (new)"
+
+        for idx, line in enumerate([draw_label, num_label, master_label]):
+            y = 120 + idx * 50
+            color = (0, 200, 255) if idx == selected else (220, 220, 220)
+            if idx == selected:
+                pygame.draw.rect(screen, (35, 35, 35), (16, y - 4, screen_w - 32, 32))
+            text = small_font.render(line, True, color)
+            screen.blit(text, (22, y))
+
+        pygame.draw.rect(screen, (60, 60, 60), select_rect)
+        pygame.draw.rect(screen, (160, 160, 160), select_rect, 1)
+        select_text = small_font.render("Select", True, (230, 230, 230))
+        screen.blit(
+            select_text,
+            (
+                select_rect.x + (select_rect.width - select_text.get_width()) // 2,
+                select_rect.y + 6,
+            ),
+        )
+
+        if continue_master_run is not None:
+            cont_text = small_font.render(
+                f"Continuing master_{continue_master_run}", True, (180, 220, 180)
+            )
+            screen.blit(cont_text, (22, 280))
+        else:
+            cont_text = small_font.render(
+                "Starting a new master run", True, (180, 180, 220)
+            )
+            screen.blit(cont_text, (22, 280))
+
+        hint = small_font.render(
+            "Up/Down select  Left/Right adjust  Enter edit  Esc cancel",
+            True,
+            (180, 180, 180),
+        )
+        screen.blit(hint, (20, screen_h - 80))
+
+        if editing:
+            edit_line = f"Edit: {edit_text}"
+            edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
+            edit_text_surf = small_font.render(edit_line, True, edit_color)
+            screen.blit(edit_text_surf, (20, screen_h - 55))
+        if error_text:
+            err_surf = small_font.render(error_text, True, (255, 160, 160))
+            screen.blit(err_surf, (20, screen_h - 35))
+
+        pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
+        pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
+        confirm_text = small_font.render("Continue", True, (230, 230, 230))
+        screen.blit(
+            confirm_text,
+            (
+                confirm_rect.x + (confirm_rect.width - confirm_text.get_width()) // 2,
+                confirm_rect.y + 8,
+            ),
+        )
+        pygame.draw.rect(screen, (60, 60, 60), upload_rect)
+        pygame.draw.rect(screen, (160, 160, 160), upload_rect, 1)
+        upload_text = small_font.render("Upload", True, (230, 230, 230))
+        screen.blit(
+            upload_text,
+            (
+                upload_rect.x + (upload_rect.width - upload_text.get_width()) // 2,
+                upload_rect.y + 8,
+            ),
+        )
+        if upload_notice and (time.time() - upload_notice_time) < 2.0:
+            notice = small_font.render(upload_notice, True, (180, 220, 180))
+            screen.blit(notice, (20, screen_h - 30))
+
+        pygame.display.flip()
+        clock.tick(30)
 
 _MASTER_HEADER = [
     "evolution rate",
@@ -54,6 +753,31 @@ def _format_duration(seconds: float) -> str:
     minutes = int((total % 3600) // 60)
     secs = total % 60
     return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
+
+
+def _format_fps_label(sim_index: int, timestamp, interval, meta: dict, now_time: float) -> str:
+    interval_label = "--"
+    if isinstance(interval, (int, float)) and interval > 0:
+        interval_label = f"{float(interval):.2f}s"
+    since_start = "--:--:--"
+    since_now = "--:--:--"
+    if isinstance(timestamp, (int, float)):
+        start_time = None
+        if isinstance(meta, dict):
+            st = meta.get("start_time")
+            if isinstance(st, (int, float)):
+                start_time = float(st)
+            if start_time is None:
+                elapsed = meta.get("elapsed_seconds")
+                if isinstance(elapsed, (int, float)):
+                    start_time = now_time - float(elapsed)
+        if start_time is not None:
+            since_start = _format_duration(max(0.0, float(timestamp) - start_time))
+        since_now = _format_duration(max(0.0, now_time - float(timestamp)))
+    return (
+        f"Sim {sim_index + 1} | since start {since_start} | "
+        f"since now {since_now} | 1000 iters {interval_label}"
+    )
 
 
 def _apply_draw_toggle(selected_row: int, draw_modes: list[int]) -> None:
@@ -127,7 +851,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--script",
         type=str,
-        default="import pygame copy 6.py",
+        default="simulation_entry.py",
         help="Path to the simulation script",
     )
     return parser.parse_args()
@@ -136,25 +860,27 @@ def _parse_args() -> argparse.Namespace:
 def _allocate_run_numbers(count: int) -> list[int]:
     results_dir = Path("results")
     results_dir.mkdir(parents=True, exist_ok=True)
-    counter_path = results_dir / "numTries"
+    settings = load_settings()
     try:
-        current = int(counter_path.read_text().strip())
+        current = int(settings.get("num_tries", 0))
     except Exception:
-        current = -1
-    base = current + 1
+        current = 0
+    base = current
     run_nums = list(range(base, base + count))
-    counter_path.write_text(str(run_nums[-1]))
+    settings["num_tries"] = base + count
+    save_settings(settings)
     return run_nums
 
 
 def _allocate_master_run_number(results_dir: Path) -> int:
-    counter_path = results_dir / "numTriesMaster.csv"
+    settings = load_settings()
     try:
-        current = int(counter_path.read_text().strip())
+        current = int(settings.get("num_tries_master", 0))
     except Exception:
-        current = -1
-    new_val = current + 1
-    counter_path.write_text(str(new_val))
+        current = 0
+    new_val = current
+    settings["num_tries_master"] = new_val + 1
+    save_settings(settings)
     return new_val
 
 
@@ -243,7 +969,7 @@ def _combine_master_means(
     )
 
 
-def _load_fps_points(path: Path, max_points: int = 200) -> list[float]:
+def _load_fps_points(path: Path, max_points: int = 200) -> list[tuple]:
     if not path.exists():
         return []
     points = deque(maxlen=max(1, max_points))
@@ -256,10 +982,15 @@ def _load_fps_points(path: Path, max_points: int = 200) -> list[float]:
                 if row[0].startswith("timestamp"):
                     continue
                 try:
-                    val = float(row[1]) if len(row) > 1 else float(row[0])
+                    if len(row) > 1:
+                        ts = float(row[0])
+                        val = float(row[1])
+                    else:
+                        ts = None
+                        val = float(row[0])
                 except (ValueError, IndexError):
                     continue
-                points.append(val)
+                points.append((ts, val))
     except Exception:
         return []
     return list(points)
@@ -309,32 +1040,61 @@ def _load_run_meta(path: Path) -> dict:
         return {}
 
 
+def _find_fps_point_index(points: list[tuple], selected_point):
+    if not selected_point:
+        return None
+    ts = selected_point.get("timestamp")
+    if ts is not None:
+        for i, point in enumerate(points):
+            if len(point) >= 1 and point[0] == ts:
+                return i
+    idx = selected_point.get("point_index")
+    if isinstance(idx, int) and 0 <= idx < len(points):
+        return idx
+    return None
+
+
 def _draw_fps_chart(
     surface,
     font,
     rect: pygame.Rect,
-    points: list[float],
+    points: list[tuple],
     color=(0, 200, 255),
     max_seconds: float = 2.0,
+    selected_point=None,
+    selected_idx=None,
+    selected_label=None,
+    label_font=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
         msg = font.render("No FPS data", True, (160, 160, 160))
         surface.blit(msg, (rect.x + 6, rect.y + 6))
         return
-    mean_val = sum(points) / len(points)
+    mean_val = sum(val for _, val in points) / len(points)
     mean_text = font.render(f"Mean: {mean_val:.2f}s", True, (180, 180, 180))
     surface.blit(mean_text, (rect.x + 6, rect.y + 4))
     max_points = rect.width
     recent = points[-max_points:]
     overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
     color = (color[0], color[1], color[2], _DOT_ALPHA)
-    for i, tval in enumerate(recent):
+    for i, (_, tval) in enumerate(recent):
         t_clamped = max(0.0, min(max_seconds, tval))
         px = i
         py = rect.height - int((t_clamped / max_seconds) * rect.height)
         pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, rect.topleft)
+    if selected_point and selected_idx is not None and selected_point.get("sim_index") == selected_idx:
+        sel_i = _find_fps_point_index(recent, selected_point)
+        if sel_i is not None:
+            _, sel_val = recent[sel_i]
+            t_clamped = max(0.0, min(max_seconds, sel_val))
+            px = rect.x + sel_i
+            py = rect.y + rect.height - int((t_clamped / max_seconds) * rect.height)
+            pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+            if selected_label:
+                use_font = label_font if label_font is not None else font
+                _draw_value_label(surface, use_font, rect, selected_label, (px + 6, py - 6))
 
 
 def _draw_arithmetic_chart(
@@ -345,6 +1105,7 @@ def _draw_arithmetic_chart(
     color=(0, 220, 255),
     selected_point=None,
     selected_idx=None,
+    label_font=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
@@ -402,9 +1163,10 @@ def _draw_arithmetic_chart(
                 px += plot_left
                 py += plot_top
                 pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+                use_font = label_font if label_font is not None else font
                 _draw_value_label(
                     surface,
-                    font,
+                    use_font,
                     rect,
                     f"x:{x:.3f} y:{y:.2f}",
                     (px + 6, py - 6),
@@ -412,7 +1174,16 @@ def _draw_arithmetic_chart(
 
 
 def _draw_multi_fps_chart(
-    surface, font, rect: pygame.Rect, series: list[list[float]], max_seconds: float = 2.0
+    surface,
+    font,
+    rect: pygame.Rect,
+    series: list[list[tuple]],
+    max_seconds: float = 2.0,
+    selected_point=None,
+    highlight_sim=None,
+    meta_series=None,
+    now_time=None,
+    label_font=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not any(series):
@@ -422,18 +1193,51 @@ def _draw_multi_fps_chart(
     colors = _SIM_COLORS
     max_points = rect.width
     overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    for idx, points in enumerate(series):
+    order = list(range(len(series)))
+    if highlight_sim is not None and 0 <= highlight_sim < len(series):
+        order = [idx for idx in order if idx != highlight_sim] + [highlight_sim]
+    for idx in order:
+        points = series[idx]
         if not points:
             continue
         base_color = colors[idx % len(colors)]
-        color = (base_color[0], base_color[1], base_color[2], _DOT_ALPHA)
+        if highlight_sim is not None:
+            alpha = _DOT_ALPHA_HI if idx == highlight_sim else _DOT_ALPHA_DIM
+        else:
+            alpha = _DOT_ALPHA
+        color = (base_color[0], base_color[1], base_color[2], alpha)
         recent = points[-max_points:]
-        for i, tval in enumerate(recent):
+        for i, (_, tval) in enumerate(recent):
             t_clamped = max(0.0, min(max_seconds, tval))
             px = i
             py = rect.height - int((t_clamped / max_seconds) * rect.height)
             pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, rect.topleft)
+    if selected_point and isinstance(selected_point.get("sim_index"), int):
+        sim_idx = int(selected_point.get("sim_index"))
+        if 0 <= sim_idx < len(series):
+            recent = series[sim_idx][-max_points:]
+            sel_i = _find_fps_point_index(recent, selected_point)
+            if sel_i is not None:
+                _, sel_val = recent[sel_i]
+                t_clamped = max(0.0, min(max_seconds, sel_val))
+                px = rect.x + sel_i
+                py = rect.y + rect.height - int((t_clamped / max_seconds) * rect.height)
+                pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+                if meta_series is None:
+                    meta = {}
+                else:
+                    meta = meta_series[sim_idx] if sim_idx < len(meta_series) else {}
+                label_now = now_time if now_time is not None else time.time()
+                label = _format_fps_label(
+                    sim_idx,
+                    selected_point.get("timestamp"),
+                    selected_point.get("interval"),
+                    meta,
+                    label_now,
+                )
+                use_font = label_font if label_font is not None else font
+                _draw_value_label(surface, use_font, rect, label, (px + 6, py - 6))
 
 
 def _draw_multi_arithmetic_chart(
@@ -442,6 +1246,8 @@ def _draw_multi_arithmetic_chart(
     rect: pygame.Rect,
     series: list[list[tuple[float, float]]],
     selected_point=None,
+    highlight_sim=None,
+    label_font=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     all_points = [pt for points in series for pt in points]
@@ -478,11 +1284,19 @@ def _draw_multi_arithmetic_chart(
 
     colors = _SIM_COLORS
     overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
-    for idx, points in enumerate(series):
+    order = list(range(len(series)))
+    if highlight_sim is not None and 0 <= highlight_sim < len(series):
+        order = [idx for idx in order if idx != highlight_sim] + [highlight_sim]
+    for idx in order:
+        points = series[idx]
         if not points:
             continue
         base_color = colors[idx % len(colors)]
-        color = (base_color[0], base_color[1], base_color[2], _DOT_ALPHA)
+        if highlight_sim is not None:
+            alpha = _DOT_ALPHA_HI if idx == highlight_sim else _DOT_ALPHA_DIM
+        else:
+            alpha = _DOT_ALPHA
+        color = (base_color[0], base_color[1], base_color[2], alpha)
         points_sorted = sorted(points, key=lambda p: p[0])
         for x, y in points_sorted:
             px, py = _scale_point(x, y)
@@ -506,9 +1320,10 @@ def _draw_multi_arithmetic_chart(
             sim_idx = selected_point.get("sim_index")
             if isinstance(sim_idx, int):
                 label = f"Sim {sim_idx + 1} {label}"
+            use_font = label_font if label_font is not None else font
             _draw_value_label(
                 surface,
-                font,
+                use_font,
                 rect,
                 label,
                 (px + 6, py - 6),
@@ -530,6 +1345,36 @@ def _draw_value_label(surface, font, rect: pygame.Rect, text: str, pos: tuple[in
     pygame.draw.rect(surface, (10, 10, 10), box)
     pygame.draw.rect(surface, (200, 200, 200), box, 1)
     surface.blit(label, (box.x + pad, box.y + pad))
+
+
+def _confirm_quit_layout(window_w: int, header_top: int, y_offset: int, font) -> dict:
+    prompt_lines = [
+        "Quit master?",
+        "Press Y to quit or N to cancel.",
+    ]
+    pad = 10
+    line_h = font.get_height()
+    max_w = max(font.size(line)[0] for line in prompt_lines)
+    btn_w = 80
+    btn_h = 28
+    btn_gap = 12
+    box_w = max(max_w + pad * 2, btn_w * 2 + btn_gap + pad * 2)
+    text_h = line_h * len(prompt_lines)
+    box_h = text_h + pad * 2 + btn_h + 8
+    box_x = (window_w - box_w) // 2
+    box_y = header_top + 40 + y_offset
+    btn_y = box_y + pad + text_h + 8
+    yes_x = box_x + (box_w - (btn_w * 2 + btn_gap)) // 2
+    yes_rect = pygame.Rect(yes_x, btn_y, btn_w, btn_h)
+    no_rect = pygame.Rect(yes_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
+    return {
+        "prompt_lines": prompt_lines,
+        "pad": pad,
+        "line_h": line_h,
+        "box_rect": pygame.Rect(box_x, box_y, box_w, box_h),
+        "yes_rect": yes_rect,
+        "no_rect": no_rect,
+    }
 
 
 def _load_mean_points(path: Path, value_field: str) -> list[tuple[float, float]]:
@@ -606,9 +1451,83 @@ def _pick_mean_point(
     return best
 
 
+def _pick_fps_point(
+    click_pos: tuple[int, int],
+    rect: pygame.Rect,
+    series: list[list[tuple]],
+    max_distance: int = 8,
+    max_seconds: float = 2.0,
+):
+    if not any(series):
+        return None
+    max_points = rect.width
+    cx, cy = click_pos
+    best = None
+    best_d2 = max_distance * max_distance
+    for s_idx, points in enumerate(series):
+        if not points:
+            continue
+        recent = points[-max_points:]
+        for i, point in enumerate(recent):
+            if not point:
+                continue
+            ts = point[0]
+            tval = point[1] if len(point) > 1 else None
+            if tval is None:
+                continue
+            t_clamped = max(0.0, min(max_seconds, float(tval)))
+            px = rect.x + i
+            py = rect.y + rect.height - int((t_clamped / max_seconds) * rect.height)
+            dx = px - cx
+            dy = py - cy
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_d2 = d2
+                best = {
+                    "sim_index": s_idx,
+                    "timestamp": ts,
+                    "interval": tval,
+                    "point_index": i,
+                }
+    return best
+
+
 def main() -> None:
     args = _parse_args()
     settings = load_settings()
+    pygame.init()
+    startup = _edit_startup_ui(settings, Path("results"))
+    if startup is None:
+        pygame.quit()
+        return
+    settings, continue_master_run, continue_settings = startup
+    if continue_master_run is not None:
+        if isinstance(continue_settings, dict):
+            preserved_draw = settings.get("draw", True)
+            preserved_num_tries = settings.get("num_tries", 0)
+            preserved_num_master = settings.get("num_tries_master", 0)
+            settings = continue_settings
+            settings["draw"] = preserved_draw
+            settings["num_tries"] = preserved_num_tries
+            settings["num_tries_master"] = preserved_num_master
+            try:
+                current_global = load_settings()
+                settings["num_tries"] = max(
+                    int(settings.get("num_tries", 0)),
+                    int(current_global.get("num_tries", 0)),
+                )
+                settings["num_tries_master"] = max(
+                    int(settings.get("num_tries_master", 0)),
+                    int(current_global.get("num_tries_master", 0)),
+                )
+            except Exception:
+                pass
+            save_settings(settings)
+    else:
+        settings = _edit_settings_ui(settings)
+        if settings is None:
+            pygame.quit()
+            return
     try:
         settings_count = int(settings.get("simulations", {}).get("count", 3))
     except Exception:
@@ -642,32 +1561,31 @@ def main() -> None:
 
     results_dir = Path("results")
     run_nums = _allocate_run_numbers(count)
-    master_run_num = _allocate_master_run_number(results_dir)
+    if continue_master_run is not None:
+        master_run_num = int(continue_master_run)
+    else:
+        master_run_num = _allocate_master_run_number(results_dir)
     master_label = f"master_{master_run_num}"
     master_dir = results_dir / master_label
     master_dir.mkdir(parents=True, exist_ok=True)
+    master_meta = _load_master_meta(master_dir)
+    existing_run_nums = []
+    if isinstance(master_meta, dict):
+        raw_runs = master_meta.get("run_nums", [])
+        if isinstance(raw_runs, list):
+            for val in raw_runs:
+                try:
+                    existing_run_nums.append(int(val))
+                except Exception:
+                    continue
+    master_run_nums = existing_run_nums + [n for n in run_nums if n not in existing_run_nums]
+    _save_master_meta(
+        master_dir,
+        master_run_nums,
+        settings,
+        update_global=(continue_master_run is None),
+    )
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
-    env_base = os.environ.copy()
-    procs = []
-    sim_start_times = []
-    for idx in range(count):
-        env = env_base.copy()
-        env["SIM_CONTROL_FILE"] = str(control_path)
-        env["SIM_INDEX"] = str(idx)
-        env["SIM_TOTAL"] = str(count)
-        env["SIM_ALL_ACTIVE"] = "1"
-        env["SIM_RUN_NUM"] = str(run_nums[idx])
-        env["SIM_FPS_PATH"] = str(fps_paths[idx])
-        env["PYTHONUNBUFFERED"] = "1"
-        proc = subprocess.Popen(
-            [interpreter, str(sim_path)],
-            env=env,
-            cwd=os.getcwd(),
-        )
-        procs.append(proc)
-        sim_start_times.append(time.perf_counter())
-
-    pygame.init()
     header_top          = 30
     global_chart_h      = 90
     global_chart_gap    = 40
@@ -689,7 +1607,28 @@ def main() -> None:
     pygame.display.set_caption("Simulation Master")
     font = pygame.font.SysFont("Consolas", 22)
     small_font = pygame.font.SysFont("Consolas", 16)
+    label_font = pygame.font.SysFont("Consolas", 14)
     clock = pygame.time.Clock()
+
+    env_base = os.environ.copy()
+    procs = []
+    sim_start_times = []
+    for idx in range(count):
+        env = env_base.copy()
+        env["SIM_CONTROL_FILE"] = str(control_path)
+        env["SIM_INDEX"] = str(idx)
+        env["SIM_TOTAL"] = str(count)
+        env["SIM_ALL_ACTIVE"] = "1"
+        env["SIM_RUN_NUM"] = str(run_nums[idx])
+        env["SIM_FPS_PATH"] = str(fps_paths[idx])
+        env["PYTHONUNBUFFERED"] = "1"
+        proc = subprocess.Popen(
+            [interpreter, str(sim_path)],
+            env=env,
+            cwd=os.getcwd(),
+        )
+        procs.append(proc)
+        sim_start_times.append(time.perf_counter())
 
     fps_cache = {}
     arithmetic_cache = {}
@@ -705,6 +1644,7 @@ def main() -> None:
     master_fps_mode = _FPS_MODE_CAPPED
     mean_kind = "Arithmetic"
     selected_mean_point = None
+    selected_fps_point = None
     full_throttle_active = False
     saved_draw_modes = None
     saved_mode_values = None
@@ -718,6 +1658,29 @@ def main() -> None:
     scroll_step = max(30, panel_h // 2)
 
     running = True
+
+    def _open_settings_dialog() -> None:
+        nonlocal settings, screen, font, small_font, label_font
+        nonlocal max_window_h, window_h, max_scroll, scroll_offset
+        updated = _edit_settings_ui(settings)
+        if updated is None:
+            return
+        settings = updated
+        try:
+            max_window_h = int(settings.get("screen", {}).get("height", 900))
+        except Exception:
+            max_window_h = 900
+        max_window_h = max(360, max_window_h)
+        window_h = min(content_h, max_window_h)
+        if window_h <= header_h:
+            window_h = header_h + 1
+        screen = pygame.display.set_mode((window_w, window_h))
+        pygame.display.set_caption("Simulation Master")
+        font = pygame.font.SysFont("Consolas", 22)
+        small_font = pygame.font.SysFont("Consolas", 16)
+        label_font = pygame.font.SysFont("Consolas", 14)
+        max_scroll = max(0, content_h - window_h)
+        scroll_offset = max(0, min(scroll_offset, max_scroll))
 
     
     def _apply_master_fps_mode(new_mode: int) -> None:
@@ -791,9 +1754,13 @@ def main() -> None:
         chart_w = (window_w - margin * 2 - gap) // 2
         master_line_y = header_top + master_line_offset
         global_chart_y = master_line_y + global_chart_gap
+        fps_all_rect_content = pygame.Rect(
+            margin, global_chart_y, chart_w, global_chart_h
+        )
         mean_all_rect_content = pygame.Rect(
             margin + chart_w + gap, global_chart_y, chart_w, global_chart_h
         )
+        y_offset = -scroll_offset
 
         button_w = 110
         button_h = 26
@@ -808,6 +1775,7 @@ def main() -> None:
         onoff_btn = pygame.Rect(button_x, button_y + 5 * (button_h + button_gap), button_w, button_h)
         settings_btn = pygame.Rect(button_x, button_y + 6 * (button_h + button_gap), button_w, button_h)
         exit_btn = pygame.Rect(button_x, button_y + 7 * (button_h + button_gap), button_w, button_h)
+        confirm_layout = _confirm_quit_layout(window_w, header_top, y_offset, small_font)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -932,7 +1900,7 @@ def main() -> None:
                             update_tokens,
                         )
                     elif pressed_button == "settings" and settings_btn.collidepoint(mx, content_y):
-                        show_settings = True
+                        _open_settings_dialog()
                     elif pressed_button == "exit" and exit_btn.collidepoint(mx, content_y):
                         if confirm_quit:
                             running = False
@@ -950,6 +1918,14 @@ def main() -> None:
                 content_y = my + scroll_offset
                 handled_click = False
                 pressed_button = None
+                if confirm_quit:
+                    if confirm_layout["yes_rect"].collidepoint(mx, my):
+                        running = False
+                        confirm_quit = False
+                        continue
+                    if confirm_layout["no_rect"].collidepoint(mx, my):
+                        confirm_quit = False
+                        continue
                 if draw_btn.collidepoint(mx, content_y):
                     pressed_button = "draw"
                     handled_click = True
@@ -978,7 +1954,19 @@ def main() -> None:
                     continue
                 else:
                     handled_chart_click = False
-                    if mean_all_rect_content.collidepoint(mx, content_y):
+                    if fps_all_rect_content.collidepoint(mx, content_y):
+                        picked = _pick_fps_point(
+                            (mx, content_y),
+                            fps_all_rect_content,
+                            fps_series,
+                        )
+                        if picked:
+                            picked["scope"] = "global"
+                            selected_fps_point = picked
+                        else:
+                            selected_fps_point = None
+                        handled_chart_click = True
+                    elif mean_all_rect_content.collidepoint(mx, content_y):
                         picked = _pick_mean_point(
                             (mx, content_y),
                             mean_all_rect_content,
@@ -997,10 +1985,26 @@ def main() -> None:
                             idx = (content_y - row_start) // row_h
                             if 0 <= idx < count:
                                 chart_y = row_start + idx * row_h + 20
+                                fps_rect = pygame.Rect(
+                                    margin, chart_y, chart_w, chart_h
+                                )
                                 mean_rect = pygame.Rect(
                                     margin + chart_w + gap, chart_y, chart_w, chart_h
                                 )
-                                if mean_rect.collidepoint(mx, content_y):
+                                if fps_rect.collidepoint(mx, content_y):
+                                    picked = _pick_fps_point(
+                                        (mx, content_y),
+                                        fps_rect,
+                                        [fps_series[idx]] if idx < len(fps_series) else [[]],
+                                    )
+                                    if picked:
+                                        picked["scope"] = "sim"
+                                        picked["sim_index"] = idx
+                                        selected_fps_point = picked
+                                    else:
+                                        selected_fps_point = None
+                                    handled_chart_click = True
+                                elif mean_rect.collidepoint(mx, content_y):
                                     picked = _pick_mean_point(
                                         (mx, content_y),
                                         mean_rect,
@@ -1042,7 +2046,6 @@ def main() -> None:
         
         if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
             screen.fill((20, 20, 20))
-            y_offset = -scroll_offset
             title = font.render("Simulation Master", True, (240, 240, 240))
             if selected_row == 0:
                 status_text = "Selected: MASTER (0)"
@@ -1191,13 +2194,34 @@ def main() -> None:
             )
             screen.blit(master_line, (margin, master_line_y + y_offset))
             screen.blit(master_stats, (margin, master_line_y + 16 + y_offset))
-            _draw_multi_fps_chart(screen, small_font, fps_all_rect, fps_series)
+            highlight_sim = None
+            if selected_fps_point and isinstance(selected_fps_point.get("sim_index"), int):
+                highlight_sim = int(selected_fps_point.get("sim_index"))
+            elif selected_row > 0:
+                highlight_sim = selected_row - 1
+            _draw_multi_fps_chart(
+                screen,
+                small_font,
+                fps_all_rect,
+                fps_series,
+                selected_point=selected_fps_point if selected_fps_point and selected_fps_point.get("scope") == "global" else None,
+                highlight_sim=highlight_sim,
+                meta_series=meta_series,
+                now_time=time.time(),
+                label_font=label_font,
+            )
             _draw_multi_arithmetic_chart(
                 screen,
                 small_font,
                 mean_all_rect,
                 mean_series,
                 selected_point=selected_mean_point,
+                highlight_sim=(
+                    selected_mean_point.get("sim_index")
+                    if selected_mean_point
+                    else (selected_row - 1 if selected_row > 0 else None)
+                ),
+                label_font=label_font,
             )
 
             if show_settings:
@@ -1235,26 +2259,41 @@ def main() -> None:
                     y_text += line_h
 
             if confirm_quit:
-                prompt_lines = [
-                    "Quit master?",
-                    "Press Y to quit or N to cancel.",
-                ]
-                pad = 10
-                line_h = small_font.get_height()
-                max_w = max(small_font.size(line)[0] for line in prompt_lines)
-                box_w = max_w + pad * 2
-                box_h = line_h * len(prompt_lines) + pad * 2
-                box_x = (window_w - box_w) // 2
-                box_y = header_top + 40 + y_offset
-                overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+                prompt_lines = confirm_layout["prompt_lines"]
+                pad = confirm_layout["pad"]
+                line_h = confirm_layout["line_h"]
+                box_rect = confirm_layout["box_rect"]
+                yes_rect = confirm_layout["yes_rect"]
+                no_rect = confirm_layout["no_rect"]
+                overlay = pygame.Surface((box_rect.width, box_rect.height), pygame.SRCALPHA)
                 overlay.fill((10, 10, 10, 230))
-                screen.blit(overlay, (box_x, box_y))
-                pygame.draw.rect(screen, (180, 180, 180), (box_x, box_y, box_w, box_h), 1)
-                y_text = box_y + pad
+                screen.blit(overlay, (box_rect.x, box_rect.y))
+                pygame.draw.rect(screen, (180, 180, 180), box_rect, 1)
+                y_text = box_rect.y + pad
                 for line in prompt_lines:
                     text = small_font.render(line, True, (230, 230, 230))
-                    screen.blit(text, (box_x + pad, y_text))
+                    screen.blit(text, (box_rect.x + pad, y_text))
                     y_text += line_h
+                pygame.draw.rect(screen, (60, 60, 60), yes_rect)
+                pygame.draw.rect(screen, (160, 160, 160), yes_rect, 1)
+                yes_text = small_font.render("Yes", True, (230, 230, 230))
+                screen.blit(
+                    yes_text,
+                    (
+                        yes_rect.x + (yes_rect.width - yes_text.get_width()) // 2,
+                        yes_rect.y + 6,
+                    ),
+                )
+                pygame.draw.rect(screen, (60, 60, 60), no_rect)
+                pygame.draw.rect(screen, (160, 160, 160), no_rect, 1)
+                no_text = small_font.render("No", True, (230, 230, 230))
+                screen.blit(
+                    no_text,
+                    (
+                        no_rect.x + (no_rect.width - no_text.get_width()) // 2,
+                        no_rect.y + 6,
+                    ),
+                )
 
             y = header_h + y_offset
             for idx in range(count):
@@ -1295,7 +2334,28 @@ def main() -> None:
 
                 sim_color = _sim_color(idx)
                 fps_points = fps_series[idx] if idx < len(fps_series) else []
-                _draw_fps_chart(screen, small_font, fps_rect, fps_points, sim_color)
+                fps_label = None
+                if selected_fps_point and selected_fps_point.get("scope") == "sim":
+                    if selected_fps_point.get("sim_index") == idx:
+                        meta = meta_series[idx] if idx < len(meta_series) else {}
+                        fps_label = _format_fps_label(
+                            idx,
+                            selected_fps_point.get("timestamp"),
+                            selected_fps_point.get("interval"),
+                            meta,
+                            time.time(),
+                        )
+                _draw_fps_chart(
+                    screen,
+                    small_font,
+                    fps_rect,
+                    fps_points,
+                    sim_color,
+                    selected_point=selected_fps_point,
+                    selected_idx=idx,
+                    selected_label=fps_label,
+                    label_font=label_font,
+                )
 
                 mean_points = mean_series[idx] if idx < len(mean_series) else []
                 _draw_arithmetic_chart(
@@ -1306,6 +2366,7 @@ def main() -> None:
                     sim_color,
                     selected_point=selected_mean_point,
                     selected_idx=idx,
+                    label_font=label_font,
                 )
 
                 y += panel_h
@@ -1334,7 +2395,7 @@ def main() -> None:
             proc.kill()
 
     try:
-        _combine_master_logs(results_dir, master_dir, master_label, run_nums)
+        _combine_master_logs(results_dir, master_dir, master_label, master_run_nums)
     except Exception as e:
         print(f"Failed to build master logs: {e}")
     else:
@@ -1353,7 +2414,7 @@ def main() -> None:
         except Exception as e:
             print(f"Failed to parse master logs (step 0.01): {e}")
     try:
-        _combine_master_means(results_dir, master_dir, master_label, run_nums)
+        _combine_master_means(results_dir, master_dir, master_label, master_run_nums)
     except Exception as e:
         print(f"Failed to build combined mean files: {e}")
 
