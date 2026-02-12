@@ -46,6 +46,15 @@ MASTER_RUN_META_PATH = None
 if os.environ.get("SIM_MASTER_DIR"):
     MASTER_RUN_META_PATH = Path(os.environ["SIM_MASTER_DIR"]) / str(run_num) / "run_meta.json"
 
+def _load_existing_run_meta(path: Path) -> dict:
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text())
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
 
 # Window settings
 settings = load_settings()
@@ -451,6 +460,30 @@ avgSpecies = []
 run_start_time = time.perf_counter()
 run_start_wall = time.time()
 META_WRITE_INTERVAL = 1000
+existing_meta = _load_existing_run_meta(RUN_META_PATH)
+if not existing_meta and MASTER_RUN_META_PATH is not None:
+    existing_meta = _load_existing_run_meta(MASTER_RUN_META_PATH)
+if existing_meta:
+    try:
+        prev_frames = int(existing_meta.get("frame_count", 0))
+    except Exception:
+        prev_frames = 0
+    try:
+        prev_elapsed = float(existing_meta.get("elapsed_seconds", 0))
+    except Exception:
+        prev_elapsed = 0.0
+    try:
+        prev_start_wall = float(existing_meta.get("start_time", 0))
+    except Exception:
+        prev_start_wall = 0.0
+    if prev_frames > 0:
+        frame_count = prev_frames
+    if prev_elapsed > 0:
+        run_start_time = time.perf_counter() - prev_elapsed
+    if prev_start_wall > 0:
+        run_start_wall = prev_start_wall
+    elif prev_elapsed > 0:
+        run_start_wall = time.time() - prev_elapsed
 
 
 
