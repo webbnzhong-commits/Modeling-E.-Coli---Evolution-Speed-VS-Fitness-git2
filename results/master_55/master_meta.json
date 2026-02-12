@@ -1,0 +1,34 @@
+{
+  "run_nums": [
+    628,
+    629,
+    630
+  ],
+  "settings": {
+    "screen": {
+      "width": 1280,
+      "height": 832
+    },
+    "display_mode": 2,
+    "draw": false,
+    "drawSometimes": true,
+    "drawAmnt": 500,
+    "population_cap": 0.5,
+    "enviormentChangeRate": 1.0,
+    "ph_effect": {
+      "scale": 1.0,
+      "divisor": 2.0
+    },
+    "temp_effect": {
+      "scale": 1.0,
+      "divisor": 4.0
+    },
+    "reproduction_debuf_min": 0.001,
+    "quan": 2.0,
+    "immune_system_quan_factor": 0.15,
+    "simulations": {
+      "count": 3
+    }
+  },
+  "updated_at": 1770877488.0675468
+}

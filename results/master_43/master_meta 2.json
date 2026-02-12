@@ -1,0 +1,51 @@
+{
+  "run_nums": [
+    540,
+    541,
+    542,
+    543,
+    544,
+    545,
+    546,
+    547,
+    548,
+    549,
+    550,
+    551,
+    552,
+    553,
+    554,
+    555,
+    556,
+    557
+  ],
+  "settings": {
+    "screen": {
+      "width": 1280,
+      "height": 832
+    },
+    "display_mode": 2,
+    "draw": true,
+    "drawSometimes": true,
+    "drawAmnt": 500,
+    "population_cap": 0.5,
+    "enviormentChangeRate": 1.0,
+    "ph_effect": {
+      "scale": 1.0,
+      "divisor": 2.0
+    },
+    "temp_effect": {
+      "scale": 1.0,
+      "divisor": 4.0
+    },
+    "reproduction_debuf_min": 1e-05,
+    "quan": 0.5,
+    "immune_system_quan_factor": 0.15,
+    "num_tries": 551,
+    "num_tries_master": 42,
+    "simulations": {
+      "count": 6
+    }
+  },
+  "updated_at": 1770871549.378259
+}
