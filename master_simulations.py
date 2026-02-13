@@ -1,5 +1,6 @@
 import argparse
 import csv
+from bisect import bisect_right
 from collections import deque
 import json
 import math
@@ -9,6 +10,7 @@ import subprocess
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 import time
 
 import pygame
@@ -67,6 +69,239 @@ def _step_decimals(step: float) -> int:
         return 2
     exp = math.floor(math.log10(step))
     return max(0, -exp)
+
+
+def _apply_master_graph_settings(settings: dict) -> None:
+    global _DOT_ALPHA, _DOT_ALPHA_HI, _DOT_ALPHA_DIM, _DOT_RADIUS
+    cfg = settings.get("master_graph", {}) if isinstance(settings, dict) else {}
+    try:
+        alpha = int(cfg.get("dot_alpha", _DOT_ALPHA))
+    except Exception:
+        alpha = _DOT_ALPHA
+    alpha = max(10, min(255, alpha))
+    try:
+        radius = int(cfg.get("dot_radius", _DOT_RADIUS))
+    except Exception:
+        radius = _DOT_RADIUS
+    radius = max(1, min(20, radius))
+    _DOT_ALPHA = alpha
+    _DOT_ALPHA_HI = min(255, int(alpha * 2))
+    _DOT_ALPHA_DIM = max(5, int(alpha * 0.55))
+    _DOT_RADIUS = radius
+
+
+def _parse_stop_datetime(text: str):
+    if not isinstance(text, str):
+        return None
+    value = text.strip()
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(value, fmt).timestamp()
+        except Exception:
+            continue
+    return None
+
+
+def _edit_stop_conditions_ui(settings: dict):
+    cond = settings.get("stop_conditions", {}) if isinstance(settings, dict) else {}
+    local = {
+        "runtime_enabled": bool(cond.get("runtime_enabled", False)),
+        "max_runtime_hours": float(cond.get("max_runtime_hours", 0) or 0),
+        "frames_enabled": bool(cond.get("frames_enabled", False)),
+        "max_frames": int(cond.get("max_frames", 0) or 0),
+        "species_enabled": bool(cond.get("species_enabled", False)),
+        "max_species": int(cond.get("max_species", 0) or 0),
+        "datetime_enabled": bool(cond.get("datetime_enabled", False)),
+        "stop_at_datetime": str(cond.get("stop_at_datetime", "") or ""),
+    }
+    items = [
+        {"key": "runtime_enabled", "label": "Enable runtime limit", "type": "bool"},
+        {"key": "max_runtime_hours", "label": "Max runtime hours", "type": "number"},
+        {"key": "frames_enabled", "label": "Enable frames limit", "type": "bool"},
+        {"key": "max_frames", "label": "Max frames", "type": "number"},
+        {"key": "species_enabled", "label": "Enable species limit", "type": "bool"},
+        {"key": "max_species", "label": "Max species", "type": "number"},
+        {"key": "datetime_enabled", "label": "Enable stop at datetime", "type": "bool"},
+        {"key": "stop_at_datetime", "label": "Stop at (YYYY-MM-DD HH:MM[:SS])", "type": "text"},
+    ]
+
+    screen_w = 720
+    screen_h = 420
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption("Stop Conditions")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+
+    selected = 0
+    editing = False
+    edit_text = ""
+    error_text = ""
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
+    confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if editing:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        key = items[selected]["key"]
+                        if items[selected]["type"] == "number":
+                            new_val = _parse_numeric(edit_text.strip(), local[key])
+                            if new_val is None:
+                                error_text = "Invalid number"
+                            else:
+                                if key in ("max_frames", "max_species"):
+                                    new_val = max(0, int(new_val))
+                                else:
+                                    new_val = max(0.0, float(new_val))
+                                local[key] = new_val
+                                editing = False
+                                edit_text = ""
+                                error_text = ""
+                        elif items[selected]["type"] == "bool":
+                            local[key] = bool(edit_text.strip().lower() in ("true", "1", "yes", "y", "on"))
+                            editing = False
+                            edit_text = ""
+                            error_text = ""
+                        else:
+                            local[key] = edit_text.strip()
+                            editing = False
+                            edit_text = ""
+                            error_text = ""
+                    elif event.key == pygame.K_ESCAPE:
+                        editing = False
+                        edit_text = ""
+                        error_text = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        edit_text = edit_text[:-1]
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable():
+                            edit_text += ch
+                else:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    if event.key == pygame.K_UP:
+                        selected = (selected - 1) % len(items)
+                    elif event.key == pygame.K_DOWN:
+                        selected = (selected + 1) % len(items)
+                    elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                        item = items[selected]
+                        if item["type"] == "bool":
+                            local[item["key"]] = not bool(local[item["key"]])
+                        elif item["type"] == "number":
+                            key = item["key"]
+                            step = _numeric_step(local[key])
+                            delta = step if event.key == pygame.K_RIGHT else -step
+                            new_val = float(local[key]) + delta
+                            if key in ("max_frames", "max_species"):
+                                new_val = max(0, int(round(new_val)))
+                            else:
+                                decimals = _step_decimals(step)
+                                new_val = max(0.0, round(new_val, decimals))
+                            local[key] = new_val
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        editing = True
+                        key = items[selected]["key"]
+                        edit_text = str(local[key])
+                        error_text = ""
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None
+                if confirm_rect.collidepoint(mx, my):
+                    if local.get("datetime_enabled"):
+                        dt_text = local.get("stop_at_datetime", "")
+                        if dt_text:
+                            if _parse_stop_datetime(dt_text) is None:
+                                error_text = "Invalid datetime"
+                                continue
+                    settings["stop_conditions"] = local
+                    save_settings(settings)
+                    return settings
+                list_top = 90
+                line_h = small_font.get_height() + 8
+                for idx in range(len(items)):
+                    rect = pygame.Rect(16, list_top + idx * line_h - 2, screen_w - 32, line_h)
+                    if rect.collidepoint(mx, my):
+                        selected = idx
+                        editing = True
+                        key = items[selected]["key"]
+                        edit_text = str(local[key])
+                        error_text = ""
+                        break
+
+        screen.fill((18, 18, 18))
+        title = font.render("Stop Conditions", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
+
+        list_top = 90
+        line_h = small_font.get_height() + 8
+        for idx, item in enumerate(items):
+            key = item["key"]
+            val = local[key]
+            line = f"{item['label']}: {val}"
+            color = (230, 230, 230) if idx == selected else (200, 200, 200)
+            if idx == selected:
+                pygame.draw.rect(screen, (35, 35, 35), (16, list_top + idx * line_h - 2, screen_w - 32, line_h))
+            text = small_font.render(line, True, color)
+            screen.blit(text, (22, list_top + idx * line_h))
+
+        hint = small_font.render(
+            "Up/Down select  Left/Right adjust  Enter edit  Esc cancel",
+            True,
+            (180, 180, 180),
+        )
+        screen.blit(hint, (20, screen_h - 80))
+
+        if editing:
+            edit_line = f"Edit: {edit_text}"
+            edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
+            edit_text_surf = small_font.render(edit_line, True, edit_color)
+            screen.blit(edit_text_surf, (20, screen_h - 55))
+        if error_text:
+            err_surf = small_font.render(error_text, True, (255, 160, 160))
+            screen.blit(err_surf, (20, screen_h - 35))
+
+        now_label = _format_wall_time(time.time())
+        parsed_ts = None
+        parsed_label = "Off"
+        if local.get("datetime_enabled"):
+            parsed_ts = _parse_stop_datetime(local.get("stop_at_datetime", ""))
+            parsed_label = _format_wall_time(parsed_ts) if parsed_ts else "Invalid"
+        now_line = small_font.render(f"Now: {now_label}", True, (180, 180, 180))
+        parsed_line = small_font.render(f"Parsed: {parsed_label}", True, (180, 180, 180))
+        screen.blit(now_line, (20, screen_h - 110))
+        screen.blit(parsed_line, (20, screen_h - 90))
+
+        pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
+        pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
+        confirm_text = small_font.render("Confirm", True, (230, 230, 230))
+        screen.blit(
+            confirm_text,
+            (
+                confirm_rect.x + (confirm_rect.width - confirm_text.get_width()) // 2,
+                confirm_rect.y + 8,
+            ),
+        )
+
+        pygame.display.flip()
+        clock.tick(30)
 
 
 def _collect_setting_items(settings: dict) -> list[dict]:
@@ -1532,6 +1767,64 @@ def _draw_snapshot_arithmetic_chart(
     surface.blit(overlay, (plot_left, plot_top))
 
 
+def _draw_snapshot_multi_chart(
+    surface,
+    font,
+    rect: pygame.Rect,
+    series: list[tuple[list[tuple[float, float]], tuple[int, int, int]]],
+    bounds=None,
+) -> None:
+    pygame.draw.rect(surface, (80, 80, 80), rect, 1)
+    all_points = []
+    for points, _ in series:
+        all_points.extend(points)
+    if not all_points:
+        msg = font.render("No mean data", True, (160, 160, 160))
+        surface.blit(msg, (rect.x + 6, rect.y + 6))
+        return
+
+    if bounds is None:
+        xs = [p[0] for p in all_points]
+        ys = [p[1] for p in all_points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        if max_x == min_x:
+            max_x = min_x + 1.0
+        if max_y == min_y:
+            max_y = min_y + 1.0
+        x_pad = (max_x - min_x) * 0.05
+        y_pad = (max_y - min_y) * 0.05
+        min_x -= x_pad
+        max_x += x_pad
+        min_y -= y_pad
+        max_y += y_pad
+    else:
+        min_x, max_x, min_y, max_y = bounds
+
+    plot_left = rect.x + 6
+    plot_top = rect.y + 6
+    plot_width = rect.width - 12
+    plot_height = rect.height - 12
+
+    def _scale_point(x, y):
+        px = int(((x - min_x) / (max_x - min_x)) * plot_width)
+        py = plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
+        return px, py
+
+    overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
+    for points, base_color in series:
+        if not points:
+            continue
+        if len(base_color) >= 4:
+            color = base_color
+        else:
+            color = (base_color[0], base_color[1], base_color[2], _DOT_ALPHA)
+        for x, y in sorted(points, key=lambda p: p[0]):
+            px, py = _scale_point(x, y)
+            pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
+    surface.blit(overlay, (plot_left, plot_top))
+
+
 
 def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     now = time.time()
@@ -1545,6 +1838,43 @@ def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     points = loader(path)
     cache[path] = {"points": points, "mtime": mtime, "last": now}
     return points
+
+
+def _compute_species_counts(run_dir: Path) -> dict:
+    raw_dir = run_dir / "raw_data"
+    if not raw_dir.exists():
+        return {}
+    csv_files = sorted(raw_dir.glob("simulation_log_*.csv"))
+    if not csv_files:
+        return {}
+    total = 0
+    medium = 0
+    big = 0
+    for path in csv_files:
+        try:
+            with open(path, newline="") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    if not row:
+                        continue
+                    try:
+                        length_lived = float(row.get("length lived", ""))
+                    except Exception:
+                        continue
+                    total += 1
+                    if length_lived > 1999:
+                        big += 1
+                    elif length_lived > 500:
+                        medium += 1
+        except Exception:
+            continue
+    small = max(0, total - medium - big)
+    return {
+        "amnt_of_species": total,
+        "amnt_of_small_species": small,
+        "amnt_of_medium_species": medium,
+        "amnt_of_big_species": big,
+    }
 
 
 def _get_snapshot_status(cache: dict, run_dir: Path, max_age: float = 1.0) -> dict:
@@ -1582,8 +1912,32 @@ def _get_snapshot_status(cache: dict, run_dir: Path, max_age: float = 1.0) -> di
 
 
 def _load_run_meta(path: Path) -> dict:
+    run_dir = path.parent
+    meta = {}
+    if path.exists():
+        try:
+            meta = json.loads(path.read_text())
+            if not isinstance(meta, dict):
+                meta = {}
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    need_counts = False
+    for key in ("amnt_of_species", "amnt_of_medium_species", "amnt_of_big_species"):
+        if not isinstance(meta.get(key), (int, float)):
+            need_counts = True
+            break
+    if need_counts:
+        counts = _compute_species_counts(run_dir)
+        if counts:
+            meta.update(counts)
+            try:
+                path.write_text(json.dumps(meta))
+            except Exception:
+                pass
     if not path.exists():
-        return {}
+        return meta
     try:
         payload = json.loads(path.read_text())
         if isinstance(payload, dict):
@@ -1591,9 +1945,9 @@ def _load_run_meta(path: Path) -> dict:
                 payload["__mtime"] = path.stat().st_mtime
             except Exception:
                 pass
-        return payload if isinstance(payload, dict) else {}
+        return payload if isinstance(payload, dict) else meta
     except Exception:
-        return {}
+        return meta
 
 
 def _find_fps_point_index(points: list[tuple], selected_point):
@@ -2007,32 +2361,108 @@ def _pick_mean_point(
     return best
 
 
-def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
-    run_dir = results_dir / str(run_num)
+def _view_arithmetic_snapshots(
+    results_dir: Path,
+    run_nums: list[int],
+    initial_sim_index: int = 0,
+    master_dir: Path | None = None,
+) -> None:
+    run_nums = [int(n) for n in run_nums] if run_nums else []
+    if not run_nums:
+        return
+    run_dirs = {run_num: results_dir / str(run_num) for run_num in run_nums}
+    run_index_map = {run_num: idx for idx, run_num in enumerate(run_nums)}
     screen_w = 900
     screen_h = 620
     screen = pygame.display.set_mode((screen_w, screen_h))
-    pygame.display.set_caption(f"Arithmetic Timeline - run {run_num}")
+    pygame.display.set_caption("Arithmetic Timeline")
     font = pygame.font.SysFont("Consolas", 22)
     small_font = pygame.font.SysFont("Consolas", 16)
     clock = pygame.time.Clock()
     exit_top_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
-
-    snapshots = _load_arithmetic_snapshots(run_dir)
-    bounds = _compute_arithmetic_bounds(snapshots)
-    current_idx = max(0, len(snapshots) - 1)
+    view_mode = "sim"
+    view_sim_index = max(0, min(int(initial_sim_index), len(run_nums) - 1))
+    snapshots_by_run = {}
+    run_frames_by_run = {}
+    run_start_times = {}
+    frames = []
+    bounds = None
+    current_idx = 0
     dragging = False
     last_reload = 0.0
     playing = False
     speed_min = 0.5
     speed_max = 32.0
-    speed_value = 4.0
+    speed_multiplier = 1.0
     speed_auto = True
     play_accum = 0.0
     last_play_time = time.time()
-    run_start_time = None
 
-    chart_rect = pygame.Rect(40, 60, screen_w - 80, screen_h - 220)
+    title_y = 20
+    title_h = font.get_height()
+    info_line_h = small_font.get_height()
+    info_gap = 8
+    info_line_gap = 4
+    info_top = title_y + title_h + info_gap
+    line1_y = info_top
+    line2_y = info_top + info_line_h + info_line_gap
+    line3_y = info_top + 2 * (info_line_h + info_line_gap)
+    content_left = 40
+    content_right = screen_w - 40
+    mode_btn_w = 92
+    mode_btn_h = 24
+    mode_btn_gap = 8
+    sim_btn_w = 80
+    sim_btn_h = 22
+    sim_btn_gap = 6
+    mode_row_y = line3_y + info_line_h + 8
+    mode_buttons = []
+    mode_defs = [
+        {"mode": "master", "label": "Master", "color": (200, 200, 200)},
+        {"mode": "average", "label": "Average", "color": (255, 200, 80)},
+        {"mode": "merge", "label": "Merge", "color": (180, 220, 255)},
+    ]
+    mode_x = content_left
+    for entry in mode_defs:
+        rect = pygame.Rect(mode_x, mode_row_y, mode_btn_w, mode_btn_h)
+        entry = dict(entry)
+        entry["rect"] = rect
+        mode_buttons.append(entry)
+        mode_x += mode_btn_w + mode_btn_gap
+
+    sim_row_y = mode_row_y + mode_btn_h + 6
+
+    def _layout_sim_buttons():
+        buttons = []
+        if not run_nums:
+            return buttons, 0
+        x = content_left
+        y = sim_row_y
+        row_h = sim_btn_h
+        max_x = content_right
+        for idx, run_num in enumerate(run_nums):
+            if x + sim_btn_w > max_x:
+                x = content_left
+                y += row_h + sim_btn_gap
+            rect = pygame.Rect(x, y, sim_btn_w, sim_btn_h)
+            buttons.append(
+                {
+                    "rect": rect,
+                    "index": idx,
+                    "run_num": run_num,
+                    "label": f"Sim {idx + 1}",
+                    "color": _SIM_COLORS[idx % len(_SIM_COLORS)],
+                }
+            )
+            x += sim_btn_w + sim_btn_gap
+        total_h = (y - sim_row_y) + sim_btn_h
+        return buttons, total_h
+
+    sim_buttons, sim_area_h = _layout_sim_buttons()
+    chart_top = sim_row_y + sim_area_h + 10
+    bottom_reserved = 220
+    chart_h = max(200, screen_h - bottom_reserved - chart_top)
+    chart_rect = pygame.Rect(content_left, chart_top, screen_w - 80, chart_h)
     slider_rect = pygame.Rect(60, chart_rect.bottom + 40, screen_w - 120, 6)
     knob_radius = 8
 
@@ -2049,47 +2479,272 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
     fwd30_btn = pygame.Rect(next_btn.right + btn_gap, btn_y, btn_w, btn_h)
     play_btn = pygame.Rect(fwd30_btn.right + btn_gap, btn_y, 80, btn_h)
     refresh_btn = pygame.Rect(play_btn.right + btn_gap, btn_y, 80, btn_h)
-    exit_btn = pygame.Rect(refresh_btn.right + btn_gap, btn_y, 80, btn_h)
+    export_btn = pygame.Rect(refresh_btn.right + btn_gap, btn_y, 90, btn_h)
+    export_all_btn = pygame.Rect(export_btn.right + btn_gap, btn_y, 110, btn_h)
+    exit_btn = pygame.Rect(export_all_btn.right + btn_gap, btn_y, 80, btn_h)
+
+    export_status = ""
+    def _draw_timeline_button(rect, label, accent_color, active: bool) -> None:
+        fill = (70, 70, 70) if active else (40, 40, 40)
+        border = accent_color if active else (120, 120, 120)
+        pygame.draw.rect(screen, fill, rect)
+        pygame.draw.rect(screen, border, rect, 1)
+        pygame.draw.circle(screen, accent_color, (rect.x + 10, rect.centery), 4)
+        text = small_font.render(label, True, (230, 230, 230))
+        screen.blit(text, (rect.x + 18, rect.y + 4))
+
 
     def _reload(keep_end: bool = False) -> None:
-        nonlocal snapshots, bounds, current_idx, speed_value, speed_auto, run_start_time
-        new_snaps = _load_arithmetic_snapshots(run_dir)
-        bounds = _compute_arithmetic_bounds(new_snaps)
-        if keep_end and new_snaps:
-            current_idx = len(new_snaps) - 1
+        nonlocal snapshots_by_run, bounds, current_idx, speed_multiplier, speed_auto, frames
+        nonlocal run_start_times, run_frames_by_run
+        current_frame = frames[current_idx] if frames else None
+        snapshots_by_run = {}
+        run_start_times = {}
+        run_frames_by_run = {}
+        frames_set = set()
+        all_snaps = []
+        for run_num in run_nums:
+            run_dir = run_dirs[run_num]
+            snaps = _load_arithmetic_snapshots(run_dir)
+            snap_map = {}
+            run_frames = []
+            for snap in snaps:
+                frame_val = snap.get("frame")
+                if isinstance(frame_val, int):
+                    snap_map[frame_val] = snap
+                    frames_set.add(frame_val)
+                    run_frames.append(frame_val)
+            snapshots_by_run[run_num] = snap_map
+            run_frames.sort()
+            run_frames_by_run[run_num] = run_frames
+            all_snaps.extend(snaps)
+            meta = _load_run_meta(run_dir / "run_meta.json")
+            start_time = None
+            if isinstance(meta, dict):
+                st = meta.get("start_time")
+                if isinstance(st, (int, float)):
+                    start_time = float(st)
+                if start_time is None:
+                    elapsed = meta.get("elapsed_seconds")
+                    meta_mtime = meta.get("__mtime")
+                    if isinstance(elapsed, (int, float)) and isinstance(meta_mtime, (int, float)):
+                        start_time = float(meta_mtime) - float(elapsed)
+            run_start_times[run_num] = start_time
+        frames = sorted(frames_set)
+        bounds = _compute_arithmetic_bounds(all_snaps)
+        if not frames:
+            current_idx = 0
+        elif current_frame is not None and current_frame in frames:
+            current_idx = frames.index(current_frame)
+        elif keep_end:
+            current_idx = len(frames) - 1
         else:
-            current_idx = min(current_idx, max(0, len(new_snaps) - 1))
-        snapshots = new_snaps
-        meta = _load_run_meta(run_dir / "run_meta.json")
-        start_time = None
-        if isinstance(meta, dict):
-            st = meta.get("start_time")
-            if isinstance(st, (int, float)):
-                start_time = float(st)
-            if start_time is None:
-                elapsed = meta.get("elapsed_seconds")
-                meta_mtime = meta.get("__mtime")
-                if isinstance(elapsed, (int, float)) and isinstance(meta_mtime, (int, float)):
-                    start_time = float(meta_mtime) - float(elapsed)
-        run_start_time = start_time
+            current_idx = min(current_idx, max(0, len(frames) - 1))
         if speed_auto:
-            speed_value = _auto_speed(len(snapshots))
-            speed_value = max(speed_min, min(speed_max, speed_value))
+            speed_multiplier = 1.0
+
+    def _snap_for_frame(run_num, frame_val):
+        frame_list = run_frames_by_run.get(run_num, [])
+        if not frame_list:
+            return None
+        if not isinstance(frame_val, int):
+            return snapshots_by_run.get(run_num, {}).get(frame_list[-1])
+        idx = bisect_right(frame_list, frame_val) - 1
+        if idx < 0:
+            return None
+        key = frame_list[idx]
+        return snapshots_by_run.get(run_num, {}).get(key)
+
+    def _collect_view_snaps(frame_val, mode: str | None = None, sim_index: int | None = None):
+        if mode is None:
+            mode = view_mode
+        if sim_index is None:
+            sim_index = view_sim_index
+        view_snaps = []
+        if mode == "sim":
+            run_num = run_nums[sim_index]
+            snap = _snap_for_frame(run_num, frame_val)
+            if snap:
+                view_snaps.append((run_num, snap))
+            return view_snaps
+        for run_num in run_nums:
+            snap = _snap_for_frame(run_num, frame_val)
+            if snap:
+                view_snaps.append((run_num, snap))
+        return view_snaps
+
+    def _labels_for_snaps(view_snaps):
+        saved_label = "--"
+        latest_mtime = None
+        for _, snap in view_snaps:
+            mtime = snap.get("mtime")
+            if isinstance(mtime, (int, float)):
+                latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
+        if latest_mtime is not None:
+            saved_label = _format_wall_time(float(latest_mtime))
+        since_start = "--:--:--"
+        max_elapsed = None
+        for run_num, snap in view_snaps:
+            mtime = snap.get("mtime")
+            start_time = run_start_times.get(run_num)
+            if isinstance(mtime, (int, float)) and isinstance(start_time, (int, float)):
+                elapsed = float(mtime) - float(start_time)
+                max_elapsed = elapsed if max_elapsed is None else max(max_elapsed, elapsed)
+        if max_elapsed is not None:
+            since_start = _format_duration(max(0.0, max_elapsed))
+        return saved_label, since_start
+
+    def _series_for_frame(frame_val, mode: str | None = None, sim_index: int | None = None):
+        if mode is None:
+            mode = view_mode
+        if sim_index is None:
+            sim_index = view_sim_index
+        view_snaps = _collect_view_snaps(frame_val, mode, sim_index)
+        series = []
+        if mode == "sim":
+            if view_snaps:
+                run_num, snap = view_snaps[0]
+                color = _SIM_COLORS[sim_index % len(_SIM_COLORS)]
+                series.append((snap.get("points", []), color))
+        elif mode == "master":
+            for run_num, snap in view_snaps:
+                idx = run_index_map.get(run_num, 0)
+                color = _SIM_COLORS[idx % len(_SIM_COLORS)]
+                series.append((snap.get("points", []), color))
+        elif mode == "merge":
+            merged = []
+            for _, snap in view_snaps:
+                merged.extend(snap.get("points", []))
+            series.append((merged, (200, 200, 200)))
+        elif mode == "average":
+            buckets = {}
+            for _, snap in view_snaps:
+                for x, y in snap.get("points", []):
+                    key = round(float(x), 3)
+                    buckets.setdefault(key, []).append(float(y))
+            avg_points = [(x, sum(vals) / len(vals)) for x, vals in buckets.items() if vals]
+            avg_points.sort(key=lambda p: p[0])
+            series.append((avg_points, (255, 200, 80)))
+        return series, view_snaps
+
+    def _next_export_path(base_dir: Path, base_name: str) -> Path:
+        base = base_dir / base_name
+        if not base.exists():
+            return base
+        stem = base.stem
+        suffix = base.suffix
+        for idx in range(1, 1000):
+            candidate = base_dir / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                return candidate
+        return base
+
+    def _export_mov_for(mode: str, sim_index: int | None = None):
+        if not frames:
+            return False, "no snapshots"
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return False, "ffmpeg not found"
+        export_base = master_dir if master_dir is not None else results_dir
+        if mode == "sim":
+            if sim_index is None:
+                return False, "missing sim"
+            run_num = run_nums[sim_index]
+            export_root = export_base
+            export_suffix = f"sim_{run_num}"
+            base_name = f"timeline_sim_{run_num}.mov"
+        else:
+            export_root = export_base
+            export_suffix = mode
+            base_name = f"timeline_{mode}.mov"
+        export_dir = export_root / f"timeline_export_{export_suffix}"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        for old in export_dir.glob("frame_*.png"):
+            try:
+                old.unlink()
+            except Exception:
+                pass
+        fps = 30
+        label_h = info_line_h * 2 + 8
+        export_w = chart_rect.width
+        export_h = chart_rect.height + label_h
+        chart_export_rect = pygame.Rect(0, label_h, export_w, chart_rect.height)
+        for idx, frame_val in enumerate(frames):
+            series, view_snaps = _series_for_frame(frame_val, mode, sim_index)
+            surf = pygame.Surface((export_w, export_h))
+            surf.fill((18, 18, 18))
+            saved_label, _ = _labels_for_snaps(view_snaps)
+            label1 = small_font.render(f"Saved: {saved_label}", True, (220, 220, 220))
+            label2 = small_font.render(f"FPS: {fps}", True, (220, 220, 220))
+            surf.blit(label1, (6, 2))
+            surf.blit(label2, (6, 2 + info_line_h + 2))
+            _draw_snapshot_multi_chart(
+                surf,
+                small_font,
+                chart_export_rect,
+                series,
+                bounds=bounds,
+            )
+            pygame.image.save(surf, export_dir / f"frame_{idx:06d}.png")
+        output_path = _next_export_path(export_root, base_name)
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-framerate",
+            str(fps),
+            "-i",
+            str(export_dir / "frame_%06d.png"),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                return False, "export failed"
+            return True, output_path.name
+        except Exception:
+            return False, "export failed"
+
+    def _export_mov() -> None:
+        nonlocal export_status
+        ok, msg = _export_mov_for(view_mode, view_sim_index if view_mode == "sim" else None)
+        if ok:
+            export_status = f"Export completed: {msg}"
+        else:
+            export_status = f"Export failed: {msg}"
+
+    def _export_all() -> None:
+        nonlocal export_status
+        modes = ["master", "average", "merge"]
+        failed = []
+        for mode in modes:
+            ok, msg = _export_mov_for(mode, None)
+            if not ok:
+                failed.append(f"{mode} ({msg})")
+        if failed:
+            export_status = "Export failed: " + ", ".join(failed)
+        else:
+            export_status = "Export completed: master/average/merge"
 
     def _set_index_from_mouse(mx: int):
         nonlocal current_idx
-        if len(snapshots) <= 1:
+        if len(frames) <= 1:
             current_idx = 0
             return
         ratio = (mx - slider_rect.x) / max(1, slider_rect.width)
         ratio = max(0.0, min(1.0, ratio))
-        current_idx = int(round(ratio * (len(snapshots) - 1)))
+        current_idx = int(round(ratio * (len(frames) - 1)))
 
     def _set_speed_from_mouse(mx: int):
-        nonlocal speed_value, speed_auto
+        nonlocal speed_multiplier, speed_auto
         ratio = (mx - speed_slider_rect.x) / max(1, speed_slider_rect.width)
         ratio = max(0.0, min(1.0, ratio))
-        speed_value = speed_min + ratio * (speed_max - speed_min)
+        speed_multiplier = speed_min + ratio * (speed_max - speed_min)
         speed_auto = False
 
     def _auto_speed(snapshot_count: int) -> float:
@@ -2100,15 +2755,29 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
         return steps / max(0.1, duration)
 
     if speed_auto:
-        speed_value = max(speed_min, min(speed_max, _auto_speed(len(snapshots))))
+        speed_multiplier = 1.0
 
     def _advance(step: int):
         nonlocal current_idx, playing
-        if not snapshots:
+        if not frames:
             return
-        current_idx = max(0, min(len(snapshots) - 1, current_idx + step))
-        if current_idx >= len(snapshots) - 1:
+        current_idx = max(0, min(len(frames) - 1, current_idx + step))
+        if current_idx >= len(frames) - 1:
             playing = False
+
+    def _maybe_restart_for_short_tail() -> None:
+        nonlocal current_idx
+        if not frames or len(frames) <= 1:
+            return
+        remaining = (len(frames) - 1) - current_idx
+        if remaining <= 0:
+            current_idx = 0
+            return
+        speed = max(0.001, float(speed_multiplier) * _auto_speed(len(frames)))
+        if (remaining / speed) <= 0.3:
+            current_idx = 0
+
+    _reload(keep_end=True)
 
     running = True
     speed_dragging = False
@@ -2121,7 +2790,11 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
                 elif event.key == pygame.K_SPACE:
-                    playing = not playing
+                    if not playing:
+                        _maybe_restart_for_short_tail()
+                        playing = True
+                    else:
+                        playing = False
                 elif event.key == pygame.K_LEFT:
                     _advance(-1)
                 elif event.key == pygame.K_RIGHT:
@@ -2136,6 +2809,23 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
                 mx, my = event.pos
                 if exit_top_rect.collidepoint(mx, my):
                     running = False
+                    continue
+                handled = False
+                for btn in mode_buttons:
+                    if btn["rect"].collidepoint(mx, my):
+                        view_mode = btn["mode"]
+                        handled = True
+                        export_status = ""
+                        break
+                if not handled:
+                    for btn in sim_buttons:
+                        if btn["rect"].collidepoint(mx, my):
+                            view_mode = "sim"
+                            view_sim_index = btn["index"]
+                            handled = True
+                            export_status = ""
+                            break
+                if handled:
                     continue
                 if slider_rect.collidepoint(mx, my):
                     dragging = True
@@ -2152,9 +2842,17 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
                 elif fwd30_btn.collidepoint(mx, my):
                     _advance(30)
                 elif play_btn.collidepoint(mx, my):
-                    playing = not playing
+                    if not playing:
+                        _maybe_restart_for_short_tail()
+                        playing = True
+                    else:
+                        playing = False
                 elif refresh_btn.collidepoint(mx, my):
                     _reload(keep_end=True)
+                elif export_btn.collidepoint(mx, my):
+                    _export_mov()
+                elif export_all_btn.collidepoint(mx, my):
+                    _export_all()
                 elif exit_btn.collidepoint(mx, my):
                     running = False
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -2167,9 +2865,10 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
                 mx, _ = event.pos
                 _set_speed_from_mouse(mx)
 
-        if playing and snapshots:
+        if playing and frames:
             dt = now - last_play_time
-            play_accum += dt * speed_value
+            base_speed = max(0.001, _auto_speed(len(frames)))
+            play_accum += dt * base_speed * speed_multiplier
             while play_accum >= 1.0:
                 play_accum -= 1.0
                 _advance(1)
@@ -2181,8 +2880,17 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
             _reload(keep_end=False)
 
         screen.fill((18, 18, 18))
-        title = font.render(f"Arithmetic Timeline - run {run_num}", True, (230, 230, 230))
-        screen.blit(title, (40, 20))
+        if view_mode == "sim":
+            run_num = run_nums[view_sim_index]
+            title_label = f"Arithmetic Timeline - Sim {view_sim_index + 1} (run {run_num})"
+        elif view_mode == "master":
+            title_label = "Arithmetic Timeline - Master"
+        elif view_mode == "average":
+            title_label = "Arithmetic Timeline - Average"
+        else:
+            title_label = "Arithmetic Timeline - Merge"
+        title = font.render(title_label, True, (230, 230, 230))
+        screen.blit(title, (40, title_y))
         pygame.draw.rect(screen, (60, 60, 60), exit_top_rect)
         pygame.draw.rect(screen, (160, 160, 160), exit_top_rect, 1)
         exit_text = small_font.render("Exit", True, (230, 230, 230))
@@ -2194,24 +2902,20 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
             ),
         )
 
-        if not snapshots:
-            msg = small_font.render("No snapshots yet (wait for 100000 frames).", True, (180, 180, 180))
-            screen.blit(msg, (40, 80))
+        if not frames:
+            msg = small_font.render(
+                "No snapshots yet (wait for 100000 frames).",
+                True,
+                (180, 180, 180),
+            )
+            screen.blit(msg, (40, line1_y))
         else:
-            snap = snapshots[current_idx]
-            frame_val = snap.get("frame")
+            frame_val = frames[current_idx]
             frame_label = f"{frame_val}" if isinstance(frame_val, int) else "--"
-            saved_label = "--"
-            if isinstance(snap.get("mtime"), (int, float)):
-                saved_label = _format_wall_time(float(snap.get("mtime")))
-            since_start = "--:--:--"
-            if isinstance(snap.get("mtime"), (int, float)) and isinstance(run_start_time, (int, float)):
-                since_start = _format_duration(max(0.0, float(snap.get("mtime")) - float(run_start_time)))
-            line_h = small_font.get_height()
-            line1_y = chart_rect.top - (line_h * 2 + 6)
-            line2_y = chart_rect.top - (line_h + 2)
+            series, view_snaps = _series_for_frame(frame_val)
+            saved_label, since_start = _labels_for_snaps(view_snaps)
             info_line1 = small_font.render(
-                f"Frame: {frame_label}   Snapshot {current_idx + 1}/{len(snapshots)}",
+                f"Frame: {frame_label}   Snapshot {current_idx + 1}/{len(frames)}",
                 True,
                 (200, 200, 200),
             )
@@ -2230,26 +2934,33 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
                 True,
                 (200, 200, 200),
             )
-            screen.blit(info_since, (since_x, line2_y))
-            _draw_snapshot_arithmetic_chart(
+            screen.blit(info_since, (since_x, line3_y))
+            _draw_snapshot_multi_chart(
                 screen,
                 small_font,
                 chart_rect,
-                snap.get("points", []),
+                series,
                 bounds=bounds,
             )
 
+        for btn in mode_buttons:
+            active = view_mode == btn["mode"]
+            _draw_timeline_button(btn["rect"], btn["label"], btn["color"], active)
+        for btn in sim_buttons:
+            active = view_mode == "sim" and view_sim_index == btn["index"]
+            _draw_timeline_button(btn["rect"], btn["label"], btn["color"], active)
+
         pygame.draw.rect(screen, (90, 90, 90), slider_rect)
-        if snapshots:
-            if len(snapshots) == 1:
+        if frames:
+            if len(frames) == 1:
                 knob_x = slider_rect.x
             else:
-                ratio = current_idx / max(1, len(snapshots) - 1)
+                ratio = current_idx / max(1, len(frames) - 1)
                 knob_x = slider_rect.x + int(ratio * slider_rect.width)
             pygame.draw.circle(screen, (220, 220, 220), (knob_x, slider_rect.centery), knob_radius)
 
         pygame.draw.rect(screen, (90, 90, 90), speed_slider_rect)
-        speed_ratio = (speed_value - speed_min) / max(1e-6, (speed_max - speed_min))
+        speed_ratio = (speed_multiplier - speed_min) / max(1e-6, (speed_max - speed_min))
         speed_knob_x = speed_slider_rect.x + int(speed_ratio * speed_slider_rect.width)
         pygame.draw.circle(
             screen,
@@ -2257,8 +2968,10 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
             (speed_knob_x, speed_slider_rect.centery),
             speed_knob_radius,
         )
+        base_speed = max(0.001, _auto_speed(len(frames)))
+        effective_speed = base_speed * speed_multiplier
         speed_label = small_font.render(
-            f"Speed: {speed_value:.1f}x",
+            f"Speed: {speed_multiplier:.1f}x (auto {base_speed:.1f}x -> {effective_speed:.1f}x)",
             True,
             (200, 200, 200),
         )
@@ -2271,12 +2984,18 @@ def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
             (fwd30_btn, "+30"),
             (play_btn, "Play" if not playing else "Pause"),
             (refresh_btn, "Reload"),
+            (export_btn, "Export"),
+            (export_all_btn, "Export All"),
             (exit_btn, "Exit"),
         ]:
             pygame.draw.rect(screen, (40, 40, 40), rect)
             pygame.draw.rect(screen, (120, 120, 120), rect, 1)
             text = small_font.render(label, True, (220, 220, 220))
             screen.blit(text, (rect.x + (rect.width - text.get_width()) // 2, rect.y + 5))
+
+        if export_status:
+            status_surf = small_font.render(export_status, True, (180, 220, 180))
+            screen.blit(status_surf, (40, screen_h - 54))
 
         hint = small_font.render(
             "Drag sliders or use buttons. Space=play/pause, Left/Right = +/-1, PageUp/PageDown = +/-30, R = reload, Esc = exit",
@@ -2333,12 +3052,14 @@ def _pick_fps_point(
 def main() -> None:
     args = _parse_args()
     settings = load_settings()
+    _apply_master_graph_settings(settings)
     pygame.init()
     startup = _edit_startup_ui(settings, Path("results"))
     if startup is None:
         pygame.quit()
         return
     settings, continue_master_run, continue_settings, startup_message = startup
+    _apply_master_graph_settings(settings)
     if continue_master_run is not None:
         if isinstance(continue_settings, dict):
             preserved_draw = settings.get("draw", True)
@@ -2360,11 +3081,13 @@ def main() -> None:
                 )
             except Exception:
                 pass
+            _apply_master_graph_settings(settings)
     else:
         settings = _edit_settings_ui(settings)
         if settings is None:
             pygame.quit()
             return
+        _apply_master_graph_settings(settings)
     try:
         settings_count = int(settings.get("simulations", {}).get("count", 3))
     except Exception:
@@ -2493,6 +3216,10 @@ def main() -> None:
     chart_refresh_s = base_chart_refresh_s
     master_fps = base_master_fps
     master_fps_mode = _FPS_MODE_CAPPED
+    stop_max_runtime = 0.0
+    stop_max_frames = 0
+    stop_max_species = 0
+    stop_at_ts = None
     mean_kind = "Arithmetic"
     selected_mean_point = None
     selected_fps_point = None
@@ -2511,6 +3238,32 @@ def main() -> None:
     temp_uncap_until = 0.0
     temp_uncap_prev = None
 
+    def _refresh_stop_conditions() -> None:
+        nonlocal stop_max_runtime, stop_max_frames, stop_max_species, stop_at_ts
+        cond = settings.get("stop_conditions", {}) if isinstance(settings, dict) else {}
+        try:
+            runtime_enabled = bool(cond.get("runtime_enabled", False))
+            hours = float(cond.get("max_runtime_hours", 0) or 0)
+            stop_max_runtime = (hours * 3600.0) if runtime_enabled else 0.0
+        except Exception:
+            stop_max_runtime = 0.0
+        try:
+            frames_enabled = bool(cond.get("frames_enabled", False))
+            stop_max_frames = int(cond.get("max_frames", 0) or 0) if frames_enabled else 0
+        except Exception:
+            stop_max_frames = 0
+        try:
+            species_enabled = bool(cond.get("species_enabled", False))
+            stop_max_species = int(cond.get("max_species", 0) or 0) if species_enabled else 0
+        except Exception:
+            stop_max_species = 0
+        if bool(cond.get("datetime_enabled", False)):
+            stop_at_ts = _parse_stop_datetime(cond.get("stop_at_datetime", ""))
+        else:
+            stop_at_ts = None
+
+    _refresh_stop_conditions()
+
     def _open_settings_dialog() -> None:
         nonlocal settings, screen, font, small_font, label_font
         nonlocal max_window_h, window_h, max_scroll, scroll_offset
@@ -2518,6 +3271,7 @@ def main() -> None:
         if updated is None:
             return
         settings = updated
+        _apply_master_graph_settings(settings)
         try:
             max_window_h = int(settings.get("screen", {}).get("height", 900))
         except Exception:
@@ -2539,18 +3293,45 @@ def main() -> None:
         if not run_nums:
             return
         if selected_row == 0:
-            run_num = run_nums[0]
+            idx = 0
         else:
             idx = selected_row - 1
             if idx < 0 or idx >= len(run_nums):
                 return
-            run_num = run_nums[idx]
-        _view_arithmetic_snapshots(results_dir, run_num)
+        _view_arithmetic_snapshots(
+            results_dir,
+            run_nums,
+            initial_sim_index=idx,
+            master_dir=master_dir,
+        )
         screen = pygame.display.set_mode((window_w, window_h))
         pygame.display.set_caption("Simulation Master")
         font = pygame.font.SysFont("Consolas", 22)
         small_font = pygame.font.SysFont("Consolas", 16)
         label_font = pygame.font.SysFont("Consolas", 14)
+
+    def _open_stop_conditions_dialog() -> None:
+        nonlocal settings, screen, font, small_font, label_font
+        nonlocal max_window_h, window_h, max_scroll, scroll_offset
+        updated = _edit_stop_conditions_ui(settings)
+        if updated is not None:
+            settings = updated
+            _refresh_stop_conditions()
+        try:
+            max_window_h = int(settings.get("screen", {}).get("height", 900))
+        except Exception:
+            max_window_h = 900
+        max_window_h = max(360, max_window_h)
+        window_h = min(content_h, max_window_h)
+        if window_h <= header_h:
+            window_h = header_h + 1
+        screen = pygame.display.set_mode((window_w, window_h))
+        pygame.display.set_caption("Simulation Master")
+        font = pygame.font.SysFont("Consolas", 22)
+        small_font = pygame.font.SysFont("Consolas", 16)
+        label_font = pygame.font.SysFont("Consolas", 14)
+        max_scroll = max(0, content_h - window_h)
+        scroll_offset = max(0, min(scroll_offset, max_scroll))
 
     
     def _apply_master_fps_mode(new_mode: int, transient: bool = False) -> None:
@@ -2633,7 +3414,46 @@ def main() -> None:
             scroll_offset = row_bottom - window_h
         scroll_offset = max(0, min(max_scroll, scroll_offset))
 
+    def _check_stop_conditions(now_time: float) -> bool:
+        if stop_at_ts is not None and now_time >= stop_at_ts:
+            return True
+        now_perf = time.perf_counter()
+        for idx in range(count):
+            meta = meta_series[idx] if idx < len(meta_series) else {}
+            if (stop_max_frames > 0 or stop_max_species > 0) and (
+                not isinstance(meta, dict)
+                or not isinstance(meta.get("frame_count"), (int, float))
+                or not isinstance(meta.get("amnt_of_species"), (int, float))
+            ):
+                try:
+                    meta_path = results_dir / str(run_nums[idx]) / "run_meta.json"
+                    meta = _load_run_meta(meta_path)
+                    if idx < len(meta_series):
+                        meta_series[idx] = meta
+                except Exception:
+                    meta = meta if isinstance(meta, dict) else {}
+            frame_val = None
+            species_val = None
+            elapsed_val = None
+            if isinstance(meta, dict):
+                if isinstance(meta.get("frame_count"), (int, float)):
+                    frame_val = float(meta.get("frame_count"))
+                if isinstance(meta.get("amnt_of_species"), (int, float)):
+                    species_val = float(meta.get("amnt_of_species"))
+                if isinstance(meta.get("elapsed_seconds"), (int, float)):
+                    elapsed_val = float(meta.get("elapsed_seconds"))
+            if elapsed_val is None and idx < len(sim_start_times):
+                elapsed_val = max(0.0, now_perf - sim_start_times[idx])
+            if stop_max_frames > 0 and frame_val is not None and frame_val >= stop_max_frames:
+                return True
+            if stop_max_species > 0 and species_val is not None and species_val >= stop_max_species:
+                return True
+            if stop_max_runtime > 0 and elapsed_val is not None and elapsed_val >= stop_max_runtime:
+                return True
+        return False
+
     while running:
+        now = time.time()
         margin = 20
         gap = 20
         chart_w = (window_w - margin * 2 - gap) // 2
@@ -2667,6 +3487,7 @@ def main() -> None:
             "fps",
             "onoff",
             "timeline",
+            "limits",
             "settings",
             "exit",
         ]
@@ -2684,6 +3505,7 @@ def main() -> None:
         fps_btn = button_rects["fps"]
         onoff_btn = button_rects["onoff"]
         timeline_btn = button_rects["timeline"]
+        limits_btn = button_rects["limits"]
         settings_btn = button_rects["settings"]
         exit_btn = button_rects["exit"]
         confirm_layout = _confirm_quit_layout(window_w, header_top, y_offset, small_font)
@@ -2749,6 +3571,8 @@ def main() -> None:
                     _apply_master_fps_mode((master_fps_mode + 1) % 3)
                 elif event.key == pygame.K_t:
                     _open_timeline_viewer()
+                elif event.key == pygame.K_l:
+                    _open_stop_conditions_dialog()
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 _bump_uncap()
                 if pressed_button is not None:
@@ -2815,6 +3639,8 @@ def main() -> None:
                         )
                     elif pressed_button == "timeline" and timeline_btn.collidepoint(mx, content_y):
                         _open_timeline_viewer()
+                    elif pressed_button == "limits" and limits_btn.collidepoint(mx, content_y):
+                        _open_stop_conditions_dialog()
                     elif pressed_button == "settings" and settings_btn.collidepoint(mx, content_y):
                         _open_settings_dialog()
                     elif pressed_button == "exit" and exit_btn.collidepoint(mx, content_y):
@@ -2870,6 +3696,9 @@ def main() -> None:
                     handled_click = True
                 elif timeline_btn.collidepoint(mx, content_y):
                     pressed_button = "timeline"
+                    handled_click = True
+                elif limits_btn.collidepoint(mx, content_y):
+                    pressed_button = "limits"
                     handled_click = True
                 elif settings_btn.collidepoint(mx, content_y):
                     pressed_button = "settings"
@@ -2993,7 +3822,7 @@ def main() -> None:
             else:
                 cap_label = "FULL"
             hint3 = small_font.render(
-                "D: draw  M: mode  S: update  F: fps mode  T: timeline  Esc/Q: quit",
+                "D: draw  M: mode  S: update  F: fps mode  T: timeline  L: limits  Esc/Q: quit",
                 True,
                 (200, 200, 200),
             )
@@ -3028,6 +3857,7 @@ def main() -> None:
                 (fps_btn, "FPS Mode"),
                 (onoff_btn, "On/Off"),
                 (timeline_btn, "Timeline"),
+                (limits_btn, "Limits"),
                 (settings_btn, "Settings"),
                 (exit_btn, "Exit"),
             ]:
@@ -3040,7 +3870,6 @@ def main() -> None:
             fps_all_rect = pygame.Rect(margin, global_chart_y + y_offset, chart_w, global_chart_h)
             mean_all_rect = pygame.Rect(margin + chart_w + gap, global_chart_y + y_offset, chart_w, global_chart_h)
 
-            now = time.time()
             if now - last_chart_refresh >= chart_refresh_s:
                 last_chart_refresh = now
                 mean_value_field = _mean_value_field(mean_kind)
@@ -3330,6 +4159,9 @@ def main() -> None:
 
                 y += panel_h
             pygame.display.flip()
+        if _check_stop_conditions(now):
+            running = False
+            confirm_quit = False
         clock.tick(master_fps)
 
         for proc in procs:
