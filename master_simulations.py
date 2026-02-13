@@ -150,6 +150,7 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
 
     confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
     upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
     upload_notice = ""
     upload_notice_time = 0.0
     message_rect = pygame.Rect(20, list_bottom + 8, screen_w - 40, 24)
@@ -248,6 +249,8 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
                             error_text = ""
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None
                 if confirm_rect.collidepoint(mx, my):
                     if master_dir is not None:
                         if editing_message:
@@ -303,6 +306,16 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
         screen.fill((18, 18, 18))
         title = font.render("Master Settings (edit numbers, then confirm)", True, (230, 230, 230))
         screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
 
         for idx in range(scroll, min(len(items), scroll + visible_count)):
             item = items[idx]
@@ -366,7 +379,7 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
             screen.blit(notice, (20, screen_h - 30))
 
         pygame.display.flip()
-        clock.tick(30)
+        clock.tick(0)
 
 
 def _master_meta_path(master_dir: Path) -> Path:
@@ -510,9 +523,11 @@ def _select_master_run_ui(results_dir: Path):
         detail_w - 16,
         line_h,
     )
-    delete_rect = pygame.Rect(screen_w - 160, screen_h - 55, 140, 32)
-    delete_yes_rect = pygame.Rect(screen_w - 310, screen_h - 55, 70, 32)
-    delete_no_rect = pygame.Rect(screen_w - 230, screen_h - 55, 70, 32)
+    choose_rect = pygame.Rect(0, 0, 0, 0)
+    delete_rect = pygame.Rect(0, 0, 0, 0)
+    delete_yes_rect = pygame.Rect(0, 0, 0, 0)
+    delete_no_rect = pygame.Rect(0, 0, 0, 0)
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
 
     def _ensure_visible():
         nonlocal scroll
@@ -525,6 +540,19 @@ def _select_master_run_ui(results_dir: Path):
     _ensure_visible()
 
     while True:
+        detail_line_count = 5
+        preview_rect = pygame.Rect(
+            detail_x + 10,
+            detail_y + 10 + line_h * detail_line_count + 10,
+            detail_w - 20,
+            180,
+        )
+        btn_y = preview_rect.bottom + 12
+        choose_rect = pygame.Rect(detail_x + 10, btn_y, 120, 28)
+        delete_rect = pygame.Rect(choose_rect.right + 10, btn_y, 120, 28)
+        delete_yes_rect = pygame.Rect(detail_x + 10, btn_y, 70, 28)
+        delete_no_rect = pygame.Rect(delete_yes_rect.right + 10, btn_y, 70, 28)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None, None
@@ -587,6 +615,8 @@ def _select_master_run_ui(results_dir: Path):
                 _ensure_visible()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None, None
                 if confirm_delete:
                     if delete_yes_rect.collidepoint(mx, my):
                         if delete_target is None:
@@ -621,6 +651,21 @@ def _select_master_run_ui(results_dir: Path):
                         selected = int(idx)
                         editing_message = False
                         _ensure_visible()
+                if choose_rect.collidepoint(mx, my):
+                    run_num, path = masters[selected]
+                    settings_snapshot = None
+                    settings_path = _master_settings_path(path)
+                    if settings_path.exists():
+                        try:
+                            settings_snapshot = json.loads(settings_path.read_text())
+                        except Exception:
+                            settings_snapshot = None
+                    if settings_snapshot is None:
+                        meta = _load_master_meta(path)
+                        settings_snapshot = (
+                            meta.get("settings") if isinstance(meta, dict) else None
+                        )
+                    return run_num, settings_snapshot
                 if delete_rect.collidepoint(mx, my):
                     confirm_delete = True
                     delete_target = masters[selected]
@@ -628,6 +673,16 @@ def _select_master_run_ui(results_dir: Path):
         screen.fill((18, 18, 18))
         title = font.render("Select Master Run", True, (230, 230, 230))
         screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
         hint_text = "Enter: select  Esc: cancel  M: edit message  Del: delete"
         if editing_message:
             hint_text = "Editing message: Enter=save  Esc=cancel"
@@ -702,43 +757,7 @@ def _select_master_run_ui(results_dir: Path):
             screen.blit(text, (detail_x + 10, text_y))
             text_y += line_h
 
-        if confirm_delete:
-            pygame.draw.rect(screen, (80, 40, 40), delete_yes_rect)
-            pygame.draw.rect(screen, (200, 200, 200), delete_yes_rect, 1)
-            yes_text = small_font.render("Yes", True, (230, 230, 230))
-            screen.blit(
-                yes_text,
-                (
-                    delete_yes_rect.x + (delete_yes_rect.width - yes_text.get_width()) // 2,
-                    delete_yes_rect.y + 6,
-                ),
-            )
-            pygame.draw.rect(screen, (60, 60, 60), delete_no_rect)
-            pygame.draw.rect(screen, (200, 200, 200), delete_no_rect, 1)
-            no_text = small_font.render("No", True, (230, 230, 230))
-            screen.blit(
-                no_text,
-                (
-                    delete_no_rect.x + (delete_no_rect.width - no_text.get_width()) // 2,
-                    delete_no_rect.y + 6,
-                ),
-            )
-            prompt = small_font.render("Delete selected master?", True, (230, 200, 200))
-            screen.blit(prompt, (delete_yes_rect.x - 170, delete_yes_rect.y + 6))
-        else:
-            pygame.draw.rect(screen, (70, 40, 40), delete_rect)
-            pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
-            del_text = small_font.render("Delete", True, (230, 230, 230))
-            screen.blit(
-                del_text,
-                (
-                    delete_rect.x + (delete_rect.width - del_text.get_width()) // 2,
-                    delete_rect.y + 6,
-                ),
-            )
-
         # Arithmetic mean preview
-        preview_rect = pygame.Rect(detail_x + 10, text_y + 10, detail_w - 20, 180)
         pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
         mean_path = sel_path / f"combinedArithmeticMeanSimulatino{master_label}_Log.csv"
         if not mean_path.exists():
@@ -769,6 +788,51 @@ def _select_master_run_ui(results_dir: Path):
                     ((y - min_y) / (max_y - min_y)) * preview_rect.height
                 )
                 pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+
+        if confirm_delete:
+            pygame.draw.rect(screen, (80, 40, 40), delete_yes_rect)
+            pygame.draw.rect(screen, (200, 200, 200), delete_yes_rect, 1)
+            yes_text = small_font.render("Yes", True, (230, 230, 230))
+            screen.blit(
+                yes_text,
+                (
+                    delete_yes_rect.x + (delete_yes_rect.width - yes_text.get_width()) // 2,
+                    delete_yes_rect.y + 6,
+                ),
+            )
+            pygame.draw.rect(screen, (60, 60, 60), delete_no_rect)
+            pygame.draw.rect(screen, (200, 200, 200), delete_no_rect, 1)
+            no_text = small_font.render("No", True, (230, 230, 230))
+            screen.blit(
+                no_text,
+                (
+                    delete_no_rect.x + (delete_no_rect.width - no_text.get_width()) // 2,
+                    delete_no_rect.y + 6,
+                ),
+            )
+            prompt = small_font.render("Delete selected master?", True, (230, 200, 200))
+            screen.blit(prompt, (detail_x + 10, delete_yes_rect.y - line_h))
+        else:
+            pygame.draw.rect(screen, (40, 40, 40), choose_rect)
+            pygame.draw.rect(screen, (180, 180, 180), choose_rect, 1)
+            choose_text = small_font.render("Choose", True, (230, 230, 230))
+            screen.blit(
+                choose_text,
+                (
+                    choose_rect.x + (choose_rect.width - choose_text.get_width()) // 2,
+                    choose_rect.y + 6,
+                ),
+            )
+            pygame.draw.rect(screen, (70, 40, 40), delete_rect)
+            pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
+            del_text = small_font.render("Delete", True, (230, 230, 230))
+            screen.blit(
+                del_text,
+                (
+                    delete_rect.x + (delete_rect.width - del_text.get_width()) // 2,
+                    delete_rect.y + 6,
+                ),
+            )
 
         pygame.display.flip()
         clock.tick(30)
@@ -808,12 +872,13 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
     confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
     select_rect = pygame.Rect(screen_w - 160, 220, 140, 32)
     upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
     upload_notice = ""
     upload_notice_time = 0.0
 
     def _apply_edit():
         nonlocal num_tries, num_master, editing, edit_text, error_text
-        nonlocal continue_master_run, continue_settings, message_value
+        nonlocal continue_master_run, continue_settings, message_value, message_for_new
         target = "num_tries" if selected == 1 else "num_master"
         original = num_tries if target == "num_tries" else num_master
         new_val = _parse_numeric(edit_text.strip(), original)
@@ -911,6 +976,8 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                             message_text = message_value
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None
                 if confirm_rect.collidepoint(mx, my):
                     settings["draw"] = draw_value
                     settings["num_tries"] = num_tries
@@ -954,6 +1021,16 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
         screen.fill((18, 18, 18))
         title = font.render("Startup Options", True, (230, 230, 230))
         screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
 
         draw_label = f"Draw: {'ON' if draw_value else 'OFF'}"
         try:
@@ -1072,6 +1149,13 @@ def _format_duration(seconds: float) -> str:
     minutes = int((total % 3600) // 60)
     secs = total % 60
     return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
+
+
+def _format_wall_time(ts: float) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %I:%M:%S %p", time.localtime(float(ts)))
+    except Exception:
+        return "--"
 
 
 def _format_fps_label(sim_index: int, timestamp, interval, meta: dict, now_time: float) -> str:
@@ -1336,6 +1420,119 @@ def _load_arithmetic_points(results_dir: Path, run_num: int) -> list[tuple[float
     return points
 
 
+def _load_arithmetic_points_from_path(path: Path) -> list[tuple[float, float]]:
+    if not path.exists():
+        return []
+    points = []
+    try:
+        with open(path, newline="") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                try:
+                    x = float(row["evolution rate"])
+                    y = float(row["arithmetic mean length lived"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                points.append((x, y))
+    except Exception:
+        return []
+    return points
+
+
+def _load_arithmetic_snapshots(run_dir: Path) -> list[dict]:
+    snap_dir = run_dir / "snapshots"
+    if not snap_dir.exists():
+        return []
+    snapshots = []
+    for path in snap_dir.glob("arith_mean_*.csv"):
+        frame = None
+        mtime = None
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            mtime = None
+        try:
+            frame = int(path.stem.split("_")[-1])
+        except Exception:
+            frame = None
+        points = _load_arithmetic_points_from_path(path)
+        snapshots.append(
+            {"frame": frame, "points": points, "path": path, "mtime": mtime}
+        )
+    snapshots.sort(key=lambda item: item.get("frame") or 0)
+    return snapshots
+
+
+def _compute_arithmetic_bounds(snapshots: list[dict]):
+    xs = []
+    ys = []
+    for snap in snapshots:
+        for x, y in snap.get("points", []):
+            xs.append(x)
+            ys.append(y)
+    if not xs or not ys:
+        return None
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if max_x == min_x:
+        max_x = min_x + 1.0
+    if max_y == min_y:
+        max_y = min_y + 1.0
+    x_pad = (max_x - min_x) * 0.05
+    y_pad = (max_y - min_y) * 0.05
+    return (min_x - x_pad, max_x + x_pad, min_y - y_pad, max_y + y_pad)
+
+
+def _draw_snapshot_arithmetic_chart(
+    surface,
+    font,
+    rect: pygame.Rect,
+    points: list[tuple[float, float]],
+    bounds=None,
+) -> None:
+    pygame.draw.rect(surface, (80, 80, 80), rect, 1)
+    if not points:
+        msg = font.render("No mean data", True, (160, 160, 160))
+        surface.blit(msg, (rect.x + 6, rect.y + 6))
+        return
+
+    if bounds is None:
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        if max_x == min_x:
+            max_x = min_x + 1.0
+        if max_y == min_y:
+            max_y = min_y + 1.0
+        x_pad = (max_x - min_x) * 0.05
+        y_pad = (max_y - min_y) * 0.05
+        min_x -= x_pad
+        max_x += x_pad
+        min_y -= y_pad
+        max_y += y_pad
+    else:
+        min_x, max_x, min_y, max_y = bounds
+
+    plot_left = rect.x + 6
+    plot_top = rect.y + 6
+    plot_width = rect.width - 12
+    plot_height = rect.height - 12
+
+    def _scale_point(x, y):
+        px = int(((x - min_x) / (max_x - min_x)) * plot_width)
+        py = plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
+        return px, py
+
+    overlay = pygame.Surface((plot_width, plot_height), pygame.SRCALPHA)
+    color = (0, 200, 255, _DOT_ALPHA)
+    for x, y in sorted(points, key=lambda p: p[0]):
+        px, py = _scale_point(x, y)
+        pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
+    surface.blit(overlay, (plot_left, plot_top))
+
+
+
 def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     now = time.time()
     try:
@@ -1350,11 +1547,51 @@ def _get_cached_points(cache: dict, path: Path, loader, max_age: float = 0.5):
     return points
 
 
+def _get_snapshot_status(cache: dict, run_dir: Path, max_age: float = 1.0) -> dict:
+    snap_dir = run_dir / "snapshots"
+    now = time.time()
+    if not snap_dir.exists():
+        return {"count": 0, "last_frame": None, "last": now, "mtime": None}
+    latest_mtime = None
+    entry = cache.get(snap_dir)
+    if entry and (now - entry.get("last", 0)) < max_age:
+        return entry
+    count = 0
+    last_frame = None
+    for path in snap_dir.glob("arith_mean_*.csv"):
+        count += 1
+        if latest_mtime is None:
+            try:
+                latest_mtime = path.stat().st_mtime
+            except Exception:
+                latest_mtime = None
+        else:
+            try:
+                latest_mtime = max(latest_mtime, path.stat().st_mtime)
+            except Exception:
+                pass
+        try:
+            frame = int(path.stem.split("_")[-1])
+        except Exception:
+            frame = None
+        if frame is not None:
+            last_frame = frame if last_frame is None else max(last_frame, frame)
+    result = {"count": count, "last_frame": last_frame, "last": now, "mtime": latest_mtime}
+    cache[snap_dir] = result
+    return result
+
+
 def _load_run_meta(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        payload = json.loads(path.read_text())
+        if isinstance(payload, dict):
+            try:
+                payload["__mtime"] = path.stat().st_mtime
+            except Exception:
+                pass
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
 
@@ -1770,6 +2007,288 @@ def _pick_mean_point(
     return best
 
 
+def _view_arithmetic_snapshots(results_dir: Path, run_num: int) -> None:
+    run_dir = results_dir / str(run_num)
+    screen_w = 900
+    screen_h = 620
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption(f"Arithmetic Timeline - run {run_num}")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 16)
+    clock = pygame.time.Clock()
+    exit_top_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
+
+    snapshots = _load_arithmetic_snapshots(run_dir)
+    bounds = _compute_arithmetic_bounds(snapshots)
+    current_idx = max(0, len(snapshots) - 1)
+    dragging = False
+    last_reload = 0.0
+    playing = False
+    speed_min = 0.5
+    speed_max = 32.0
+    speed_value = 4.0
+    speed_auto = True
+    play_accum = 0.0
+    last_play_time = time.time()
+    run_start_time = None
+
+    chart_rect = pygame.Rect(40, 60, screen_w - 80, screen_h - 220)
+    slider_rect = pygame.Rect(60, chart_rect.bottom + 40, screen_w - 120, 6)
+    knob_radius = 8
+
+    speed_slider_rect = pygame.Rect(60, slider_rect.bottom + 16, 240, 6)
+    speed_knob_radius = 7
+    btn_y = speed_slider_rect.bottom + 16
+    btn_h = 26
+    btn_gap = 10
+    btn_w = 70
+    base_x = 60
+    back30_btn = pygame.Rect(base_x, btn_y, btn_w, btn_h)
+    prev_btn = pygame.Rect(back30_btn.right + btn_gap, btn_y, btn_w, btn_h)
+    next_btn = pygame.Rect(prev_btn.right + btn_gap, btn_y, btn_w, btn_h)
+    fwd30_btn = pygame.Rect(next_btn.right + btn_gap, btn_y, btn_w, btn_h)
+    play_btn = pygame.Rect(fwd30_btn.right + btn_gap, btn_y, 80, btn_h)
+    refresh_btn = pygame.Rect(play_btn.right + btn_gap, btn_y, 80, btn_h)
+    exit_btn = pygame.Rect(refresh_btn.right + btn_gap, btn_y, 80, btn_h)
+
+    def _reload(keep_end: bool = False) -> None:
+        nonlocal snapshots, bounds, current_idx, speed_value, speed_auto, run_start_time
+        new_snaps = _load_arithmetic_snapshots(run_dir)
+        bounds = _compute_arithmetic_bounds(new_snaps)
+        if keep_end and new_snaps:
+            current_idx = len(new_snaps) - 1
+        else:
+            current_idx = min(current_idx, max(0, len(new_snaps) - 1))
+        snapshots = new_snaps
+        meta = _load_run_meta(run_dir / "run_meta.json")
+        start_time = None
+        if isinstance(meta, dict):
+            st = meta.get("start_time")
+            if isinstance(st, (int, float)):
+                start_time = float(st)
+            if start_time is None:
+                elapsed = meta.get("elapsed_seconds")
+                meta_mtime = meta.get("__mtime")
+                if isinstance(elapsed, (int, float)) and isinstance(meta_mtime, (int, float)):
+                    start_time = float(meta_mtime) - float(elapsed)
+        run_start_time = start_time
+        if speed_auto:
+            speed_value = _auto_speed(len(snapshots))
+            speed_value = max(speed_min, min(speed_max, speed_value))
+
+    def _set_index_from_mouse(mx: int):
+        nonlocal current_idx
+        if len(snapshots) <= 1:
+            current_idx = 0
+            return
+        ratio = (mx - slider_rect.x) / max(1, slider_rect.width)
+        ratio = max(0.0, min(1.0, ratio))
+        current_idx = int(round(ratio * (len(snapshots) - 1)))
+
+    def _set_speed_from_mouse(mx: int):
+        nonlocal speed_value, speed_auto
+        ratio = (mx - speed_slider_rect.x) / max(1, speed_slider_rect.width)
+        ratio = max(0.0, min(1.0, ratio))
+        speed_value = speed_min + ratio * (speed_max - speed_min)
+        speed_auto = False
+
+    def _auto_speed(snapshot_count: int) -> float:
+        if snapshot_count <= 1:
+            return speed_min
+        duration = 5.0 + math.sqrt(snapshot_count / 100.0)
+        steps = max(1, snapshot_count - 1)
+        return steps / max(0.1, duration)
+
+    if speed_auto:
+        speed_value = max(speed_min, min(speed_max, _auto_speed(len(snapshots))))
+
+    def _advance(step: int):
+        nonlocal current_idx, playing
+        if not snapshots:
+            return
+        current_idx = max(0, min(len(snapshots) - 1, current_idx + step))
+        if current_idx >= len(snapshots) - 1:
+            playing = False
+
+    running = True
+    speed_dragging = False
+    while running:
+        now = time.time()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    running = False
+                elif event.key == pygame.K_SPACE:
+                    playing = not playing
+                elif event.key == pygame.K_LEFT:
+                    _advance(-1)
+                elif event.key == pygame.K_RIGHT:
+                    _advance(1)
+                elif event.key == pygame.K_PAGEUP:
+                    _advance(-30)
+                elif event.key == pygame.K_PAGEDOWN:
+                    _advance(30)
+                elif event.key == pygame.K_r:
+                    _reload(keep_end=True)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if exit_top_rect.collidepoint(mx, my):
+                    running = False
+                    continue
+                if slider_rect.collidepoint(mx, my):
+                    dragging = True
+                    _set_index_from_mouse(mx)
+                elif speed_slider_rect.collidepoint(mx, my):
+                    speed_dragging = True
+                    _set_speed_from_mouse(mx)
+                elif back30_btn.collidepoint(mx, my):
+                    _advance(-30)
+                elif prev_btn.collidepoint(mx, my):
+                    _advance(-1)
+                elif next_btn.collidepoint(mx, my):
+                    _advance(1)
+                elif fwd30_btn.collidepoint(mx, my):
+                    _advance(30)
+                elif play_btn.collidepoint(mx, my):
+                    playing = not playing
+                elif refresh_btn.collidepoint(mx, my):
+                    _reload(keep_end=True)
+                elif exit_btn.collidepoint(mx, my):
+                    running = False
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                dragging = False
+                speed_dragging = False
+            elif event.type == pygame.MOUSEMOTION and dragging:
+                mx, _ = event.pos
+                _set_index_from_mouse(mx)
+            elif event.type == pygame.MOUSEMOTION and speed_dragging:
+                mx, _ = event.pos
+                _set_speed_from_mouse(mx)
+
+        if playing and snapshots:
+            dt = now - last_play_time
+            play_accum += dt * speed_value
+            while play_accum >= 1.0:
+                play_accum -= 1.0
+                _advance(1)
+                if not playing:
+                    break
+        last_play_time = now
+        if now - last_reload >= 2.0:
+            last_reload = now
+            _reload(keep_end=False)
+
+        screen.fill((18, 18, 18))
+        title = font.render(f"Arithmetic Timeline - run {run_num}", True, (230, 230, 230))
+        screen.blit(title, (40, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_top_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_top_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_top_rect.x + (exit_top_rect.width - exit_text.get_width()) // 2,
+                exit_top_rect.y + 4,
+            ),
+        )
+
+        if not snapshots:
+            msg = small_font.render("No snapshots yet (wait for 100000 frames).", True, (180, 180, 180))
+            screen.blit(msg, (40, 80))
+        else:
+            snap = snapshots[current_idx]
+            frame_val = snap.get("frame")
+            frame_label = f"{frame_val}" if isinstance(frame_val, int) else "--"
+            saved_label = "--"
+            if isinstance(snap.get("mtime"), (int, float)):
+                saved_label = _format_wall_time(float(snap.get("mtime")))
+            since_start = "--:--:--"
+            if isinstance(snap.get("mtime"), (int, float)) and isinstance(run_start_time, (int, float)):
+                since_start = _format_duration(max(0.0, float(snap.get("mtime")) - float(run_start_time)))
+            line_h = small_font.get_height()
+            line1_y = chart_rect.top - (line_h * 2 + 6)
+            line2_y = chart_rect.top - (line_h + 2)
+            info_line1 = small_font.render(
+                f"Frame: {frame_label}   Snapshot {current_idx + 1}/{len(snapshots)}",
+                True,
+                (200, 200, 200),
+            )
+            screen.blit(info_line1, (40, line1_y))
+            info_saved = small_font.render(
+                f"Saved: {saved_label}",
+                True,
+                (200, 200, 200),
+            )
+            screen.blit(info_saved, (40, line2_y))
+            since_x = chart_rect.right - 220
+            if since_x < 40:
+                since_x = 40
+            info_since = small_font.render(
+                f"Since start: {since_start}",
+                True,
+                (200, 200, 200),
+            )
+            screen.blit(info_since, (since_x, line2_y))
+            _draw_snapshot_arithmetic_chart(
+                screen,
+                small_font,
+                chart_rect,
+                snap.get("points", []),
+                bounds=bounds,
+            )
+
+        pygame.draw.rect(screen, (90, 90, 90), slider_rect)
+        if snapshots:
+            if len(snapshots) == 1:
+                knob_x = slider_rect.x
+            else:
+                ratio = current_idx / max(1, len(snapshots) - 1)
+                knob_x = slider_rect.x + int(ratio * slider_rect.width)
+            pygame.draw.circle(screen, (220, 220, 220), (knob_x, slider_rect.centery), knob_radius)
+
+        pygame.draw.rect(screen, (90, 90, 90), speed_slider_rect)
+        speed_ratio = (speed_value - speed_min) / max(1e-6, (speed_max - speed_min))
+        speed_knob_x = speed_slider_rect.x + int(speed_ratio * speed_slider_rect.width)
+        pygame.draw.circle(
+            screen,
+            (220, 220, 220),
+            (speed_knob_x, speed_slider_rect.centery),
+            speed_knob_radius,
+        )
+        speed_label = small_font.render(
+            f"Speed: {speed_value:.1f}x",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(speed_label, (speed_slider_rect.right + 10, speed_slider_rect.y - 8))
+
+        for rect, label in [
+            (back30_btn, "-30"),
+            (prev_btn, "-1"),
+            (next_btn, "+1"),
+            (fwd30_btn, "+30"),
+            (play_btn, "Play" if not playing else "Pause"),
+            (refresh_btn, "Reload"),
+            (exit_btn, "Exit"),
+        ]:
+            pygame.draw.rect(screen, (40, 40, 40), rect)
+            pygame.draw.rect(screen, (120, 120, 120), rect, 1)
+            text = small_font.render(label, True, (220, 220, 220))
+            screen.blit(text, (rect.x + (rect.width - text.get_width()) // 2, rect.y + 5))
+
+        hint = small_font.render(
+            "Drag sliders or use buttons. Space=play/pause, Left/Right = +/-1, PageUp/PageDown = +/-30, R = reload, Esc = exit",
+            True,
+            (160, 160, 160),
+        )
+        screen.blit(hint, (40, screen_h - 30))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+
 def _pick_fps_point(
     click_pos: tuple[int, int],
     rect: pygame.Rect,
@@ -1918,8 +2437,8 @@ def main() -> None:
     fps_paths = [results_dir / str(run_num) / "fps_log.csv" for run_num in run_nums]
     header_top          = 30
     global_chart_h      = 90
-    global_chart_gap    = 40
-    master_line_offset  = 140
+    global_chart_gap    = 60
+    master_line_offset  = 300
     header_h            = header_top + master_line_offset + global_chart_gap + global_chart_h + 30
     chart_h             = 70
     panel_h             = chart_h + 32
@@ -1962,6 +2481,7 @@ def main() -> None:
 
     fps_cache = {}
     arithmetic_cache = {}
+    snapshot_cache = {}
     fps_series = [[] for _ in range(count)]
     mean_series = [[] for _ in range(count)]
     meta_series = [{} for _ in range(count)]
@@ -1988,6 +2508,8 @@ def main() -> None:
     scroll_step = max(30, panel_h // 2)
 
     running = True
+    temp_uncap_until = 0.0
+    temp_uncap_prev = None
 
     def _open_settings_dialog() -> None:
         nonlocal settings, screen, font, small_font, label_font
@@ -2012,10 +2534,32 @@ def main() -> None:
         max_scroll = max(0, content_h - window_h)
         scroll_offset = max(0, min(scroll_offset, max_scroll))
 
+    def _open_timeline_viewer() -> None:
+        nonlocal screen, font, small_font, label_font
+        if not run_nums:
+            return
+        if selected_row == 0:
+            run_num = run_nums[0]
+        else:
+            idx = selected_row - 1
+            if idx < 0 or idx >= len(run_nums):
+                return
+            run_num = run_nums[idx]
+        _view_arithmetic_snapshots(results_dir, run_num)
+        screen = pygame.display.set_mode((window_w, window_h))
+        pygame.display.set_caption("Simulation Master")
+        font = pygame.font.SysFont("Consolas", 22)
+        small_font = pygame.font.SysFont("Consolas", 16)
+        label_font = pygame.font.SysFont("Consolas", 14)
+
     
-    def _apply_master_fps_mode(new_mode: int) -> None:
+    def _apply_master_fps_mode(new_mode: int, transient: bool = False) -> None:
         nonlocal master_fps_mode, chart_refresh_s, master_fps
         nonlocal full_throttle_active, saved_draw_modes, saved_mode_values
+        nonlocal temp_uncap_prev, temp_uncap_until
+        if not transient:
+            temp_uncap_prev = None
+            temp_uncap_until = 0.0
         master_fps_mode = new_mode
         if master_fps_mode == _FPS_MODE_FULL_THROTTLE:
             chart_refresh_s = float("inf")
@@ -2060,6 +2604,17 @@ def main() -> None:
                 chart_refresh_s = 0.0
                 master_fps = uncapped_fps
 
+    def _bump_uncap() -> None:
+        nonlocal temp_uncap_until, temp_uncap_prev
+        if master_fps_mode == _FPS_MODE_FULL_THROTTLE:
+            return
+        now = time.time()
+        if master_fps_mode == _FPS_MODE_CAPPED:
+            temp_uncap_prev = _FPS_MODE_CAPPED
+            _apply_master_fps_mode(_FPS_MODE_UNCAPPED, transient=True)
+        if temp_uncap_prev == _FPS_MODE_CAPPED:
+            temp_uncap_until = now + 3.0
+
     def _ensure_selected_visible() -> None:
         nonlocal scroll_offset
         if max_scroll <= 0:
@@ -2084,27 +2639,53 @@ def main() -> None:
         chart_w = (window_w - margin * 2 - gap) // 2
         master_line_y = header_top + master_line_offset
         global_chart_y = master_line_y + global_chart_gap
+        exit_top_rect = pygame.Rect(window_w - 90, 16, 70, 26)
         fps_all_rect_content = pygame.Rect(
             margin, global_chart_y, chart_w, global_chart_h
         )
         mean_all_rect_content = pygame.Rect(
             margin + chart_w + gap, global_chart_y, chart_w, global_chart_h
         )
+        if temp_uncap_prev == _FPS_MODE_CAPPED and master_fps_mode == _FPS_MODE_UNCAPPED:
+            if time.time() > temp_uncap_until:
+                _apply_master_fps_mode(_FPS_MODE_CAPPED, transient=True)
+                temp_uncap_prev = None
+                temp_uncap_until = 0.0
         y_offset = -scroll_offset
 
         button_w = 110
         button_h = 26
-        button_gap = 8
-        button_x = window_w - button_w - 20
-        button_y = header_top
-        draw_btn = pygame.Rect(button_x, button_y, button_w, button_h)
-        mode_btn = pygame.Rect(button_x, button_y + (button_h + button_gap), button_w, button_h)
-        info_btn = pygame.Rect(button_x, button_y + 2 * (button_h + button_gap), button_w, button_h)
-        mean_btn = pygame.Rect(button_x, button_y + 3 * (button_h + button_gap), button_w, button_h)
-        fps_btn = pygame.Rect(button_x, button_y + 4 * (button_h + button_gap), button_w, button_h)
-        onoff_btn = pygame.Rect(button_x, button_y + 5 * (button_h + button_gap), button_w, button_h)
-        settings_btn = pygame.Rect(button_x, button_y + 6 * (button_h + button_gap), button_w, button_h)
-        exit_btn = pygame.Rect(button_x, button_y + 7 * (button_h + button_gap), button_w, button_h)
+        button_gap = 10
+        buttons_per_row = 4
+        button_start_x = margin
+        button_start_y = header_top + 160
+        button_order = [
+            "draw",
+            "mode",
+            "info",
+            "mean",
+            "fps",
+            "onoff",
+            "timeline",
+            "settings",
+            "exit",
+        ]
+        button_rects = {}
+        for idx, key in enumerate(button_order):
+            row = idx // buttons_per_row
+            col = idx % buttons_per_row
+            bx = button_start_x + col * (button_w + button_gap)
+            by = button_start_y + row * (button_h + button_gap)
+            button_rects[key] = pygame.Rect(bx, by, button_w, button_h)
+        draw_btn = button_rects["draw"]
+        mode_btn = button_rects["mode"]
+        info_btn = button_rects["info"]
+        mean_btn = button_rects["mean"]
+        fps_btn = button_rects["fps"]
+        onoff_btn = button_rects["onoff"]
+        timeline_btn = button_rects["timeline"]
+        settings_btn = button_rects["settings"]
+        exit_btn = button_rects["exit"]
         confirm_layout = _confirm_quit_layout(window_w, header_top, y_offset, small_font)
 
         for event in pygame.event.get():
@@ -2166,7 +2747,10 @@ def main() -> None:
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_f:
                     _apply_master_fps_mode((master_fps_mode + 1) % 3)
+                elif event.key == pygame.K_t:
+                    _open_timeline_viewer()
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                _bump_uncap()
                 if pressed_button is not None:
                     mx, my = event.pos
                     content_y = my + scroll_offset
@@ -2229,6 +2813,8 @@ def main() -> None:
                             mode_values,
                             update_tokens,
                         )
+                    elif pressed_button == "timeline" and timeline_btn.collidepoint(mx, content_y):
+                        _open_timeline_viewer()
                     elif pressed_button == "settings" and settings_btn.collidepoint(mx, content_y):
                         _open_settings_dialog()
                     elif pressed_button == "exit" and exit_btn.collidepoint(mx, content_y):
@@ -2239,12 +2825,20 @@ def main() -> None:
                     pressed_button = None
                     continue
             elif event.type == pygame.MOUSEWHEEL:
+                _bump_uncap()
                 if max_scroll > 0:
                     scroll_offset = max(
                         0, min(max_scroll, scroll_offset - event.y * scroll_step)
                     )
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                _bump_uncap()
                 mx, my = event.pos
+                if exit_top_rect.collidepoint(mx, my):
+                    if confirm_quit:
+                        running = False
+                    else:
+                        confirm_quit = True
+                    continue
                 content_y = my + scroll_offset
                 handled_click = False
                 pressed_button = None
@@ -2273,6 +2867,9 @@ def main() -> None:
                     handled_click = True
                 elif onoff_btn.collidepoint(mx, content_y):
                     pressed_button = "onoff"
+                    handled_click = True
+                elif timeline_btn.collidepoint(mx, content_y):
+                    pressed_button = "timeline"
                     handled_click = True
                 elif settings_btn.collidepoint(mx, content_y):
                     pressed_button = "settings"
@@ -2396,7 +2993,7 @@ def main() -> None:
             else:
                 cap_label = "FULL"
             hint3 = small_font.render(
-                "D: draw  M: mode  S: update  F: fps mode  Esc/Q: quit",
+                "D: draw  M: mode  S: update  F: fps mode  T: timeline  Esc/Q: quit",
                 True,
                 (200, 200, 200),
             )
@@ -2412,6 +3009,16 @@ def main() -> None:
             screen.blit(hint2, (20, header_top + 80 + y_offset))
             screen.blit(hint3, (20, header_top + 100 + y_offset))
             screen.blit(hint4, (20, header_top + 120 + y_offset))
+            pygame.draw.rect(screen, (60, 60, 60), exit_top_rect)
+            pygame.draw.rect(screen, (160, 160, 160), exit_top_rect, 1)
+            exit_text = small_font.render("Exit", True, (230, 230, 230))
+            screen.blit(
+                exit_text,
+                (
+                    exit_top_rect.x + (exit_top_rect.width - exit_text.get_width()) // 2,
+                    exit_top_rect.y + 4,
+                ),
+            )
 
             for rect, label in [
                 (draw_btn, "Draw"),
@@ -2420,6 +3027,7 @@ def main() -> None:
                 (mean_btn, f"Mean {mean_kind[:4]}"),
                 (fps_btn, "FPS Mode"),
                 (onoff_btn, "On/Off"),
+                (timeline_btn, "Timeline"),
                 (settings_btn, "Settings"),
                 (exit_btn, "Exit"),
             ]:
@@ -2520,6 +3128,24 @@ def main() -> None:
             mean_frames = (sum(frame_vals) / len(frame_vals)) if frame_vals else 0.0
             mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
             mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
+            last_saved_ts = None
+            for meta in meta_series:
+                if isinstance(meta, dict):
+                    ts = meta.get("__mtime")
+                    if isinstance(ts, (int, float)):
+                        last_saved_ts = ts if last_saved_ts is None else max(last_saved_ts, ts)
+            last_saved_label = _format_wall_time(last_saved_ts) if last_saved_ts else "--"
+            timeline_status = "Timeline: select a sim"
+            if selected_row > 0 and 0 <= (selected_row - 1) < len(run_nums):
+                sel_run = run_nums[selected_row - 1]
+                status = _get_snapshot_status(snapshot_cache, results_dir / str(sel_run))
+                snap_count = status.get("count", 0)
+                last_frame = status.get("last_frame")
+                if snap_count:
+                    frame_label = f"{last_frame}" if last_frame is not None else "--"
+                    timeline_status = f"Timeline: run {sel_run} | snaps {snap_count} | last {frame_label}"
+                else:
+                    timeline_status = f"Timeline: run {sel_run} | snaps 0"
 
             if run_nums:
                 run_min = min(run_nums)
@@ -2541,8 +3167,23 @@ def main() -> None:
                 True,
                 master_color,
             )
+            master_saved = small_font.render(
+                f"Last saved: {last_saved_label}",
+                True,
+                master_color,
+            )
+            master_timeline = small_font.render(
+                timeline_status,
+                True,
+                master_color,
+            )
             screen.blit(master_line, (margin, master_line_y + y_offset))
             screen.blit(master_stats, (margin, master_line_y + 16 + y_offset))
+            screen.blit(master_timeline, (margin, master_line_y + 32 + y_offset))
+            screen.blit(
+                master_saved,
+                (margin + chart_w + gap, global_chart_y - 18 + y_offset),
+            )
             highlight_sim = None
             if selected_fps_point and isinstance(selected_fps_point.get("sim_index"), int):
                 highlight_sim = int(selected_fps_point.get("sim_index"))
