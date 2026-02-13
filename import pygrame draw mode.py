@@ -593,6 +593,8 @@ while running:
         fps_tracker.update(frame_count, display_mode)
     if frame_count % META_WRITE_INTERVAL == 0:
         _write_run_meta()
+    if frame_count % SNAPSHOT_INTERVAL == 0:
+        _snapshot_arithmetic_mean(frame_count)
     if frame_count % PRINT_INTERVAL == 0 and (not SIM_CONTROL_FILE or caption_active):
         print(frame_count)
         print(totalSim)

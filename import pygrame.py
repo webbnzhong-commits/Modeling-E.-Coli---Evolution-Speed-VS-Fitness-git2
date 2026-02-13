@@ -2,6 +2,7 @@ import random
 import math
 import os
 import json
+import shutil
 try:
     import numpy as np
     HAS_NUMPY = True
@@ -460,6 +461,8 @@ avgSpecies = []
 run_start_time = time.perf_counter()
 run_start_wall = time.time()
 META_WRITE_INTERVAL = 1000
+SNAPSHOT_INTERVAL = 100000
+SNAPSHOT_DIR_NAME = "snapshots"
 existing_meta = _load_existing_run_meta(RUN_META_PATH)
 if not existing_meta and MASTER_RUN_META_PATH is not None:
     existing_meta = _load_existing_run_meta(MASTER_RUN_META_PATH)
@@ -613,6 +616,23 @@ def _update_all_stats_snapshot():
             parse_run(Path(tracker.master_dir), tracker.run_num, quiet=True)
         except Exception as e:
             print(f"Master parse error: {e}")
+
+
+def _snapshot_arithmetic_mean(frame_count: int) -> None:
+    if frame_count <= 0:
+        return
+    _update_all_stats_snapshot()
+    run_dir = tracker.results_dir / str(tracker.run_num)
+    parsed_path = run_dir / f"parsedArithmeticMeanSimulatino{tracker.run_num}_Log.csv"
+    if not parsed_path.exists():
+        return
+    snapshot_dir = run_dir / SNAPSHOT_DIR_NAME
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_dir / f"arith_mean_{int(frame_count)}.csv"
+        shutil.copy2(parsed_path, snapshot_path)
+    except Exception:
+        pass
 
 
 def _spawn_child_from_parent(parent):
