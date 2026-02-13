@@ -24,5 +24,19 @@
   "num_tries_master": 60,
   "simulations": {
     "count": 6
+  },
+  "master_graph": {
+    "dot_alpha": 110,
+    "dot_radius": 3
+  },
+  "stop_conditions": {
+    "runtime_enabled": true,
+    "max_runtime_hours": 21.0,
+    "frames_enabled": false,
+    "max_frames": 0,
+    "species_enabled": false,
+    "max_species": 0,
+    "datetime_enabled": false,
+    "stop_at_datetime": ""
   }
 }

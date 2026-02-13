@@ -77,6 +77,7 @@ class RunDataTracker:
         self._closed = False
         self.last_write_frame = None
         atexit.register(self._atexit_close)
+        self._initialize_species_counts()
 
     def _part_path(self, part_index: int) -> Path:
         return self.raw_dir / f"simulation_log_{self.run_num}_part{part_index}.csv"
@@ -209,6 +210,38 @@ class RunDataTracker:
                 self.base_log_path.exists() and self.base_log_path.stat().st_size > 0
             )
             self._open_log_file(self.base_log_path, write_header)
+
+    def _initialize_species_counts(self) -> None:
+        raw_paths = [self.base_log_path] + sorted(
+            self.raw_dir.glob(f"simulation_log_{self.run_num}_part*.csv"),
+            key=self._part_index,
+        )
+        total = 0
+        medium = 0
+        big = 0
+        for path in raw_paths:
+            if not path.exists() or path.stat().st_size == 0:
+                continue
+            try:
+                with open(path, newline="") as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        if not row:
+                            continue
+                        try:
+                            lifespan = float(row.get("length lived", ""))
+                        except Exception:
+                            continue
+                        total += 1
+                        if lifespan > 1999:
+                            big += 1
+                        elif lifespan > 500:
+                            medium += 1
+            except Exception:
+                continue
+        self.amntOfSpecies = total
+        self.amntOfMediumSpecies = medium
+        self.amntOfBigSpecies = big
 
     def _rotate_if_needed(self) -> None:
         if self.current_rows < self.rows_per_file - 1:

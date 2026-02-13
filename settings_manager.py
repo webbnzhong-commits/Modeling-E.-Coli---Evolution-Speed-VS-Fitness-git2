@@ -18,6 +18,17 @@ DEFAULT_SETTINGS = {
     "num_tries": 0,
     "num_tries_master": 0,
     "simulations": {"count": 3},
+    "master_graph": {"dot_alpha": 110, "dot_radius": 3},
+    "stop_conditions": {
+        "runtime_enabled": False,
+        "max_runtime_hours": 0.0,
+        "frames_enabled": False,
+        "max_frames": 0,
+        "species_enabled": False,
+        "max_species": 0,
+        "datetime_enabled": False,
+        "stop_at_datetime": "",
+    },
 }
 
 

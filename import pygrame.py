@@ -709,11 +709,15 @@ def _log_species(evo_val, data):
 def _write_run_meta(final=False):
     try:
         elapsed = time.perf_counter() - run_start_time
+        small_species = max(
+            0, int(tracker.amntOfSpecies) - int(tracker.amntOfMediumSpecies) - int(tracker.amntOfBigSpecies)
+        )
         payload = {
             "frame_count": int(frame_count),
             "start_time": float(run_start_wall),
             "elapsed_seconds": float(elapsed),
             "amnt_of_species": int(tracker.amntOfSpecies),
+            "amnt_of_small_species": int(small_species),
             "amnt_of_medium_species": int(tracker.amntOfMediumSpecies),
             "amnt_of_big_species": int(tracker.amntOfBigSpecies),
             "final": bool(final),
