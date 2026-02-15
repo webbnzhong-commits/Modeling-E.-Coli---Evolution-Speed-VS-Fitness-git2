@@ -27,6 +27,8 @@ things to add:
 
 add in species amount in timeline
 
+to stats on master_sim add in information such as amount of new species per minute.
+
 Big things:
 
 Create a hub folder which is similar to master:
