@@ -4,9 +4,26 @@ import csv
 import json
 import math
 import re
-import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Tuple
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+_LA_TZ_NAME = "America/Los_Angeles"
+if ZoneInfo is not None:
+    try:
+        _LA_TZ = ZoneInfo(_LA_TZ_NAME)
+    except Exception:
+        _LA_TZ = timezone(timedelta(hours=-8), "PST")
+else:
+    _LA_TZ = timezone(timedelta(hours=-8), "PST")
+
+
+def _format_wall_time_la(ts: float) -> str:
+    return datetime.fromtimestamp(float(ts), tz=_LA_TZ).strftime("%Y-%m-%d %I:%M:%S %p %Z")
 
 try:
     import numpy as np  # type: ignore
@@ -288,15 +305,11 @@ def parse_run(
             if start_time is not None:
                 try:
                     start_ts = float(start_time)
-                    start_label = time.strftime(
-                        "%Y-%m-%d %I:%M:%S %p", time.localtime(start_ts)
-                    )
+                    start_label = _format_wall_time_la(start_ts)
                     _add_line(f"Start time: {start_label}")
                     if isinstance(elapsed, (int, float)):
                         end_ts = start_ts + float(elapsed)
-                        end_label = time.strftime(
-                            "%Y-%m-%d %I:%M:%S %p", time.localtime(end_ts)
-                        )
+                        end_label = _format_wall_time_la(end_ts)
                         _add_line(f"End time: {end_label}")
                 except Exception:
                     _add_line(f"Start time (epoch): {start_time}")

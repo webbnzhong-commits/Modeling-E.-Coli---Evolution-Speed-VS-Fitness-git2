@@ -10,10 +10,14 @@ import subprocess
 import shutil
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import time
 
 import pygame
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 from settings_manager import load_settings, save_settings
 from simulatino_parser import parse_run
@@ -25,18 +29,39 @@ add in species amount in timeline
 
 Big things:
 
-Create a daddy folder which is similar to master:
+Create a hub folder which is similar to master:
 it holds one hundred master, in which the settings for enviorment change rate ranges from 0.5-1.5. After 100,000 (amount determined later with a more sucssesful run of everything including timeline and stuff)
-Inside of this daddy folder, it will first run master xy, when it reaches 100,000 (amount determined later) species it will start a new master (xy + 1) with enviorment change rate increase by .01, enviormental rate of change will start at 0.5, and end at 1.5.
+Inside of this hub folder, it will first run master xy, when it reaches 100,000 (amount determined later) species it will start a new master (xy + 1) with enviorment change rate increase by .01, enviormental rate of change will start at 0.5, and end at 1.5.
 They way we will look at this will be through a huge ass graph. 
 First find the equation of best fit for each graph. This should be comprised of two normal distribution graph stitched together at the apex. 
 Using these numbers, you can then create a deeper graph that shows the correlation between evolutionspeed and fitness, and how that correlation/ratio changes as the change in enviomental change changes. 
 prob looking at the apex point, or which point will have the highest apex. Furthermore, this should be a range though,
-OH WAIT I GOT IT
+For the graph:
 X - enviormental change rate
 y - evo speed
-size - fitness.
-Fitness should also control the brihtness, and or transparency. Will my macbook break? YES IT WILL, will it be funny watching this thousand dollar equitment start a fire inside of upper macloed end up buring millions of dollars worth of items, yeah maybe.
+size - fitness. Fitness should also control the brihtness, and or transparency.
+
+Format looks like the following:
+hub 0
+    Enviormental change speed 0.5
+        Master xy and stuff inside
+        Sim xy and stuff inside
+        Sim XY and stuff inside
+        e.t.c.
+
+    Enviormental change speed 0.51
+    Enviormental change speed 0.52
+hub 1
+hub 2
+hub 3
+
+Make sure that all of the masters is still accssessible within the master_simulations even if there is diffrent formating,
+
+
+
+---
+
+ Will my macbook break? YES IT WILL, will it be funny watching this thousand dollar equitment start a fire inside of upper macloed end up buring millions of dollars worth of items, yeah maybe.
 
 if we need to go bigger to allow for multicomputer threading proccesses that we can use the name "mommy"
 So order goes
@@ -44,26 +69,17 @@ mommy - daddy - Master - Sim - Sim (resetable) - Dot
 Or size can be the z
 all stitched together with a 3d graph finding the correlationship between diffrent things. Jesuse christ.
 
-Format looks like the following:
-Results
-    Daddy 0
-        Enviormental change speed 0.5
-            Master xy
-            Sim xy
-            Sim XY
-            e.t.c.
 
-        Enviormental change speed 0.51
-        Enviormental change speed 0.52
-    Daddy 1
-    Daddy 2
-    Daddy 3
+Results
+    
 
 Two diffrent main conclusions
 
 Our main 
 
 Final conclusion smth like:
+
+What is the relationship between evolution speed and fitness within an asexual species such as Escherchia Coli, and how might that relationship change as the speed in which the enviorment changes change. 
 
 '''
 
@@ -86,6 +102,14 @@ _DOT_RADIUS = 3
 _FPS_MODE_CAPPED = 0
 _FPS_MODE_UNCAPPED = 1
 _FPS_MODE_FULL_THROTTLE = 2
+_LA_TZ_NAME = "America/Los_Angeles"
+if ZoneInfo is not None:
+    try:
+        _LA_TZ = ZoneInfo(_LA_TZ_NAME)
+    except Exception:
+        _LA_TZ = timezone(timedelta(hours=-8), "PST")
+else:
+    _LA_TZ = timezone(timedelta(hours=-8), "PST")
 
 
 def _is_number(value) -> bool:
@@ -148,7 +172,9 @@ def _parse_stop_datetime(text: str):
         return None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            return datetime.strptime(value, fmt).timestamp()
+            dt_local = datetime.strptime(value, fmt)
+            dt_la = dt_local.replace(tzinfo=_LA_TZ)
+            return dt_la.timestamp()
         except Exception:
             continue
     return None
@@ -174,7 +200,7 @@ def _edit_stop_conditions_ui(settings: dict):
         {"key": "species_enabled", "label": "Enable species limit", "type": "bool"},
         {"key": "max_species", "label": "Max species", "type": "number"},
         {"key": "datetime_enabled", "label": "Enable stop at datetime", "type": "bool"},
-        {"key": "stop_at_datetime", "label": "Stop at (YYYY-MM-DD HH:MM[:SS])", "type": "text"},
+        {"key": "stop_at_datetime", "label": "Stop at LA time (YYYY-MM-DD HH:MM[:SS])", "type": "text"},
     ]
 
     screen_w = 720
@@ -334,8 +360,8 @@ def _edit_stop_conditions_ui(settings: dict):
         if local.get("datetime_enabled"):
             parsed_ts = _parse_stop_datetime(local.get("stop_at_datetime", ""))
             parsed_label = _format_wall_time(parsed_ts) if parsed_ts else "Invalid"
-        now_line = small_font.render(f"Now: {now_label}", True, (180, 180, 180))
-        parsed_line = small_font.render(f"Parsed: {parsed_label}", True, (180, 180, 180))
+        now_line = small_font.render(f"Now (LA): {now_label}", True, (180, 180, 180))
+        parsed_line = small_font.render(f"Parsed (LA): {parsed_label}", True, (180, 180, 180))
         screen.blit(now_line, (20, screen_h - 110))
         screen.blit(parsed_line, (20, screen_h - 90))
 
@@ -1438,7 +1464,8 @@ def _format_duration(seconds: float) -> str:
 
 def _format_wall_time(ts: float) -> str:
     try:
-        return time.strftime("%Y-%m-%d %I:%M:%S %p", time.localtime(float(ts)))
+        dt = datetime.fromtimestamp(float(ts), tz=_LA_TZ)
+        return dt.strftime("%Y-%m-%d %I:%M:%S %p %Z")
     except Exception:
         return "--"
 
@@ -2449,6 +2476,7 @@ def _view_arithmetic_snapshots(
     snapshots_by_run = {}
     run_frames_by_run = {}
     run_start_times = {}
+    run_meta_by_run = {}
     frames = []
     bounds = None
     current_idx = 0
@@ -2561,11 +2589,12 @@ def _view_arithmetic_snapshots(
 
     def _reload(keep_end: bool = False) -> None:
         nonlocal snapshots_by_run, bounds, current_idx, speed_multiplier, speed_auto, frames
-        nonlocal run_start_times, run_frames_by_run
+        nonlocal run_start_times, run_frames_by_run, run_meta_by_run
         current_frame = frames[current_idx] if frames else None
         snapshots_by_run = {}
         run_start_times = {}
         run_frames_by_run = {}
+        run_meta_by_run = {}
         frames_set = set()
         all_snaps = []
         for run_num in run_nums:
@@ -2584,6 +2613,7 @@ def _view_arithmetic_snapshots(
             run_frames_by_run[run_num] = run_frames
             all_snaps.extend(snaps)
             meta = _load_run_meta(run_dir / "run_meta.json")
+            run_meta_by_run[run_num] = meta if isinstance(meta, dict) else {}
             start_time = None
             if isinstance(meta, dict):
                 st = meta.get("start_time")
@@ -2658,6 +2688,32 @@ def _view_arithmetic_snapshots(
         if max_elapsed is not None:
             since_start = _format_duration(max(0.0, max_elapsed))
         return saved_label, since_start
+
+    def _species_label_for_view(mode: str | None = None, sim_index: int | None = None) -> str:
+        if mode is None:
+            mode = view_mode
+        if sim_index is None:
+            sim_index = view_sim_index
+        if mode == "sim":
+            if not (0 <= sim_index < len(run_nums)):
+                return "Species: --"
+            run_num = run_nums[sim_index]
+            meta = run_meta_by_run.get(run_num, {})
+            val = meta.get("amnt_of_species") if isinstance(meta, dict) else None
+            if isinstance(val, (int, float)):
+                return f"Species: {int(val)}"
+            return "Species: --"
+        vals = []
+        for run_num in run_nums:
+            meta = run_meta_by_run.get(run_num, {})
+            val = meta.get("amnt_of_species") if isinstance(meta, dict) else None
+            if isinstance(val, (int, float)):
+                vals.append(float(val))
+        if not vals:
+            return "Species: --"
+        total = int(sum(vals))
+        mean_val = sum(vals) / len(vals)
+        return f"Species total: {total} | mean: {mean_val:.1f}"
 
     def _series_for_frame(frame_val, mode: str | None = None, sim_index: int | None = None):
         if mode is None:
@@ -3129,7 +3185,7 @@ def _view_arithmetic_snapshots(
             )
             screen.blit(info_line1, (40, line1_y))
             info_saved = small_font.render(
-                f"Saved: {saved_label}",
+                f"Saved: {saved_label}   {_species_label_for_view()}",
                 True,
                 (200, 200, 200),
             )
@@ -3524,6 +3580,7 @@ def main() -> None:
         if updated is None:
             return
         settings = updated
+        _refresh_stop_conditions()
         _apply_master_graph_settings(settings)
         try:
             max_window_h = int(settings.get("screen", {}).get("height", 900))
@@ -3688,16 +3745,18 @@ def main() -> None:
         if stop_at_ts is not None and now_time >= stop_at_ts:
             return True
         now_perf = time.perf_counter()
+        need_meta_refresh = (stop_max_frames > 0) or (stop_max_species > 0) or (stop_max_runtime > 0)
         for idx in range(count):
             meta = meta_series[idx] if idx < len(meta_series) else {}
-            if (stop_max_frames > 0 or stop_max_species > 0) and (
-                not isinstance(meta, dict)
-                or not isinstance(meta.get("frame_count"), (int, float))
-                or not isinstance(meta.get("amnt_of_species"), (int, float))
-            ):
+            if need_meta_refresh:
                 try:
                     meta_path = results_dir / str(run_nums[idx]) / "run_meta.json"
-                    meta = _load_run_meta(meta_path)
+                    meta = _get_cached_points(
+                        arithmetic_cache,
+                        meta_path,
+                        _load_run_meta,
+                        max_age=0.5,
+                    )
                     if idx < len(meta_series):
                         meta_series[idx] = meta
                 except Exception:
