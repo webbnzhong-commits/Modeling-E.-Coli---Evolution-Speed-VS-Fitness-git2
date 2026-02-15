@@ -1,8 +1,21 @@
 import time
+from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 from pathlib import Path
 
 _DOT_ALPHA = 110
 _DOT_RADIUS = 3
+_LA_TZ_NAME = "America/Los_Angeles"
+if ZoneInfo is not None:
+    try:
+        _LA_TZ = ZoneInfo(_LA_TZ_NAME)
+    except Exception:
+        _LA_TZ = timezone(timedelta(hours=-8), "PST")
+else:
+    _LA_TZ = timezone(timedelta(hours=-8), "PST")
 
 
 class FPSTracker:
@@ -58,7 +71,7 @@ class FPSTracker:
 
     @staticmethod
     def _format_time(ts: float) -> str:
-        label = time.strftime("%I:%M:%S %p", time.localtime(ts))
+        label = datetime.fromtimestamp(float(ts), tz=_LA_TZ).strftime("%I:%M:%S %p")
         return label.lstrip("0").lower()
 
     def draw_graph(self, surface, font, x: int, y: int, w: int, h: int) -> None:
