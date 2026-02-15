@@ -18,6 +18,56 @@ import pygame
 from settings_manager import load_settings, save_settings
 from simulatino_parser import parse_run
 
+'''
+things to add:
+
+add in species amount in timeline
+
+Big things:
+
+Create a daddy folder which is similar to master:
+it holds one hundred master, in which the settings for enviorment change rate ranges from 0.5-1.5. After 100,000 (amount determined later with a more sucssesful run of everything including timeline and stuff)
+Inside of this daddy folder, it will first run master xy, when it reaches 100,000 (amount determined later) species it will start a new master (xy + 1) with enviorment change rate increase by .01, enviormental rate of change will start at 0.5, and end at 1.5.
+They way we will look at this will be through a huge ass graph. 
+First find the equation of best fit for each graph. This should be comprised of two normal distribution graph stitched together at the apex. 
+Using these numbers, you can then create a deeper graph that shows the correlation between evolutionspeed and fitness, and how that correlation/ratio changes as the change in enviomental change changes. 
+prob looking at the apex point, or which point will have the highest apex. Furthermore, this should be a range though,
+OH WAIT I GOT IT
+X - enviormental change rate
+y - evo speed
+size - fitness.
+Fitness should also control the brihtness, and or transparency. Will my macbook break? YES IT WILL, will it be funny watching this thousand dollar equitment start a fire inside of upper macloed end up buring millions of dollars worth of items, yeah maybe.
+
+if we need to go bigger to allow for multicomputer threading proccesses that we can use the name "mommy"
+So order goes
+mommy - daddy - Master - Sim - Sim (resetable) - Dot
+Or size can be the z
+all stitched together with a 3d graph finding the correlationship between diffrent things. Jesuse christ.
+
+Format looks like the following:
+Results
+    Daddy 0
+        Enviormental change speed 0.5
+            Master xy
+            Sim xy
+            Sim XY
+            e.t.c.
+
+        Enviormental change speed 0.51
+        Enviormental change speed 0.52
+    Daddy 1
+    Daddy 2
+    Daddy 3
+
+Two diffrent main conclusions
+
+Our main 
+
+Final conclusion smth like:
+
+'''
+
+
 _SIM_COLORS = [
     (0, 200, 255),
     (255, 180, 0),
@@ -1773,6 +1823,9 @@ def _draw_snapshot_multi_chart(
     rect: pygame.Rect,
     series: list[tuple[list[tuple[float, float]], tuple[int, int, int]]],
     bounds=None,
+    selected_point=None,
+    selected_label=None,
+    label_font=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     all_points = []
@@ -1823,6 +1876,17 @@ def _draw_snapshot_multi_chart(
             px, py = _scale_point(x, y)
             pygame.draw.circle(overlay, color, (px, py), _DOT_RADIUS)
     surface.blit(overlay, (plot_left, plot_top))
+    if selected_point:
+        x = selected_point.get("x")
+        y = selected_point.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            px, py = _scale_point(float(x), float(y))
+            px += plot_left
+            py += plot_top
+            pygame.draw.circle(surface, (255, 255, 255), (px, py), 4, 1)
+            if selected_label:
+                use_font = label_font if label_font is not None else font
+                _draw_value_label(surface, use_font, rect, selected_label, (px + 6, py - 6))
 
 
 
@@ -2389,14 +2453,13 @@ def _view_arithmetic_snapshots(
     bounds = None
     current_idx = 0
     dragging = False
-    last_reload = 0.0
     playing = False
     speed_min = 0.5
     speed_max = 32.0
     speed_multiplier = 1.0
     speed_auto = True
     play_accum = 0.0
-    last_play_time = time.time()
+    play_tick_fps = 30.0
 
     title_y = 20
     title_h = font.get_height()
@@ -2484,6 +2547,8 @@ def _view_arithmetic_snapshots(
     exit_btn = pygame.Rect(export_all_btn.right + btn_gap, btn_y, 80, btn_h)
 
     export_status = ""
+    selected_timeline_dot = None
+
     def _draw_timeline_button(rect, label, accent_color, active: bool) -> None:
         fill = (70, 70, 70) if active else (40, 40, 40)
         border = accent_color if active else (120, 120, 120)
@@ -2626,6 +2691,130 @@ def _view_arithmetic_snapshots(
             avg_points.sort(key=lambda p: p[0])
             series.append((avg_points, (255, 200, 80)))
         return series, view_snaps
+
+    def _series_meta(view_snaps, mode: str | None = None, sim_index: int | None = None):
+        if mode is None:
+            mode = view_mode
+        if sim_index is None:
+            sim_index = view_sim_index
+        meta = []
+        if mode == "sim":
+            run_num = run_nums[sim_index] if 0 <= sim_index < len(run_nums) else None
+            if view_snaps:
+                run_num = view_snaps[0][0]
+            meta.append({"run_num": run_num, "sim_index": sim_index})
+        elif mode == "master":
+            for run_num, _ in view_snaps:
+                meta.append({"run_num": run_num, "sim_index": run_index_map.get(run_num)})
+        else:
+            meta.append({"run_num": None, "sim_index": None})
+        return meta
+
+    def _pick_timeline_dot(
+        click_pos: tuple[int, int],
+        rect: pygame.Rect,
+        series: list[tuple[list[tuple[float, float]], tuple[int, int, int]]],
+        view_snaps,
+        mode: str | None = None,
+        sim_index: int | None = None,
+        max_distance: int = 8,
+    ):
+        all_points = []
+        for points, _ in series:
+            all_points.extend(points)
+        if not all_points:
+            return None
+        if bounds is None:
+            xs = [p[0] for p in all_points]
+            ys = [p[1] for p in all_points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            if max_x == min_x:
+                max_x = min_x + 1.0
+            if max_y == min_y:
+                max_y = min_y + 1.0
+            x_pad = (max_x - min_x) * 0.05
+            y_pad = (max_y - min_y) * 0.05
+            min_x -= x_pad
+            max_x += x_pad
+            min_y -= y_pad
+            max_y += y_pad
+        else:
+            min_x, max_x, min_y, max_y = bounds
+        plot_left = rect.x + 6
+        plot_top = rect.y + 6
+        plot_width = rect.width - 12
+        plot_height = rect.height - 12
+
+        def _scale_point(x, y):
+            px = int(((x - min_x) / (max_x - min_x)) * plot_width)
+            py = plot_height - int(((y - min_y) / (max_y - min_y)) * plot_height)
+            return px + plot_left, py + plot_top
+
+        meta = _series_meta(view_snaps, mode, sim_index)
+        best = None
+        best_d2 = max_distance * max_distance
+        cx, cy = click_pos
+        for s_idx, item in enumerate(series):
+            points = item[0]
+            if not points:
+                continue
+            point_meta = meta[s_idx] if s_idx < len(meta) else {"run_num": None, "sim_index": None}
+            for x, y in points:
+                px, py = _scale_point(x, y)
+                dx = px - cx
+                dy = py - cy
+                d2 = dx * dx + dy * dy
+                if d2 <= best_d2:
+                    best_d2 = d2
+                    best = {
+                        "mode": mode if mode is not None else view_mode,
+                        "run_num": point_meta.get("run_num"),
+                        "sim_index": point_meta.get("sim_index"),
+                        "target_x": float(x),
+                        "x": float(x),
+                        "y": float(y),
+                    }
+        return best
+
+    def _resolve_tracked_dot(
+        tracked_dot,
+        series: list[tuple[list[tuple[float, float]], tuple[int, int, int]]],
+        view_snaps,
+        mode: str | None = None,
+        sim_index: int | None = None,
+    ):
+        if not tracked_dot:
+            return None
+        target_x = tracked_dot.get("target_x")
+        if not isinstance(target_x, (int, float)):
+            return None
+        target_x = float(target_x)
+        tracked_run = tracked_dot.get("run_num")
+        meta = _series_meta(view_snaps, mode, sim_index)
+        best = None
+        best_dx = None
+        for s_idx, item in enumerate(series):
+            points = item[0]
+            if not points:
+                continue
+            point_meta = meta[s_idx] if s_idx < len(meta) else {"run_num": None, "sim_index": None}
+            if tracked_run is not None and point_meta.get("run_num") != tracked_run:
+                continue
+            for x, y in points:
+                dx = abs(float(x) - target_x)
+                if best_dx is None or dx < best_dx:
+                    best_dx = dx
+                    best = {
+                        "mode": mode if mode is not None else view_mode,
+                        "run_num": point_meta.get("run_num"),
+                        "sim_index": point_meta.get("sim_index"),
+                        "target_x": target_x,
+                        "x": float(x),
+                        "y": float(y),
+                        "x_error": float(dx),
+                    }
+        return best
 
     def _next_export_path(base_dir: Path, base_name: str) -> Path:
         base = base_dir / base_name
@@ -2782,7 +2971,6 @@ def _view_arithmetic_snapshots(
     running = True
     speed_dragging = False
     while running:
-        now = time.time()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -2816,6 +3004,7 @@ def _view_arithmetic_snapshots(
                         view_mode = btn["mode"]
                         handled = True
                         export_status = ""
+                        selected_timeline_dot = None
                         break
                 if not handled:
                     for btn in sim_buttons:
@@ -2824,8 +3013,24 @@ def _view_arithmetic_snapshots(
                             view_sim_index = btn["index"]
                             handled = True
                             export_status = ""
+                            selected_timeline_dot = None
                             break
                 if handled:
+                    continue
+                if chart_rect.collidepoint(mx, my):
+                    if frames:
+                        frame_val = frames[current_idx]
+                        series, view_snaps = _series_for_frame(frame_val)
+                        selected_timeline_dot = _pick_timeline_dot(
+                            (mx, my),
+                            chart_rect,
+                            series,
+                            view_snaps,
+                            view_mode,
+                            view_sim_index,
+                        )
+                    else:
+                        selected_timeline_dot = None
                     continue
                 if slider_rect.collidepoint(mx, my):
                     dragging = True
@@ -2866,18 +3071,14 @@ def _view_arithmetic_snapshots(
                 _set_speed_from_mouse(mx)
 
         if playing and frames:
-            dt = now - last_play_time
             base_speed = max(0.001, _auto_speed(len(frames)))
-            play_accum += dt * base_speed * speed_multiplier
+            # Advance by render frame ticks (not elapsed wall time) for stable playback.
+            play_accum += (base_speed * speed_multiplier) / max(1.0, play_tick_fps)
             while play_accum >= 1.0:
                 play_accum -= 1.0
                 _advance(1)
                 if not playing:
                     break
-        last_play_time = now
-        if now - last_reload >= 2.0:
-            last_reload = now
-            _reload(keep_end=False)
 
         screen.fill((18, 18, 18))
         if view_mode == "sim":
@@ -2913,6 +3114,13 @@ def _view_arithmetic_snapshots(
             frame_val = frames[current_idx]
             frame_label = f"{frame_val}" if isinstance(frame_val, int) else "--"
             series, view_snaps = _series_for_frame(frame_val)
+            tracked_dot = _resolve_tracked_dot(
+                selected_timeline_dot,
+                series,
+                view_snaps,
+                view_mode,
+                view_sim_index,
+            )
             saved_label, since_start = _labels_for_snaps(view_snaps)
             info_line1 = small_font.render(
                 f"Frame: {frame_label}   Snapshot {current_idx + 1}/{len(frames)}",
@@ -2926,6 +3134,34 @@ def _view_arithmetic_snapshots(
                 (200, 200, 200),
             )
             screen.blit(info_saved, (40, line2_y))
+            dot_text = "Dot: click a point to track"
+            dot_label = None
+            if tracked_dot is not None:
+                dx = tracked_dot.get("x_error")
+                x_val = tracked_dot.get("x")
+                y_val = tracked_dot.get("y")
+                run_num = tracked_dot.get("run_num")
+                sim_idx = tracked_dot.get("sim_index")
+                extra = []
+                if isinstance(sim_idx, int):
+                    extra.append(f"Sim {sim_idx + 1}")
+                if isinstance(run_num, int):
+                    extra.append(f"run {run_num}")
+                if isinstance(x_val, (int, float)) and isinstance(y_val, (int, float)):
+                    dot_text = f"Dot: evo {float(x_val):.3f} | mean {float(y_val):.2f}"
+                    if extra:
+                        dot_text += " | " + " ".join(extra)
+                    if isinstance(dx, (int, float)) and dx > 1e-6:
+                        dot_text += f" | dx {float(dx):.4f}"
+                    dot_label = f"x:{float(x_val):.3f} y:{float(y_val):.2f}"
+                    if extra:
+                        dot_label += " | " + " ".join(extra)
+            elif selected_timeline_dot is not None:
+                target_x = selected_timeline_dot.get("target_x")
+                if isinstance(target_x, (int, float)):
+                    dot_text = f"Dot: evo {float(target_x):.3f} | no point this frame"
+            info_dot = small_font.render(dot_text, True, (200, 200, 200))
+            screen.blit(info_dot, (40, line3_y))
             since_x = chart_rect.right - 220
             if since_x < 40:
                 since_x = 40
@@ -2941,6 +3177,9 @@ def _view_arithmetic_snapshots(
                 chart_rect,
                 series,
                 bounds=bounds,
+                selected_point=tracked_dot,
+                selected_label=dot_label,
+                label_font=small_font,
             )
 
         for btn in mode_buttons:
@@ -2998,14 +3237,14 @@ def _view_arithmetic_snapshots(
             screen.blit(status_surf, (40, screen_h - 54))
 
         hint = small_font.render(
-            "Drag sliders or use buttons. Space=play/pause, Left/Right = +/-1, PageUp/PageDown = +/-30, R = reload, Esc = exit",
+            "Click chart dot to track. Space=play/pause, Left/Right = +/-1, PageUp/PageDown = +/-30, R = reload, Esc = exit",
             True,
             (160, 160, 160),
         )
         screen.blit(hint, (40, screen_h - 30))
 
         pygame.display.flip()
-        clock.tick(30)
+        clock.tick(int(play_tick_fps))
 
 
 def _pick_fps_point(
@@ -3231,8 +3470,22 @@ def main() -> None:
 
 
     max_scroll = max(0, content_h - window_h)
-    scroll_offset = 0
+    scroll_offset = 0.0
+    scroll_target = 0.0
     scroll_step = max(30, panel_h // 2)
+    scroll_overscroll = 180.0
+    scroll_smoothness = 14.0
+    scroll_snap_epsilon = 0.5
+    last_scroll_anim_time = time.perf_counter()
+
+    def _scroll_limits() -> tuple[float, float]:
+        if max_scroll <= 0:
+            return 0.0, 0.0
+        return -scroll_overscroll, float(max_scroll) + scroll_overscroll
+
+    def _clamp_scroll(value: float) -> float:
+        lower, upper = _scroll_limits()
+        return max(lower, min(upper, float(value)))
 
     running = True
     temp_uncap_until = 0.0
@@ -3266,7 +3519,7 @@ def main() -> None:
 
     def _open_settings_dialog() -> None:
         nonlocal settings, screen, font, small_font, label_font
-        nonlocal max_window_h, window_h, max_scroll, scroll_offset
+        nonlocal max_window_h, window_h, max_scroll, scroll_offset, scroll_target
         updated = _edit_settings_ui(settings, master_dir=master_dir, write_global_on_confirm=False)
         if updated is None:
             return
@@ -3286,7 +3539,8 @@ def main() -> None:
         small_font = pygame.font.SysFont("Consolas", 16)
         label_font = pygame.font.SysFont("Consolas", 14)
         max_scroll = max(0, content_h - window_h)
-        scroll_offset = max(0, min(scroll_offset, max_scroll))
+        scroll_offset = _clamp_scroll(scroll_offset)
+        scroll_target = _clamp_scroll(scroll_target)
 
     def _open_timeline_viewer() -> None:
         nonlocal screen, font, small_font, label_font
@@ -3312,7 +3566,7 @@ def main() -> None:
 
     def _open_stop_conditions_dialog() -> None:
         nonlocal settings, screen, font, small_font, label_font
-        nonlocal max_window_h, window_h, max_scroll, scroll_offset
+        nonlocal max_window_h, window_h, max_scroll, scroll_offset, scroll_target
         updated = _edit_stop_conditions_ui(settings)
         if updated is not None:
             settings = updated
@@ -3331,7 +3585,8 @@ def main() -> None:
         small_font = pygame.font.SysFont("Consolas", 16)
         label_font = pygame.font.SysFont("Consolas", 14)
         max_scroll = max(0, content_h - window_h)
-        scroll_offset = max(0, min(scroll_offset, max_scroll))
+        scroll_offset = _clamp_scroll(scroll_offset)
+        scroll_target = _clamp_scroll(scroll_target)
 
     
     def _apply_master_fps_mode(new_mode: int, transient: bool = False) -> None:
@@ -3396,23 +3651,38 @@ def main() -> None:
         if temp_uncap_prev == _FPS_MODE_CAPPED:
             temp_uncap_until = now + 3.0
 
+    def _set_scroll_target(value: float, immediate: bool = False) -> None:
+        nonlocal scroll_target, scroll_offset
+        clamped = _clamp_scroll(value)
+        scroll_target = clamped
+        if immediate:
+            scroll_offset = clamped
+
+    def _scroll_by(delta: float) -> None:
+        _set_scroll_target(scroll_target + float(delta))
+
     def _ensure_selected_visible() -> None:
-        nonlocal scroll_offset
+        nonlocal scroll_target, scroll_offset
         if max_scroll <= 0:
+            scroll_target = 0.0
+            scroll_offset = 0.0
             return
         if selected_row == 0:
-            scroll_offset = 0
+            scroll_target = 0.0
+            _bump_uncap()
             return
         if selected_row == count:
-            scroll_offset = max_scroll
+            scroll_target = float(max_scroll)
+            _bump_uncap()
             return
         row_top = header_h + (selected_row - 1) * panel_h
         row_bottom = row_top + panel_h
-        if row_top < scroll_offset:
-            scroll_offset = row_top
-        if row_bottom > scroll_offset + window_h:
-            scroll_offset = row_bottom - window_h
-        scroll_offset = max(0, min(max_scroll, scroll_offset))
+        if row_top < scroll_target:
+            scroll_target = float(row_top)
+        if row_bottom > scroll_target + window_h:
+            scroll_target = float(row_bottom - window_h)
+        scroll_target = max(0.0, min(float(max_scroll), scroll_target))
+        _bump_uncap()
 
     def _check_stop_conditions(now_time: float) -> bool:
         if stop_at_ts is not None and now_time >= stop_at_ts:
@@ -3454,6 +3724,7 @@ def main() -> None:
 
     while running:
         now = time.time()
+        render_scroll = int(round(scroll_offset))
         margin = 20
         gap = 20
         chart_w = (window_w - margin * 2 - gap) // 2
@@ -3471,7 +3742,7 @@ def main() -> None:
                 _apply_master_fps_mode(_FPS_MODE_CAPPED, transient=True)
                 temp_uncap_prev = None
                 temp_uncap_until = 0.0
-        y_offset = -scroll_offset
+        y_offset = -render_scroll
 
         button_w = 110
         button_h = 26
@@ -3539,14 +3810,18 @@ def main() -> None:
                     _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_PAGEUP:
                     if max_scroll > 0:
-                        scroll_offset = max(0, scroll_offset - window_h)
+                        _scroll_by(-window_h)
+                        _bump_uncap()
                 elif event.key == pygame.K_PAGEDOWN:
                     if max_scroll > 0:
-                        scroll_offset = min(max_scroll, scroll_offset + window_h)
+                        _scroll_by(window_h)
+                        _bump_uncap()
                 elif event.key == pygame.K_HOME:
-                    scroll_offset = 0
+                    _set_scroll_target(0.0)
+                    _bump_uncap()
                 elif event.key == pygame.K_END:
-                    scroll_offset = max_scroll
+                    _set_scroll_target(float(max_scroll))
+                    _bump_uncap()
                 elif event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT:
                     if selected_row == 0:
                         new_state = not all(enabled)
@@ -3577,7 +3852,7 @@ def main() -> None:
                 _bump_uncap()
                 if pressed_button is not None:
                     mx, my = event.pos
-                    content_y = my + scroll_offset
+                    content_y = my + render_scroll
                     if pressed_button == "draw" and draw_btn.collidepoint(mx, content_y):
                         if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
                             _apply_draw_toggle(selected_row, draw_modes)
@@ -3653,9 +3928,7 @@ def main() -> None:
             elif event.type == pygame.MOUSEWHEEL:
                 _bump_uncap()
                 if max_scroll > 0:
-                    scroll_offset = max(
-                        0, min(max_scroll, scroll_offset - event.y * scroll_step)
-                    )
+                    _scroll_by(-event.y * scroll_step)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 _bump_uncap()
                 mx, my = event.pos
@@ -3665,7 +3938,7 @@ def main() -> None:
                     else:
                         confirm_quit = True
                     continue
-                content_y = my + scroll_offset
+                content_y = my + render_scroll
                 handled_click = False
                 pressed_button = None
                 if confirm_quit:
@@ -3796,9 +4069,27 @@ def main() -> None:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
                 if max_scroll > 0:
                     if event.button == 4:
-                        scroll_offset = max(0, scroll_offset - scroll_step)
+                        _scroll_by(-scroll_step)
                     else:
-                        scroll_offset = min(max_scroll, scroll_offset + scroll_step)
+                        _scroll_by(scroll_step)
+                    _bump_uncap()
+
+        scroll_target = _clamp_scroll(scroll_target)
+        scroll_offset = _clamp_scroll(scroll_offset)
+        anim_now = time.perf_counter()
+        anim_dt = max(0.0, min(0.1, anim_now - last_scroll_anim_time))
+        last_scroll_anim_time = anim_now
+        if abs(scroll_target - scroll_offset) <= scroll_snap_epsilon:
+            scroll_offset = scroll_target
+        else:
+            alpha = 1.0 - math.exp(-scroll_smoothness * anim_dt)
+            if alpha <= 0.0:
+                alpha = 0.01
+            scroll_offset += (scroll_target - scroll_offset) * alpha
+            _bump_uncap()
+        render_scroll = int(round(scroll_offset))
+        y_offset = -render_scroll
+        confirm_layout = _confirm_quit_layout(window_w, header_top, y_offset, small_font)
         
         if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
             screen.fill((20, 20, 20))

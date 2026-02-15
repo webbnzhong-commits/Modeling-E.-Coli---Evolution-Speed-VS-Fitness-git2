@@ -669,11 +669,15 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
+
+
     if random.uniform(0, child.evolution_speed) < 0.09:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
     child.cancerous = True
+
+
     return child
 
 
