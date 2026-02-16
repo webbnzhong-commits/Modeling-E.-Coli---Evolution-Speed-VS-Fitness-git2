@@ -20,14 +20,22 @@
   "reproduction_debuf_min": 0.001,
   "quan": 2.0,
   "immune_system_quan_factor": 0.15,
-  "num_tries": 651,
-  "num_tries_master": 60,
+  "num_tries": 675,
+  "num_tries_master": 65,
+  "num_tries_hub": 3,
   "simulations": {
     "count": 6
   },
   "master_graph": {
     "dot_alpha": 50,
     "dot_radius": 3
+  },
+  "hub": {
+    "start_rate": 0.5,
+    "end_rate": 1.5,
+    "step": 0.01,
+    "species_threshold": 100000,
+    "max_masters": 101
   },
   "stop_conditions": {
     "runtime_enabled": true,

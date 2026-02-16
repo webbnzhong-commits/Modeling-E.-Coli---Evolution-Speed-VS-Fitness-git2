@@ -21,6 +21,9 @@ class RunDataTracker:
     def __init__(
         self, results_dir: Union[str, Path] = "results", rows_per_file: int = 1000000
     ) -> None:
+        env_results_dir = os.environ.get("SIM_RESULTS_DIR")
+        if env_results_dir:
+            results_dir = env_results_dir
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.rows_per_file = max(1, rows_per_file)
