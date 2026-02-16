@@ -24,6 +24,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--species-threshold", type=int, default=None)
     parser.add_argument("--max-masters", type=int, default=None)
     parser.add_argument(
+        "--hub-select",
+        action="store_true",
+        help="Force hub selector UI (new hub or continue existing).",
+    )
+    parser.add_argument(
+        "--continue-hub",
+        type=int,
+        default=None,
+        help="Continue a specific existing hub index (e.g. --continue-hub 3).",
+    )
+    parser.add_argument(
         "--skip-plots",
         action="store_true",
         help="Skip matplotlib plot generation and only write CSV/JSON outputs.",
@@ -107,6 +118,15 @@ def _rate_label(rate: float) -> str:
     return f"env_{rate:.2f}".replace(".", "p")
 
 
+def _parse_hub_id(path: Path):
+    if not path.name.startswith("hub_"):
+        return None
+    try:
+        return int(path.name.split("_", 1)[1])
+    except Exception:
+        return None
+
+
 def _parse_master_id(path: Path):
     if not path.name.startswith("master_"):
         return None
@@ -128,6 +148,251 @@ def _collect_existing_master_ids(results_root: Path) -> set[int]:
             continue
         ids.add(int(run_id))
     return ids
+
+
+def _collect_hub_runs(results_root: Path) -> list[dict]:
+    hubs = []
+    if not results_root.exists():
+        return hubs
+    for path in sorted(results_root.glob("hub_*")):
+        if not path.is_dir():
+            continue
+        hub_idx = _parse_hub_id(path)
+        if hub_idx is None:
+            continue
+        meta_path = path / "hub_meta.json"
+        meta = {}
+        if meta_path.exists():
+            try:
+                loaded = json.loads(meta_path.read_text())
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except Exception:
+                meta = {}
+        rates = meta.get("rates")
+        if not isinstance(rates, list):
+            rates = []
+        total_steps = len(rates)
+        steps = meta.get("steps")
+        if not isinstance(steps, list):
+            steps = []
+        ok_indices = set()
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            if str(step.get("status", "")) != "ok":
+                continue
+            try:
+                idx = int(step.get("step_index"))
+            except Exception:
+                continue
+            if idx < 0:
+                continue
+            ok_indices.add(idx)
+        completed_steps = len(ok_indices)
+        if total_steps > 0:
+            completed_steps = min(completed_steps, total_steps)
+        hubs.append(
+            {
+                "hub_idx": int(hub_idx),
+                "hub_dir": path,
+                "status": str(meta.get("status", "unknown")),
+                "total_steps": int(total_steps),
+                "completed_steps": int(completed_steps),
+                "created_at": meta.get("created_at"),
+                "meta_path": meta_path,
+            }
+        )
+    hubs.sort(key=lambda item: int(item["hub_idx"]))
+    return hubs
+
+
+def _ensure_csv_with_header(path: Path, header_line: str) -> None:
+    if path.exists():
+        try:
+            if path.stat().st_size > 0:
+                return
+        except Exception:
+            pass
+    try:
+        path.write_text(header_line)
+    except Exception:
+        pass
+
+
+def _select_hub_run_ui(results_root: Path):
+    hub_rows = _collect_hub_runs(results_root)
+    try:
+        import pygame  # pylint: disable=import-outside-toplevel
+    except Exception:
+        return {"mode": "new"}
+
+    pygame.init()
+    try:
+        screen_w = 840
+        screen_h = 560
+        screen = pygame.display.set_mode((screen_w, screen_h))
+        pygame.display.set_caption("Hub Selector")
+        font = pygame.font.SysFont("Consolas", 22)
+        small = pygame.font.SysFont("Consolas", 18)
+        tiny = pygame.font.SysFont("Consolas", 15)
+        clock = pygame.time.Clock()
+
+        rows = [{"mode": "new", "label": "Create New Hub"}]
+        for row in hub_rows:
+            done = int(row.get("completed_steps", 0))
+            total = int(row.get("total_steps", 0))
+            status = str(row.get("status", "unknown"))
+            rows.append(
+                {
+                    "mode": "continue",
+                    "hub_idx": int(row["hub_idx"]),
+                    "hub_dir": row["hub_dir"],
+                    "created_at": row.get("created_at"),
+                    "status": status,
+                    "completed_steps": done,
+                    "total_steps": total,
+                    "label": f"Continue hub_{int(row['hub_idx'])} ({done}/{total}) [{status}]",
+                }
+            )
+
+        selected = 0
+        scroll = 0
+        list_top = 82
+        list_bottom = screen_h - 86
+        line_h = small.get_height() + 8
+        visible = max(1, (list_bottom - list_top) // line_h)
+        left_x = 20
+        left_w = 430
+        detail_x = left_x + left_w + 20
+        detail_w = screen_w - detail_x - 20
+        choose_rect = pygame.Rect(detail_x, screen_h - 72, detail_w, 32)
+        cancel_rect = pygame.Rect(screen_w - 94, 14, 74, 28)
+
+        def _ensure_visible() -> None:
+            nonlocal scroll
+            if selected < scroll:
+                scroll = selected
+            elif selected >= scroll + visible:
+                scroll = selected - visible + 1
+            scroll = max(0, min(scroll, max(0, len(rows) - visible)))
+
+        _ensure_visible()
+        while True:
+            selected = max(0, min(selected, len(rows) - 1))
+            current = rows[selected]
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    if event.key == pygame.K_UP:
+                        selected = (selected - 1) % len(rows)
+                        _ensure_visible()
+                    elif event.key == pygame.K_DOWN:
+                        selected = (selected + 1) % len(rows)
+                        _ensure_visible()
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        return current
+                if event.type == pygame.MOUSEWHEEL:
+                    if event.y > 0:
+                        selected = (selected - 1) % len(rows)
+                    elif event.y < 0:
+                        selected = (selected + 1) % len(rows)
+                    _ensure_visible()
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+                    if cancel_rect.collidepoint(mx, my):
+                        return None
+                    if choose_rect.collidepoint(mx, my):
+                        return current
+                    if left_x <= mx <= left_x + left_w and list_top <= my <= list_bottom:
+                        idx = (my - list_top) // line_h + scroll
+                        if 0 <= idx < len(rows):
+                            selected = int(idx)
+                            _ensure_visible()
+
+            screen.fill((18, 18, 18))
+            title = font.render("Hub Selector", True, (230, 230, 230))
+            screen.blit(title, (20, 20))
+
+            pygame.draw.rect(screen, (60, 60, 60), cancel_rect)
+            pygame.draw.rect(screen, (160, 160, 160), cancel_rect, 1)
+            cancel_text = tiny.render("Cancel", True, (230, 230, 230))
+            screen.blit(
+                cancel_text,
+                (
+                    cancel_rect.x + (cancel_rect.width - cancel_text.get_width()) // 2,
+                    cancel_rect.y + 6,
+                ),
+            )
+
+            pygame.draw.rect(screen, (26, 28, 32), (left_x, list_top, left_w, list_bottom - list_top))
+            pygame.draw.rect(screen, (70, 74, 86), (left_x, list_top, left_w, list_bottom - list_top), 1)
+            for idx in range(scroll, min(len(rows), scroll + visible)):
+                row = rows[idx]
+                y = list_top + (idx - scroll) * line_h
+                if idx == selected:
+                    pygame.draw.rect(screen, (40, 44, 54), (left_x + 2, y - 2, left_w - 4, line_h))
+                color = (0, 215, 255) if idx == selected else (220, 220, 220)
+                txt = small.render(str(row.get("label", "")), True, color)
+                screen.blit(txt, (left_x + 8, y))
+
+            pygame.draw.rect(screen, (26, 28, 32), (detail_x, list_top, detail_w, list_bottom - list_top))
+            pygame.draw.rect(screen, (70, 74, 86), (detail_x, list_top, detail_w, list_bottom - list_top), 1)
+
+            detail_lines = []
+            if current.get("mode") == "new":
+                detail_lines = [
+                    "Mode: New hub run",
+                    "A new hub index will be allocated.",
+                    f"Root: {results_root}",
+                ]
+            else:
+                created_at = current.get("created_at")
+                created_txt = "-"
+                try:
+                    created_txt = datetime.fromtimestamp(float(created_at)).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+                detail_lines = [
+                    f"Mode: Continue hub_{int(current.get('hub_idx'))}",
+                    f"Status: {current.get('status', 'unknown')}",
+                    f"Progress: {current.get('completed_steps', 0)}/{current.get('total_steps', 0)}",
+                    f"Created: {created_txt}",
+                    f"Path: {current.get('hub_dir')}",
+                ]
+            yy = list_top + 10
+            for line in detail_lines:
+                line_txt = tiny.render(str(line), True, (205, 205, 205))
+                screen.blit(line_txt, (detail_x + 8, yy))
+                yy += line_h
+
+            btn_label = "Choose New Hub" if current.get("mode") == "new" else "Continue Selected Hub"
+            pygame.draw.rect(screen, (42, 42, 46), choose_rect)
+            pygame.draw.rect(screen, (170, 170, 170), choose_rect, 1)
+            choose_text = small.render(btn_label, True, (230, 230, 230))
+            screen.blit(
+                choose_text,
+                (
+                    choose_rect.x + (choose_rect.width - choose_text.get_width()) // 2,
+                    choose_rect.y + 6,
+                ),
+            )
+
+            hint = tiny.render("Up/Down select  Enter choose  Esc cancel", True, (170, 170, 170))
+            screen.blit(hint, (20, screen_h - 46))
+            pygame.display.flip()
+            clock.tick(30)
+    except Exception:
+        return {"mode": "new"}
+    finally:
+        try:
+            pygame.display.quit()
+            pygame.quit()
+        except Exception:
+            pass
 
 
 def _plan_master_ids(start_id: int, count: int, existing_ids: set[int]) -> list[int]:
@@ -516,11 +781,11 @@ def _linear_fit(xs: list[float], ys: list[float]):
     return slope, intercept
 
 
-def _project_final_fitness(rows: list[dict]) -> list[dict]:
+def _project_metric(rows: list[dict], value_key: str) -> list[dict]:
     actual_points = []
     for row in rows:
         x = row.get("env_rate")
-        y = row.get("apex_fitness")
+        y = row.get(value_key)
         if _is_number(x) and _is_number(y):
             actual_points.append((float(x), float(y)))
 
@@ -536,7 +801,7 @@ def _project_final_fitness(rows: list[dict]) -> list[dict]:
         if not _is_number(x):
             continue
         x = float(x)
-        y_actual = row.get("apex_fitness")
+        y_actual = row.get(value_key)
         if _is_number(y_actual):
             projected.append({"x": x, "y": float(y_actual), "actual": True})
             continue
@@ -551,6 +816,33 @@ def _project_final_fitness(rows: list[dict]) -> list[dict]:
     return projected
 
 
+def _project_final_bubble(rows: list[dict]) -> list[dict]:
+    evo_points = _project_metric(rows, "apex_evolution_rate")
+    fit_points = _project_metric(rows, "apex_fitness")
+    fit_by_x = {float(p["x"]): p for p in fit_points if _is_number(p.get("x"))}
+
+    out = []
+    for evo in evo_points:
+        if not _is_number(evo.get("x")) or not _is_number(evo.get("y")):
+            continue
+        x = float(evo["x"])
+        fit = fit_by_x.get(x)
+        fitness = None
+        fit_actual = False
+        if isinstance(fit, dict) and _is_number(fit.get("y")):
+            fitness = float(fit["y"])
+            fit_actual = bool(fit.get("actual"))
+        out.append(
+            {
+                "x": x,
+                "evo": float(evo["y"]),
+                "fitness": fitness,
+                "actual": bool(evo.get("actual")) and fit_actual,
+            }
+        )
+    return out
+
+
 def _runtime_prediction(rows: list[dict], start_ts: float, now_ts: float):
     elapsed = max(0.0, float(now_ts - start_ts))
     done = 0
@@ -558,7 +850,7 @@ def _runtime_prediction(rows: list[dict], start_ts: float, now_ts: float):
     running_elapsed = None
     for row in rows:
         status = str(row.get("status", "pending"))
-        if status in ("ok", "failed", "no_master", "stopped"):
+        if status in ("ok", "failed", "no_master", "stopped", "aborted"):
             done += 1
             dur = row.get("duration_s")
             if _is_number(dur):
@@ -606,6 +898,7 @@ class _HubDashboard:
         species_threshold: int,
         reopen_callback=None,
         close_callback=None,
+        shutdown_callback=None,
     ) -> None:
         self.enabled = False
         self.closed = False
@@ -618,11 +911,12 @@ class _HubDashboard:
         self.planned_master_span = str(planned_master_span)
         self.species_threshold = int(species_threshold)
         self.fps_mode = _FPS_MODE_CAPPED
-        self.capped_fps = 30
+        self.capped_fps = 1
         self.uncapped_fps = 120
         self.draw_fps = self.capped_fps
         self.reopen_callback = reopen_callback
         self.close_callback = close_callback
+        self.shutdown_callback = shutdown_callback
         self.selected_row_index = 0
         self._rows_cache = []
         self._table_rect = None
@@ -632,6 +926,7 @@ class _HubDashboard:
         self._visible_rows = 0
         self._reopen_button_rect = None
         self._close_button_rect = None
+        self._shutdown_button_rect = None
         if not enabled:
             return
         try:
@@ -707,6 +1002,14 @@ class _HubDashboard:
         except Exception:
             pass
 
+    def _trigger_shutdown(self) -> None:
+        if callable(self.shutdown_callback):
+            try:
+                self.shutdown_callback()
+            except Exception:
+                pass
+        self.closed = True
+
     def _pump_events(self) -> None:
         if not self.enabled:
             return
@@ -722,6 +1025,8 @@ class _HubDashboard:
                     self._trigger_reopen()
                 elif event.key == self.pg.K_c:
                     self._trigger_close()
+                elif event.key == self.pg.K_x:
+                    self._trigger_shutdown()
                 elif event.key == self.pg.K_UP:
                     self.scroll_target = max(0.0, self.scroll_target - 1.0)
                 elif event.key == self.pg.K_DOWN:
@@ -751,6 +1056,11 @@ class _HubDashboard:
                     and self._close_button_rect.collidepoint(mx, my)
                 ):
                     self._trigger_close()
+                if (
+                    self._shutdown_button_rect is not None
+                    and self._shutdown_button_rect.collidepoint(mx, my)
+                ):
+                    self._trigger_shutdown()
                 if self._table_rect is not None and self._table_rect.collidepoint(mx, my):
                     if my >= self._rows_base_y:
                         local = int((my - self._rows_base_y) // self._row_h)
@@ -770,28 +1080,34 @@ class _HubDashboard:
         pg = self.pg
         pg.draw.rect(self.screen, (22, 24, 29), rect)
         pg.draw.rect(self.screen, (70, 74, 86), rect, 1)
-        title = self.font.render("Possible Final Results (fitness vs env rate)", True, (220, 220, 220))
+        title = self.font.render("Possible Final Results", True, (220, 220, 220))
         self.screen.blit(title, (rect.x + 10, rect.y + 8))
-        projected = _project_final_fitness(rows)
-        values = [p["y"] for p in projected if _is_number(p.get("y"))]
+        subtitle = self.small.render(
+            "x: env change rate   y: evolution speed   dot size: fitness",
+            True,
+            (170, 170, 170),
+        )
+        self.screen.blit(subtitle, (rect.x + 12, rect.y + 36))
+        projected = _project_final_bubble(rows)
+        ys = [p["evo"] for p in projected if _is_number(p.get("evo"))]
         xs = [p["x"] for p in projected if _is_number(p.get("x"))]
-        if not values or not xs:
-            msg = self.small.render("Need more data to project final curve.", True, (170, 170, 170))
+        if not ys or not xs:
+            msg = self.small.render("Need more data to project final bubbles.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 12, rect.y + 38))
             return
         min_x = min(xs)
         max_x = max(xs)
         if max_x <= min_x:
             max_x = min_x + 1.0
-        min_y = min(values)
-        max_y = max(values)
+        min_y = min(ys)
+        max_y = max(ys)
         if max_y <= min_y:
             max_y = min_y + 1.0
         y_pad = (max_y - min_y) * 0.1
-        min_y = max(0.0, min_y - y_pad)
+        min_y = min_y - y_pad
         max_y = max_y + y_pad
 
-        plot = pg.Rect(rect.x + 46, rect.y + 44, rect.width - 62, rect.height - 62)
+        plot = pg.Rect(rect.x + 46, rect.y + 62, rect.width - 62, rect.height - 86)
         pg.draw.rect(self.screen, (16, 18, 23), plot)
         pg.draw.rect(self.screen, (64, 68, 79), plot, 1)
 
@@ -800,22 +1116,34 @@ class _HubDashboard:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
-        line_pts = []
-        for point in projected:
-            if not _is_number(point.get("y")):
-                continue
-            line_pts.append(_to_px(float(point["x"]), float(point["y"])))
+        fits = [
+            float(p["fitness"])
+            for p in projected
+            if _is_number(p.get("fitness"))
+        ]
+        fit_min = min(fits) if fits else 0.0
+        fit_max = max(fits) if fits else 1.0
+        fit_denom = max(1e-9, fit_max - fit_min)
+
+        def _fit_norm(value):
+            if not _is_number(value):
+                return 0.35
+            return max(0.0, min(1.0, (float(value) - fit_min) / fit_denom))
+
+        line_pts = [_to_px(float(point["x"]), float(point["evo"])) for point in projected]
         if len(line_pts) >= 2:
-            pg.draw.lines(self.screen, (255, 168, 66), False, line_pts, 2)
+            pg.draw.lines(self.screen, (68, 82, 108), False, line_pts, 1)
 
         for point in projected:
-            if not _is_number(point.get("y")):
-                continue
-            px, py = _to_px(float(point["x"]), float(point["y"]))
+            px, py = _to_px(float(point["x"]), float(point["evo"]))
+            n = _fit_norm(point.get("fitness"))
+            radius = 4 + int(round(8.0 * n))
             if point.get("actual"):
-                pg.draw.circle(self.screen, (0, 210, 255), (px, py), 4)
+                color = (40 + int(70 * n), 170 + int(70 * n), 215 + int(40 * n))
+                pg.draw.circle(self.screen, color, (px, py), radius)
             else:
-                pg.draw.circle(self.screen, (255, 168, 66), (px, py), 3, 1)
+                color = (255, 145 + int(70 * n), 80 + int(70 * n))
+                pg.draw.circle(self.screen, color, (px, py), max(3, radius - 1), 1)
 
         min_label = self.small.render(f"{min_y:.1f}", True, (150, 150, 150))
         max_label = self.small.render(f"{max_y:.1f}", True, (150, 150, 150))
@@ -825,6 +1153,10 @@ class _HubDashboard:
         x2 = self.small.render(f"{max_x:.2f}", True, (150, 150, 150))
         self.screen.blit(x1, (plot.x, plot.bottom + 4))
         self.screen.blit(x2, (plot.right - x2.get_width(), plot.bottom + 4))
+        x_label = self.small.render("env change rate", True, (155, 155, 155))
+        y_label = self.small.render("evo speed", True, (155, 155, 155))
+        self.screen.blit(x_label, (plot.x + 4, plot.bottom + 22))
+        self.screen.blit(y_label, (plot.x - 42, plot.y + 8))
 
     def update(self, state: dict, force: bool = False) -> None:
         if not self.enabled:
@@ -885,6 +1217,18 @@ class _HubDashboard:
             (170, 200, 230),
         )
         self.screen.blit(header4, (20, 100))
+        self._shutdown_button_rect = pg.Rect(self.window_w - 188, 96, 168, 30)
+        pg.draw.rect(self.screen, (110, 50, 50), self._shutdown_button_rect)
+        pg.draw.rect(self.screen, (180, 160, 160), self._shutdown_button_rect, 1)
+        close_hub_text = self.small.render("Close Hub (X)", True, (235, 235, 235))
+        self.screen.blit(
+            close_hub_text,
+            (
+                self._shutdown_button_rect.x
+                + (self._shutdown_button_rect.width - close_hub_text.get_width()) // 2,
+                self._shutdown_button_rect.y + 7,
+            ),
+        )
 
         left_margin = 20
         top_y = 132
@@ -927,8 +1271,9 @@ class _HubDashboard:
         if abs(self.scroll_target - self.scroll) < 0.05:
             self.scroll = self.scroll_target
         self.scroll = max(0.0, min(float(max_scroll), float(self.scroll)))
-        scroll_i = int(round(self.scroll))
-        self.scroll = float(scroll_i)
+        # Keep sub-row precision so smooth scroll can still resolve to index 0.
+        # Rounding here can trap at index 1 when target is 0.
+        scroll_i = int(self.scroll)
         visible = rows[scroll_i : scroll_i + max_rows]
         base_y = y + 24
         self._row_h = row_h
@@ -955,6 +1300,7 @@ class _HubDashboard:
                 "pending": (170, 170, 170),
                 "no_master": (255, 160, 120),
                 "stopped": (255, 180, 120),
+                "aborted": (255, 130, 130),
             }.get(status_text, (200, 200, 200))
             dur = row.get("duration_s")
             if status_text == "running" and _is_number(row.get("started_at")):
@@ -1088,25 +1434,92 @@ class _HubDashboard:
 def main() -> None:
     args = _parse_args()
     defaults = _hub_defaults_from_settings()
-    start_rate = float(args.start_rate if args.start_rate is not None else defaults["start_rate"])
-    end_rate = float(args.end_rate if args.end_rate is not None else defaults["end_rate"])
-    step = float(args.step if args.step is not None else defaults["step"])
-    species_threshold = int(
-        max(0, int(args.species_threshold if args.species_threshold is not None else defaults["species_threshold"]))
-    )
-    max_masters = int(args.max_masters if args.max_masters is not None else defaults["max_masters"])
+    results_root = Path(args.results_root)
+    results_root.mkdir(parents=True, exist_ok=True)
+    selector_choice = None
+    should_show_selector = (args.continue_hub is None) and ((not args.no_screen) or args.hub_select)
+    if should_show_selector:
+        selector_choice = _select_hub_run_ui(results_root)
+        if selector_choice is None:
+            print("Hub selection canceled.")
+            return
 
-    rates = _rate_values(start_rate, end_rate, step)
-    if max_masters > 0:
-        rates = rates[:max_masters]
+    continue_hub_idx = None
+    if args.continue_hub is not None:
+        try:
+            continue_hub_idx = max(0, int(args.continue_hub))
+        except Exception:
+            raise SystemExit("Invalid --continue-hub value.")
+    elif isinstance(selector_choice, dict) and selector_choice.get("mode") == "continue":
+        try:
+            continue_hub_idx = max(0, int(selector_choice.get("hub_idx")))
+        except Exception:
+            continue_hub_idx = None
+
+    continuing = continue_hub_idx is not None
+    existing_hub_meta = {}
+    if continuing:
+        hub_idx = int(continue_hub_idx)
+        hub_dir = results_root / f"hub_{hub_idx}"
+        if not hub_dir.is_dir():
+            raise SystemExit(f"Hub not found: {hub_dir}")
+        hub_meta_path = hub_dir / "hub_meta.json"
+        if not hub_meta_path.exists():
+            raise SystemExit(f"Missing hub_meta.json for continuation: {hub_meta_path}")
+        try:
+            payload = json.loads(hub_meta_path.read_text())
+        except Exception:
+            raise SystemExit(f"Failed to parse {hub_meta_path}")
+        if not isinstance(payload, dict):
+            raise SystemExit(f"Invalid hub meta format: {hub_meta_path}")
+        existing_hub_meta = payload
+        start_rate = float(existing_hub_meta.get("start_rate", defaults["start_rate"]))
+        end_rate = float(existing_hub_meta.get("end_rate", defaults["end_rate"]))
+        step = float(existing_hub_meta.get("step", defaults["step"]))
+        species_threshold = int(
+            max(
+                0,
+                int(
+                    args.species_threshold
+                    if args.species_threshold is not None
+                    else existing_hub_meta.get("species_threshold", defaults["species_threshold"])
+                ),
+            )
+        )
+        max_masters = int(existing_hub_meta.get("max_masters", defaults["max_masters"]))
+        raw_rates = existing_hub_meta.get("rates")
+        rates = []
+        if isinstance(raw_rates, list):
+            for val in raw_rates:
+                try:
+                    rates.append(float(val))
+                except Exception:
+                    continue
+        if not rates:
+            rates = _rate_values(start_rate, end_rate, step)
+            if max_masters > 0:
+                rates = rates[:max_masters]
+    else:
+        start_rate = float(args.start_rate if args.start_rate is not None else defaults["start_rate"])
+        end_rate = float(args.end_rate if args.end_rate is not None else defaults["end_rate"])
+        step = float(args.step if args.step is not None else defaults["step"])
+        species_threshold = int(
+            max(0, int(args.species_threshold if args.species_threshold is not None else defaults["species_threshold"]))
+        )
+        max_masters = int(args.max_masters if args.max_masters is not None else defaults["max_masters"])
+        rates = _rate_values(start_rate, end_rate, step)
+        if max_masters > 0:
+            rates = rates[:max_masters]
+        hub_idx = _allocate_hub_index(results_root)
+        hub_dir = results_root / f"hub_{hub_idx}"
+        hub_dir.mkdir(parents=True, exist_ok=True)
+
     if not rates:
         raise SystemExit("No rates to run.")
 
-    results_root = Path(args.results_root)
-    results_root.mkdir(parents=True, exist_ok=True)
-    hub_idx = _allocate_hub_index(results_root)
-    hub_dir = results_root / f"hub_{hub_idx}"
-    hub_dir.mkdir(parents=True, exist_ok=True)
+    hub_meta_path = hub_dir / "hub_meta.json"
+    hub_summary_path = hub_dir / "hub_summary.csv"
+    fit_csv_path = hub_dir / "hub_fit_equations.csv"
     settings_snapshot = load_settings()
     try:
         master_cursor = int(settings_snapshot.get("num_tries_master", 0))
@@ -1120,44 +1533,136 @@ def main() -> None:
         same_root = str(default_root) == str(results_root)
     if not same_root:
         existing_master_ids.update(_collect_existing_master_ids(default_root))
-    planned_master_ids = _plan_master_ids(master_cursor, len(rates), existing_master_ids)
-    planned_master_span = _format_id_span(planned_master_ids)
-
-    hub_meta = {
-        "hub_index": int(hub_idx),
-        "created_at": time.time(),
-        "start_rate": float(start_rate),
-        "end_rate": float(end_rate),
-        "step": float(step),
-        "species_threshold": int(species_threshold),
-        "max_masters": int(max_masters),
-        "rates": rates,
-        "planned_master_ids": planned_master_ids,
-        "planned_master_range": planned_master_span,
-        "steps": [],
-        "status": "running",
-    }
-    hub_meta_path = hub_dir / "hub_meta.json"
-    hub_summary_path = hub_dir / "hub_summary.csv"
-    fit_csv_path = hub_dir / "hub_fit_equations.csv"
+    planned_master_ids = []
+    raw_planned = existing_hub_meta.get("planned_master_ids") if continuing else None
+    if isinstance(raw_planned, list):
+        for idx in range(len(rates)):
+            val = raw_planned[idx] if idx < len(raw_planned) else None
+            try:
+                planned_id = int(val)
+            except Exception:
+                planned_id = None
+            planned_master_ids.append(planned_id)
+    else:
+        planned_master_ids = [None] * len(rates)
+    if continuing:
+        steps = existing_hub_meta.get("steps")
+        if isinstance(steps, list):
+            for step_info in steps:
+                if not isinstance(step_info, dict):
+                    continue
+                try:
+                    step_idx = int(step_info.get("step_index"))
+                except Exception:
+                    continue
+                if step_idx < 0 or step_idx >= len(rates):
+                    continue
+                try:
+                    planned_id = int(step_info.get("planned_master_run_num"))
+                except Exception:
+                    continue
+                if planned_master_ids[step_idx] is None:
+                    planned_master_ids[step_idx] = planned_id
+    used_master_ids = set(int(v) for v in existing_master_ids)
+    used_master_ids.update(int(v) for v in planned_master_ids if isinstance(v, int))
+    missing_count = sum(1 for v in planned_master_ids if v is None)
+    if missing_count > 0:
+        filled = _plan_master_ids(master_cursor, missing_count, used_master_ids)
+        fill_i = 0
+        for idx in range(len(planned_master_ids)):
+            if planned_master_ids[idx] is None and fill_i < len(filled):
+                planned_master_ids[idx] = int(filled[fill_i])
+                fill_i += 1
+    planned_master_ids = [
+        (None if v is None else int(v))
+        for v in planned_master_ids
+    ]
+    planned_master_span = _format_id_span([v for v in planned_master_ids if isinstance(v, int)])
+    if continuing:
+        hub_meta = dict(existing_hub_meta)
+        hub_meta["hub_index"] = int(hub_idx)
+        hub_meta["start_rate"] = float(start_rate)
+        hub_meta["end_rate"] = float(end_rate)
+        hub_meta["step"] = float(step)
+        hub_meta["species_threshold"] = int(species_threshold)
+        hub_meta["max_masters"] = int(max_masters)
+        hub_meta["rates"] = rates
+        hub_meta["planned_master_ids"] = planned_master_ids
+        hub_meta["planned_master_range"] = planned_master_span
+        if not isinstance(hub_meta.get("steps"), list):
+            hub_meta["steps"] = []
+        if not _is_number(hub_meta.get("created_at")):
+            hub_meta["created_at"] = time.time()
+        hub_meta["status"] = "running"
+        hub_meta["resumed_at"] = time.time()
+        try:
+            hub_meta["resume_count"] = int(hub_meta.get("resume_count", 0)) + 1
+        except Exception:
+            hub_meta["resume_count"] = 1
+    else:
+        hub_meta = {
+            "hub_index": int(hub_idx),
+            "created_at": time.time(),
+            "start_rate": float(start_rate),
+            "end_rate": float(end_rate),
+            "step": float(step),
+            "species_threshold": int(species_threshold),
+            "max_masters": int(max_masters),
+            "rates": rates,
+            "planned_master_ids": planned_master_ids,
+            "planned_master_range": planned_master_span,
+            "steps": [],
+            "status": "running",
+        }
     hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
-    hub_summary_path.write_text(
-        "enviorment change rate,planned master run,master run,apex evolution rate,fitness,max species,fit sigma left,fit sigma right,fit r2\n"
+    _ensure_csv_with_header(
+        hub_summary_path,
+        "enviorment change rate,planned master run,master run,apex evolution rate,fitness,max species,fit sigma left,fit sigma right,fit r2\n",
     )
-    fit_csv_path.write_text(
-        "enviorment change rate,master run,apex x,apex y,sigma left,sigma right,r2,equation\n"
+    _ensure_csv_with_header(
+        fit_csv_path,
+        "enviorment change rate,master run,apex x,apex y,sigma left,sigma right,r2,equation\n",
     )
 
     repo_root = Path(__file__).resolve().parent
     master_script = repo_root / "master_simulations.py"
     interpreter = sys.executable
     reopened_master_procs = {}
+    current_step_proc = None
+    abort_requested = False
 
     def _step_row_for_master(master_run_num: int):
         for item in step_rows:
             if item.get("master_run_num") == master_run_num:
                 return item
         return None
+
+    def _terminate_process(proc: subprocess.Popen, label: str) -> None:
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            return
+        try:
+            print(f"[hub_{hub_idx}] terminating {label} (pid={proc.pid})")
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _close_all_reopened() -> None:
+        for master_num, proc in list(reopened_master_procs.items()):
+            _terminate_process(proc, f"reopened master_{int(master_num)}")
+            row = _step_row_for_master(master_num)
+            if isinstance(row, dict):
+                row["reopen_open"] = False
+                row["reopen_pid"] = None
+        reopened_master_procs.clear()
 
     def _refresh_reopened_processes() -> None:
         stale = []
@@ -1221,44 +1726,78 @@ def main() -> None:
             row["reopen_open"] = False
             row["reopen_pid"] = None
             return
-        if proc.poll() is None:
-            print(f"[hub_{hub_idx}] close requested for master_{int(master_run)} (pid={proc.pid})")
-            try:
-                proc.terminate()
-                proc.wait(timeout=2.0)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        _terminate_process(proc, f"master_{int(master_run)}")
         reopened_master_procs.pop(int(master_run), None)
         row["reopen_open"] = False
         row["reopen_pid"] = None
 
+    def _shutdown_hub_run() -> None:
+        nonlocal abort_requested, current_step_proc
+        if abort_requested:
+            return
+        abort_requested = True
+        print(f"[hub_{hub_idx}] close hub requested")
+        _close_all_reopened()
+        if current_step_proc is not None:
+            _terminate_process(current_step_proc, "active hub step")
+
     hub_rows = []
     step_rows = []
     for idx, rate in enumerate(rates):
-        step_rows.append(
-            {
-                "step_index": int(idx),
-                "env_rate": float(rate),
-                "planned_master_run_num": (
-                    planned_master_ids[idx] if idx < len(planned_master_ids) else None
-                ),
-                "master_run_num": None,
-                "status": "pending",
-                "max_species": None,
-                "apex_fitness": None,
-                "apex_evolution_rate": None,
-                "started_at": None,
-                "finished_at": None,
-                "duration_s": None,
-                "env_dir": None,
-                "master_dir": None,
-                "reopen_open": False,
-                "reopen_pid": None,
-            }
-        )
+        env_dir = hub_dir / _rate_label(rate)
+        row = {
+            "step_index": int(idx),
+            "env_rate": float(rate),
+            "planned_master_run_num": (
+                planned_master_ids[idx] if idx < len(planned_master_ids) else None
+            ),
+            "master_run_num": None,
+            "status": "pending",
+            "max_species": None,
+            "apex_fitness": None,
+            "apex_evolution_rate": None,
+            "started_at": None,
+            "finished_at": None,
+            "duration_s": None,
+            "env_dir": str(env_dir),
+            "master_dir": None,
+            "reopen_open": False,
+            "reopen_pid": None,
+        }
+        if continuing and env_dir.is_dir():
+            master_dir = _latest_master_dir(env_dir)
+            if master_dir is not None:
+                run_nums = _master_run_nums(master_dir)
+                max_species = _max_species(env_dir, run_nums)
+                points = _master_points(master_dir, run_nums)
+                fit = _fit_stitched_gaussian(points)
+                if fit is None:
+                    apex_x, apex_y = (None, None)
+                else:
+                    apex_x = fit["apex_x"]
+                    apex_y = fit["apex_y"]
+                try:
+                    master_run_num = int(master_dir.name.split("_", 1)[1])
+                except Exception:
+                    master_run_num = None
+                row["status"] = "ok"
+                row["master_run_num"] = master_run_num
+                row["master_dir"] = str(master_dir)
+                row["max_species"] = max_species
+                row["apex_evolution_rate"] = apex_x
+                row["apex_fitness"] = apex_y
+                if row["planned_master_run_num"] is None and master_run_num is not None:
+                    row["planned_master_run_num"] = int(master_run_num)
+                hub_rows.append(
+                    {
+                        "env_rate": float(rate),
+                        "apex_x": apex_x,
+                        "apex_y": apex_y,
+                        "fit": fit,
+                        "points": points,
+                    }
+                )
+        step_rows.append(row)
     dashboard = _HubDashboard(
         enabled=(not args.no_screen),
         hub_idx=hub_idx,
@@ -1267,6 +1806,7 @@ def main() -> None:
         species_threshold=species_threshold,
         reopen_callback=_reopen_master_row,
         close_callback=_close_master_row,
+        shutdown_callback=_shutdown_hub_run,
     )
     dash_state = {
         "start_ts": float(hub_meta["created_at"]),
@@ -1279,15 +1819,37 @@ def main() -> None:
         "summary_path": str(hub_summary_path),
         "fit_path": str(fit_csv_path),
     }
-    print(f"[hub_{hub_idx}] creating hub run at {hub_dir}")
+    if continuing:
+        print(f"[hub_{hub_idx}] continuing hub run at {hub_dir}")
+    else:
+        print(f"[hub_{hub_idx}] creating hub run at {hub_dir}")
     print(
         f"[hub_{hub_idx}] planned master ids for this hub: {planned_master_span}"
     )
+    completed_rows = [row for row in step_rows if str(row.get("status", "")) == "ok"]
+    pending_rows = [row for row in step_rows if str(row.get("status", "")) != "ok"]
+    if completed_rows:
+        last_done = sorted(
+            completed_rows,
+            key=lambda row: int(row.get("step_index", -1)),
+        )[-1]
+        master_num = last_done.get("master_run_num")
+        if master_num is not None:
+            dash_state["last_master"] = f"master_{int(master_num)}"
+    if continuing:
+        print(
+            f"[hub_{hub_idx}] continuation progress: {len(completed_rows)}/{len(step_rows)} "
+            f"completed, {len(pending_rows)} pending"
+        )
     _refresh_reopened_processes()
     dashboard.update(dash_state, force=True)
 
     for step_idx, rate in enumerate(rates):
+        if abort_requested:
+            break
         row_ref = step_rows[step_idx]
+        if str(row_ref.get("status", "")) == "ok":
+            continue
         row_ref["status"] = "running"
         row_ref["started_at"] = time.time()
         dash_state["status"] = "running"
@@ -1326,13 +1888,17 @@ def main() -> None:
             f"rate={rate:.2f} planned_master={'' if planned_master_run is None else planned_master_run}"
         )
         proc = subprocess.Popen(cmd, cwd=str(repo_root))
+        current_step_proc = proc
         while proc.poll() is None:
+            if abort_requested:
+                _terminate_process(proc, f"hub step {step_idx + 1}")
             _refresh_reopened_processes()
             dashboard.update(dash_state)
             sleep_s = dashboard.poll_sleep_seconds() if dashboard.enabled else 0.12
             if sleep_s > 0:
                 time.sleep(sleep_s)
         returncode = int(proc.returncode if proc.returncode is not None else 1)
+        current_step_proc = None
         row_ref["finished_at"] = time.time()
         if _is_number(row_ref.get("started_at")):
             row_ref["duration_s"] = max(
@@ -1347,6 +1913,18 @@ def main() -> None:
             "returncode": returncode,
             "finished_at": time.time(),
         }
+        if abort_requested:
+            step_info["status"] = "aborted"
+            row_ref["status"] = "aborted"
+            hub_meta["steps"].append(step_info)
+            hub_meta["status"] = "aborted_by_user"
+            hub_meta["aborted_at"] = time.time()
+            dash_state["status"] = hub_meta["status"]
+            dash_state["running_row"] = None
+            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            _refresh_reopened_processes()
+            dashboard.update(dash_state, force=True)
+            break
         if returncode != 0:
             step_info["status"] = "failed"
             row_ref["status"] = "failed"
@@ -1490,7 +2068,16 @@ def main() -> None:
         _refresh_reopened_processes()
         dashboard.update(dash_state, force=True)
 
-    if not args.skip_plots:
+    if abort_requested and str(hub_meta.get("status", "")) == "running":
+        hub_meta["status"] = "aborted_by_user"
+        hub_meta["aborted_at"] = time.time()
+        dash_state["status"] = hub_meta["status"]
+        dash_state["running_row"] = None
+        hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+        _refresh_reopened_processes()
+        dashboard.update(dash_state, force=True)
+
+    if (not args.skip_plots) and (not abort_requested):
         plotted = []
         scatter_path = hub_dir / "hub_apex_scatter.png"
         if _plot_hub_scatter(hub_rows, scatter_path):
@@ -1515,7 +2102,10 @@ def main() -> None:
             dashboard.update(dash_state, force=True)
             time.sleep(0.1)
 
-    print(f"Hub complete: {hub_dir}")
+    if abort_requested:
+        print(f"Hub aborted by user: {hub_dir}")
+    else:
+        print(f"Hub complete: {hub_dir}")
     print(f"Summary: {hub_summary_path}")
     print(f"Equations: {fit_csv_path}")
 
