@@ -422,6 +422,46 @@ def _format_id_span(ids: list[int]) -> str:
     return ",".join(str(x) for x in ordered)
 
 
+def _reserve_global_counters(
+    settings_snapshot: dict,
+    reserved_master_count: int,
+    reserved_sim_count: int,
+    planned_master_ids: list[int],
+) -> tuple[int, int]:
+    if not isinstance(settings_snapshot, dict):
+        settings_snapshot = {}
+    try:
+        current_master = int(settings_snapshot.get("num_tries_master", 0))
+    except Exception:
+        current_master = 0
+    try:
+        current_sim = int(settings_snapshot.get("num_tries", 0))
+    except Exception:
+        current_sim = 0
+    current_master = max(0, current_master)
+    current_sim = max(0, current_sim)
+    reserved_master_count = max(0, int(reserved_master_count))
+    reserved_sim_count = max(0, int(reserved_sim_count))
+
+    planned_max_next = None
+    try:
+        numeric_planned = [int(v) for v in planned_master_ids if isinstance(v, int)]
+        if numeric_planned:
+            planned_max_next = max(numeric_planned) + 1
+    except Exception:
+        planned_max_next = None
+
+    target_master = current_master + reserved_master_count
+    if isinstance(planned_max_next, int):
+        target_master = max(target_master, planned_max_next)
+    target_sim = current_sim + reserved_sim_count
+
+    settings_snapshot["num_tries_master"] = int(target_master)
+    settings_snapshot["num_tries"] = int(target_sim)
+    save_settings(settings_snapshot)
+    return int(target_master), int(target_sim)
+
+
 def _latest_master_dir(results_dir: Path) -> Path | None:
     best = None
     best_num = -1
@@ -491,6 +531,24 @@ def _read_elapsed_from_run_meta(path: Path) -> float | None:
     return elapsed_f
 
 
+def _read_frame_from_run_meta(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    frame_count = payload.get("frame_count")
+    if not isinstance(frame_count, (int, float)):
+        return None
+    frame_f = float(frame_count)
+    if not math.isfinite(frame_f) or frame_f < 0:
+        return None
+    return frame_f
+
+
 def _max_species(results_dir: Path, run_nums: list[int]) -> float | None:
     best = None
     for run_num in run_nums:
@@ -501,6 +559,20 @@ def _max_species(results_dir: Path, run_nums: list[int]) -> float | None:
     return best
 
 
+def _total_species(results_dir: Path, run_nums: list[int]) -> float | None:
+    total = 0.0
+    saw_any = False
+    for run_num in run_nums:
+        species = _read_species_from_run_meta(results_dir / str(run_num) / "run_meta.json")
+        if species is None:
+            continue
+        total += float(species)
+        saw_any = True
+    if not saw_any:
+        return None
+    return float(total)
+
+
 def _max_elapsed_seconds(results_dir: Path, run_nums: list[int]) -> float | None:
     best = None
     for run_num in run_nums:
@@ -508,6 +580,16 @@ def _max_elapsed_seconds(results_dir: Path, run_nums: list[int]) -> float | None
         if elapsed is None:
             continue
         best = elapsed if best is None else max(best, elapsed)
+    return best
+
+
+def _max_frames(results_dir: Path, run_nums: list[int]) -> float | None:
+    best = None
+    for run_num in run_nums:
+        frames = _read_frame_from_run_meta(results_dir / str(run_num) / "run_meta.json")
+        if frames is None:
+            continue
+        best = frames if best is None else max(best, frames)
     return best
 
 
@@ -534,14 +616,38 @@ def _extract_points_from_csv(path: Path) -> list[tuple[float, float]]:
 
 
 def _master_points(master_dir: Path, run_nums: list[int]) -> list[tuple[float, float]]:
+    # Prefer the master-level parsed arithmetic file for graph points.
+    # This is the source of truth for: evolution rate + arithmetic mean length lived.
+    preferred_master_paths: list[Path] = [
+        master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_Log.csv",
+        master_dir / f"parsedArithmeticMeanSimulationo{master_dir.name}_Log.csv",
+        master_dir / f"parsedArithmeticMeanSimulation{master_dir.name}_Log.csv",
+        master_dir / f"parsedArithmeticMeanSimulatin{master_dir.name}_Log.csv",
+        master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_log.csv",
+        master_dir / f"parsedArithmeticMeanSimulationo{master_dir.name}_log.csv",
+        master_dir / f"parsedArithmeticMeanSimulation{master_dir.name}_log.csv",
+        master_dir / f"parsedArithmeticMeanSimulatin{master_dir.name}_log.csv",
+    ]
+    for master_path in preferred_master_paths:
+        points = _extract_points_from_csv(master_path)
+        if points:
+            return points
+
+    # Fallback: any non-step parsed arithmetic master file with this master suffix.
+    for candidate in sorted(master_dir.glob(f"parsedArithmeticMean*{master_dir.name}_*.csv")):
+        name = candidate.name.lower()
+        if "_step" in name:
+            continue
+        points = _extract_points_from_csv(candidate)
+        if points:
+            return points
+
+    # Final fallback for older runs that only have combined outputs.
     combined_path = master_dir / f"combinedArithmeticMeanSimulatino{master_dir.name}_Log.csv"
     points = _extract_points_from_csv(combined_path)
     if points:
         return points
-    master_path = master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_Log.csv"
-    points = _extract_points_from_csv(master_path)
-    if points:
-        return points
+
     parent = master_dir.parent
     merged = []
     for run_num in run_nums:
@@ -815,7 +921,8 @@ def _symlink_if_missing(alias: Path, target: Path) -> None:
 def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
     try:
         import matplotlib.pyplot as plt
-        from matplotlib import cm
+        from matplotlib import cm as mpl_cm
+        from matplotlib import colors as mpl_colors
     except Exception:
         return False
     usable = [r for r in rows if r.get("env_rate") is not None and r.get("apex_x") is not None and r.get("apex_y") is not None]
@@ -825,23 +932,71 @@ def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
     xs = [float(r["env_rate"]) for r in usable]
     ys = [float(r["apex_x"]) for r in usable]
     fits = [float(r["apex_y"]) for r in usable]
-    f_min = min(fits)
-    f_max = max(fits)
-    denom = max(1e-9, f_max - f_min)
-    norms = [(v - f_min) / denom for v in fits]
-    sizes = [40.0 + (n * 460.0) for n in norms]
-    colors = [cm.plasma(n) for n in norms]
-    colors = [(r, g, b, 0.2 + (0.8 * n)) for (r, g, b, _), n in zip(colors, norms)]
+    fit_min = min(fits)
+    fit_max = max(fits)
+    
+    if fit_max <= fit_min:
+        norms = [0.5 for _ in fits]
+    else:
+        denom = max(1e-9, fit_max - fit_min)
+        norms = [(v - fit_min) / denom for v in fits]
+
+    # Bubble area scale in points^2 (dynamic, not hard-capped to 2000).
+    size_min = 0.0
+    
+    size_max = 1.0
+    sizes = [size_min + (n * (size_max - size_min)) for n in norms]
+
+    x_min = min(xs)
+    x_max = max(xs)
+    y_min = min(ys)
+    y_max = max(ys)
+    if x_max <= x_min:
+        x_pad = 0.05
+    else:
+        x_pad = (x_max - x_min) * 0.04
+    if y_max <= y_min:
+        y_pad = 0.05
+    else:
+        y_pad = (y_max - y_min) * 0.04
 
     fig = plt.figure(figsize=(14, 8))
     ax = fig.add_subplot(111)
-    sc = ax.scatter(xs, ys, s=sizes, c=norms, cmap="plasma", alpha=0.95, edgecolors=colors, linewidths=1.0)
+    ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+    fig.canvas.draw()
+
+    def _size_to_radius_px(size_val: float) -> float:
+        # Matplotlib scatter size is area in points^2.
+        radius_points = math.sqrt(max(0.0, float(size_val)) / math.pi)
+        return radius_points * float(fig.dpi) / 72.0
+
+    plot_x, plot_y, plot_sizes = xs, ys, sizes
+    color_min = fit_min if fits else 0.0
+    color_max = fit_max if fits else 1.0
+    if color_max <= color_min:
+        color_max = color_min + 1e-9
+    norm = mpl_colors.Normalize(vmin=color_min, vmax=color_max)
+    rgba = mpl_cm.viridis(norm(fits))
+    # Fitness-dependent transparency: lower fitness is more transparent.
+    for idx, n in enumerate(norms):
+        rgba[idx][3] = 0.25 + (0.75 * float(n))
+    sc = ax.scatter(
+        plot_x,
+        plot_y,
+        s=plot_sizes,
+        c=rgba,
+        edgecolors="#0f172a",
+        linewidths=0.65,
+    )
     ax.set_title("Hub Apex Map: Enviorment Change Rate vs Evolution Speed")
     ax.set_xlabel("enviorment change rate")
     ax.set_ylabel("apex evolution speed")
     ax.grid(alpha=0.25)
-    cbar = fig.colorbar(sc, ax=ax)
-    cbar.set_label("relative fitness (apex arithmetic mean length lived)")
+    sm = mpl_cm.ScalarMappable(norm=norm, cmap=mpl_cm.viridis)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax)
+    cbar.set_label("fitness (apex arithmetic mean length lived)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
@@ -1036,6 +1191,8 @@ def _project_metric(rows: list[dict], value_key: str) -> list[dict]:
             "master_run_num": row.get("master_run_num"),
             "planned_master_run_num": row.get("planned_master_run_num"),
             "max_species": row.get("max_species"),
+            "total_species": row.get("total_species"),
+            "max_frames": row.get("max_frames"),
             "duration_s": row.get("duration_s"),
         }
         if _is_number(y_actual):
@@ -1096,6 +1253,8 @@ def _project_final_bubble(rows: list[dict]) -> list[dict]:
                 "master_run_num": evo.get("master_run_num"),
                 "planned_master_run_num": evo.get("planned_master_run_num"),
                 "max_species": evo.get("max_species"),
+                "total_species": evo.get("total_species"),
+                "max_frames": evo.get("max_frames"),
                 "duration_s": evo.get("duration_s"),
             }
         )
@@ -1266,6 +1425,24 @@ class _HubDashboard:
             return None
         return best.get("point")
 
+    def _row_index_from_graph_x(self, point: dict):
+        if not isinstance(point, dict):
+            return None
+        target_x = point.get("x")
+        if not _is_number(target_x):
+            return None
+        best_idx = None
+        best_delta = None
+        for idx, row in enumerate(self._rows_cache):
+            row_x = row.get("env_rate")
+            if not _is_number(row_x):
+                continue
+            delta = abs(float(row_x) - float(target_x))
+            if best_delta is None or delta < best_delta:
+                best_idx = int(idx)
+                best_delta = delta
+        return best_idx
+
     def _trigger_reopen(self) -> None:
         if not callable(self.reopen_callback):
             return
@@ -1342,9 +1519,17 @@ class _HubDashboard:
                 picked = self._pick_graph_dot(mx, my)
                 if isinstance(picked, dict):
                     self._selected_graph_point = picked
-                    step_idx = picked.get("step_index")
-                    if isinstance(step_idx, int) and 0 <= step_idx < len(self._rows_cache):
-                        self.selected_row_index = int(step_idx)
+                    by_x_idx = self._row_index_from_graph_x(picked)
+                    if isinstance(by_x_idx, int) and 0 <= by_x_idx < len(self._rows_cache):
+                        self.selected_row_index = int(by_x_idx)
+                    else:
+                        row_idx = picked.get("row_index")
+                        if isinstance(row_idx, int) and 0 <= row_idx < len(self._rows_cache):
+                            self.selected_row_index = int(row_idx)
+                        else:
+                            step_idx = picked.get("step_index")
+                            if isinstance(step_idx, int) and 0 <= step_idx < len(self._rows_cache):
+                                self.selected_row_index = int(step_idx)
                 elif (
                     self._graph_plot_rect is not None
                     and self._graph_plot_rect.collidepoint(mx, my)
@@ -1391,43 +1576,128 @@ class _HubDashboard:
         self._graph_dots = []
         pg.draw.rect(self.screen, (22, 24, 29), rect)
         pg.draw.rect(self.screen, (70, 74, 86), rect, 1)
-        title = self.font.render("Possible Final Results", True, (220, 220, 220))
-        self.screen.blit(title, (rect.x + 10, rect.y + 8))
-        subtitle_text = _fit_text(
-            self.small,
-            "x: evolution speed   y: env change rate   dot size: fitness",
-            rect.width - 24,
-        )
-        subtitle = self.small.render(subtitle_text, True, (170, 170, 170))
-        self.screen.blit(subtitle, (rect.x + 12, rect.y + 36))
-        projected = _project_final_bubble(rows)
-        xs = [p["evo"] for p in projected if _is_number(p.get("evo"))]
-        ys = [p["x"] for p in projected if _is_number(p.get("x"))]
+        selected = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
+        if selected is not None:
+            rate_val = selected.get("x")
+            evo_val = selected.get("evo")
+            fit_val = selected.get("fitness")
+            x_text = f"{float(rate_val):.4f}" if _is_number(rate_val) else "--"
+            y_text = f"{float(evo_val):.4f}" if _is_number(evo_val) else "--"
+            size_text = f"{float(fit_val):.3f}" if _is_number(fit_val) else "--"
+            dot_header = f"x: {x_text}, y: {y_text}, size: {size_text}"
+            step_idx = selected.get("step_index")
+            step_label = str(int(step_idx) + 1) if isinstance(step_idx, int) else "--"
+            source_row_idx = selected.get("source_row_index")
+            source_row_label = (
+                str(int(source_row_idx))
+                if isinstance(source_row_idx, int)
+                else "--"
+            )
+            master_val = selected.get("master_run_num")
+            master_label = f"master_{master_val}" if master_val is not None else "--"
+            status_val = selected.get("status") or "--"
+            point_kind = "actual" if bool(selected.get("actual")) else "projected"
+            dot_info = (
+                f"point: step {step_label} | {master_label} | {status_val} | {point_kind} "
+                f"| source row {source_row_label}"
+            )
+            header_color = (200, 220, 255)
+            info_color = (175, 195, 220)
+        else:
+            dot_header = "x: --, y: --, size: -- (click dot)"
+            dot_info = "point: --"
+            header_color = (160, 170, 180)
+            info_color = (150, 160, 170)
+        header_x = rect.x + 10
+        header_w = max(0, rect.width - 20)
+        if header_w >= 20:
+            header_text = self.small.render(
+                _fit_text(self.small, dot_header, header_w),
+                True,
+                header_color,
+            )
+            self.screen.blit(header_text, (header_x, rect.y + 10))
+            info_text = self.small.render(
+                _fit_text(self.small, dot_info, header_w),
+                True,
+                info_color,
+            )
+            self.screen.blit(info_text, (header_x, rect.y + 28))
+        graph_points = []
+        for row in rows:
+            env_rate = row.get("env_rate")
+            points = row.get("points")
+            if (not _is_number(env_rate)) or (not isinstance(points, list)):
+                continue
+            point_meta = {
+                "row_index": (
+                    int(row.get("step_index"))
+                    if isinstance(row.get("step_index"), int)
+                    else row.get("step_index")
+                ),
+                "step_index": (
+                    int(row.get("step_index"))
+                    if isinstance(row.get("step_index"), int)
+                    else row.get("step_index")
+                ),
+                "status": row.get("status"),
+                "master_run_num": row.get("master_run_num"),
+                "planned_master_run_num": row.get("planned_master_run_num"),
+                "max_species": row.get("max_species"),
+                "duration_s": row.get("duration_s"),
+            }
+            for src_idx, point in enumerate(points, start=1):
+                if not isinstance(point, (tuple, list)) or len(point) < 2:
+                    continue
+                evo_val = point[0]
+                fit_val = point[1]
+                if not (_is_number(evo_val) and _is_number(fit_val)):
+                    continue
+                graph_points.append(
+                    {
+                        "x": float(env_rate),
+                        "evo": float(evo_val),
+                        "fitness": float(fit_val),
+                        "actual": True,
+                        "source_row_index": int(src_idx),
+                        **point_meta,
+                    }
+                )
+
+        xs = [p["x"] for p in graph_points if _is_number(p.get("x"))]
+        ys = [p["evo"] for p in graph_points if _is_number(p.get("evo"))]
         if not ys or not xs:
             msg = self.small.render(
                 _fit_text(
                     self.small,
-                    "Need more data to project final bubbles.",
+                    "Need started/completed master points to draw graph.",
                     rect.width - 24,
                 ),
                 True,
                 (170, 170, 170),
             )
-            self.screen.blit(msg, (rect.x + 12, rect.y + 56))
+            self.screen.blit(msg, (rect.x + 12, rect.y + 50))
             return
-        min_x = min(xs)
-        max_x = max(xs)
-        if max_x <= min_x:
-            max_x = min_x + 1.0
-        min_y = min(ys)
-        max_y = max(ys)
-        if max_y <= min_y:
-            max_y = min_y + 1.0
-        y_pad = (max_y - min_y) * 0.1
-        min_y = min_y - y_pad
-        max_y = max_y + y_pad
+        raw_min_x = min(xs)
+        raw_max_x = max(xs)
+        raw_min_y = min(ys)
+        raw_max_y = max(ys)
+        if raw_max_x <= raw_min_x:
+            min_x = raw_min_x - 0.05
+            max_x = raw_max_x + 0.05
+        else:
+            x_pad = (raw_max_x - raw_min_x) * 0.04
+            min_x = raw_min_x - x_pad
+            max_x = raw_max_x + x_pad
+        if raw_max_y <= raw_min_y:
+            min_y = raw_min_y - 0.05
+            max_y = raw_max_y + 0.05
+        else:
+            y_pad = (raw_max_y - raw_min_y) * 0.04
+            min_y = raw_min_y - y_pad
+            max_y = raw_max_y + y_pad
 
-        plot = pg.Rect(rect.x + 46, rect.y + 62, rect.width - 62, rect.height - 86)
+        plot = pg.Rect(rect.x + 46, rect.y + 52, rect.width - 62, rect.height - 76)
         self._graph_plot_rect = plot
         pg.draw.rect(self.screen, (16, 18, 23), plot)
         pg.draw.rect(self.screen, (64, 68, 79), plot, 1)
@@ -1437,9 +1707,16 @@ class _HubDashboard:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        def _axis_fmt(value: float, span: float) -> str:
+            if span >= 10:
+                return f"{value:.1f}"
+            if span >= 1:
+                return f"{value:.2f}"
+            return f"{value:.3f}"
+
         fits = [
             float(p["fitness"])
-            for p in projected
+            for p in graph_points
             if _is_number(p.get("fitness"))
         ]
         fit_min = min(fits) if fits else 0.0
@@ -1451,33 +1728,51 @@ class _HubDashboard:
                 return 0.35
             return max(0.0, min(1.0, (float(value) - fit_min) / fit_denom))
 
-        line_pts = [_to_px(float(point["evo"]), float(point["x"])) for point in projected]
-        if len(line_pts) >= 2:
-            pg.draw.lines(self.screen, (68, 82, 108), False, line_pts, 1)
-
         selected_found = False
-        for point in projected:
-            px, py = _to_px(float(point["evo"]), float(point["x"]))
+        for point in graph_points:
+            px, py = _to_px(float(point["x"]), float(point["evo"]))
             n = _fit_norm(point.get("fitness"))
-            radius = 4 + int(round(8.0 * n))
+            radius = 0 + int(round(4 * n))
             is_selected = False
             selected = self._selected_graph_point
             if isinstance(selected, dict):
                 sel_step = selected.get("step_index")
                 cur_step = point.get("step_index")
-                if isinstance(sel_step, int) and isinstance(cur_step, int):
+                sel_src = selected.get("source_row_index")
+                cur_src = point.get("source_row_index")
+                if (
+                    isinstance(sel_step, int)
+                    and isinstance(cur_step, int)
+                    and isinstance(sel_src, int)
+                    and isinstance(cur_src, int)
+                ):
+                    is_selected = (int(sel_step) == int(cur_step)) and (int(sel_src) == int(cur_src))
+                elif isinstance(sel_step, int) and isinstance(cur_step, int):
                     is_selected = int(sel_step) == int(cur_step)
                 else:
                     try:
-                        is_selected = abs(float(selected.get("x")) - float(point.get("x"))) <= 1e-9
+                        # Graph x-axis is env change rate.
+                        is_selected = (
+                            abs(float(selected.get("x")) - float(point.get("x"))) <= 1e-9
+                            and abs(float(selected.get("evo")) - float(point.get("evo"))) <= 1e-9
+                        )
                     except Exception:
                         is_selected = False
-            if point.get("actual"):
-                color = (40 + int(70 * n), 170 + int(70 * n), 215 + int(40 * n))
-                pg.draw.circle(self.screen, color, (px, py), radius)
-            else:
-                color = (255, 145 + int(70 * n), 80 + int(70 * n))
-                pg.draw.circle(self.screen, color, (px, py), max(3, radius - 1), 1)
+            # Fitness-based color ramp: low fitness -> cool blue, high fitness -> warm yellow.
+            color = (
+                35 + int(220 * n),
+                125 + int(110 * n),
+                235 - int(165 * n),
+            )
+            alpha = 70 + int(185 * n)
+            dot = pg.Surface((radius * 2 + 2, radius * 2 + 2), pg.SRCALPHA)
+            pg.draw.circle(
+                dot,
+                (int(color[0]), int(color[1]), int(color[2]), int(alpha)),
+                (radius + 1, radius + 1),
+                radius,
+            )
+            self.screen.blit(dot, (px - radius - 1, py - radius - 1))
             if is_selected:
                 selected_found = True
                 pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
@@ -1492,16 +1787,18 @@ class _HubDashboard:
         if self._selected_graph_point is not None and (not selected_found):
             self._selected_graph_point = None
 
-        min_label = self.small.render(f"{min_y:.1f}", True, (150, 150, 150))
-        max_label = self.small.render(f"{max_y:.1f}", True, (150, 150, 150))
+        x_span = max(1e-9, raw_max_x - raw_min_x)
+        y_span = max(1e-9, raw_max_y - raw_min_y)
+        min_label = self.small.render(_axis_fmt(raw_min_y, y_span), True, (150, 150, 150))
+        max_label = self.small.render(_axis_fmt(raw_max_y, y_span), True, (150, 150, 150))
         self.screen.blit(max_label, (plot.x - 40, plot.y - 6))
         self.screen.blit(min_label, (plot.x - 40, plot.bottom - 8))
-        x1 = self.small.render(f"{min_x:.2f}", True, (150, 150, 150))
-        x2 = self.small.render(f"{max_x:.2f}", True, (150, 150, 150))
+        x1 = self.small.render(_axis_fmt(raw_min_x, x_span), True, (150, 150, 150))
+        x2 = self.small.render(_axis_fmt(raw_max_x, x_span), True, (150, 150, 150))
         self.screen.blit(x1, (plot.x, plot.bottom + 4))
         self.screen.blit(x2, (plot.right - x2.get_width(), plot.bottom + 4))
-        x_label = self.small.render("evo speed", True, (155, 155, 155))
-        y_label = self.small.render("env change rate", True, (155, 155, 155))
+        x_label = self.small.render("env change rate", True, (155, 155, 155))
+        y_label = self.small.render("evo speed", True, (155, 155, 155))
         self.screen.blit(x_label, (plot.x + 4, plot.bottom + 22))
         self.screen.blit(y_label, (plot.x - 42, plot.y + 8))
 
@@ -1629,9 +1926,8 @@ class _HubDashboard:
             ("plan", 72),
             ("master", 72),
             ("status", 90),
-            ("species", 96),
-            ("fitness", 86),
-            ("evo", 74),
+            ("species", 112),
+            ("frames", 90),
             ("dur", 66),
         ]
         col_layout = []
@@ -1710,9 +2006,16 @@ class _HubDashboard:
                 "" if row.get("planned_master_run_num") is None else str(row.get("planned_master_run_num")),
                 "" if row.get("master_run_num") is None else str(row.get("master_run_num")),
                 status_text,
-                f"{float(row.get('max_species')):.1f}" if _is_number(row.get("max_species")) else "",
-                f"{float(row.get('apex_fitness')):.1f}" if _is_number(row.get("apex_fitness")) else "",
-                f"{float(row.get('apex_evolution_rate')):.3f}" if _is_number(row.get("apex_evolution_rate")) else "",
+                (
+                    f"{float(row.get('total_species')):.1f}"
+                    if _is_number(row.get("total_species"))
+                    else (
+                        f"{float(row.get('max_species')):.1f}"
+                        if _is_number(row.get("max_species"))
+                        else ""
+                    )
+                ),
+                f"{float(row.get('max_frames')):.0f}" if _is_number(row.get("max_frames")) else "",
                 _fmt_duration(dur),
             ]
             for c_idx, (cell_x, width) in enumerate(col_layout):
@@ -1793,7 +2096,7 @@ class _HubDashboard:
             f"Graph-ready rows: {state.get('graph_ready_rows', 0)} / {len(rows)}",
             f"Summary file: {state.get('summary_path', '')}",
             f"Fit file: {state.get('fit_path', '')}",
-            "Controls: Update(U)  Reopen(R)  Close(C)  Close Hub(X)  FPS(F)",
+            "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Close Hub(X) FPS(F)",
             "Graph: click a dot to inspect values",
         ]
         dot = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
@@ -1806,16 +2109,10 @@ class _HubDashboard:
                 else "--"
             )
             rate_val = dot.get("x")
-            evo_val = dot.get("evo")
-            fit_val = dot.get("fitness")
+            x_text = f"{float(rate_val):.4f}" if _is_number(rate_val) else "--"
             dot_lines = [
                 f"Dot: step {step_label} ({dot_type})",
-                f"dot x (evo speed): {float(evo_val):.4f}" if _is_number(evo_val) else "dot x (evo speed): --",
-                f"dot y (rate): {float(rate_val):.4f}" if _is_number(rate_val) else "dot y (rate): --",
-                f"dot size (fitness): {float(fit_val):.3f}" if _is_number(fit_val) else "dot size (fitness): --",
-                f"dot rate: {float(rate_val):.4f}" if _is_number(rate_val) else "dot rate: --",
-                f"dot evo speed: {float(evo_val):.4f}" if _is_number(evo_val) else "dot evo speed: --",
-                f"dot fitness: {float(fit_val):.3f}" if _is_number(fit_val) else "dot fitness: --",
+                f"dot rate: {x_text}",
             ]
             master_val = dot.get("master_run_num")
             if master_val is not None:
@@ -1823,8 +2120,12 @@ class _HubDashboard:
             status_val = dot.get("status")
             if status_val:
                 dot_lines.append(f"dot status: {status_val}")
+            if _is_number(dot.get("total_species")):
+                dot_lines.append(f"dot species total: {float(dot.get('total_species')):.1f}")
             if _is_number(dot.get("max_species")):
-                dot_lines.append(f"dot species: {float(dot.get('max_species')):.1f}")
+                dot_lines.append(f"dot species max run: {float(dot.get('max_species')):.1f}")
+            if _is_number(dot.get("max_frames")):
+                dot_lines.append(f"dot frames max run: {float(dot.get('max_frames')):.0f}")
             if _is_number(dot.get("duration_s")):
                 dot_lines.append(f"dot duration: {_fmt_duration(float(dot.get('duration_s')))}")
             info_lines.extend(dot_lines)
@@ -2078,6 +2379,27 @@ def main() -> None:
         for v in planned_master_ids
     ]
     planned_master_span = _format_id_span([v for v in planned_master_ids if isinstance(v, int)])
+    if not continuing:
+        reserved_master_count = len([v for v in planned_master_ids if isinstance(v, int)])
+        if args.count is not None:
+            sims_per_master = max(0, int(args.count))
+        else:
+            try:
+                sims_per_master = int(settings_snapshot.get("simulations", {}).get("count", 3))
+            except Exception:
+                sims_per_master = 3
+            sims_per_master = max(0, sims_per_master)
+        reserved_sim_count = int(reserved_master_count * sims_per_master)
+        reserved_master_next, reserved_sim_next = _reserve_global_counters(
+            settings_snapshot=settings_snapshot,
+            reserved_master_count=reserved_master_count,
+            reserved_sim_count=reserved_sim_count,
+            planned_master_ids=[v for v in planned_master_ids if isinstance(v, int)],
+        )
+        print(
+            f"[hub_{hub_idx}] reserved counters: num_tries_master += {reserved_master_count}, "
+            f"num_tries += {reserved_sim_count} -> master={reserved_master_next}, sim={reserved_sim_next}"
+        )
     if continuing:
         hub_meta = dict(existing_hub_meta)
         hub_meta["hub_index"] = int(hub_idx)
@@ -2254,23 +2576,51 @@ def main() -> None:
             return (None, None)
         return (float(x_val), float(y_val))
 
-    def _refresh_row_from_disk(row: dict, rebuild_master_combined: bool = False) -> None:
+    def _refresh_row_runtime_from_disk(row: dict):
         if not isinstance(row, dict):
-            return
+            return (None, None, [])
         env_dir_raw = row.get("env_dir")
         if not env_dir_raw:
-            return
+            return (None, None, [])
         env_dir = Path(str(env_dir_raw))
         if not env_dir.is_dir():
-            return
+            return (None, None, [])
         master_dir = _latest_master_dir(env_dir)
         run_nums = _master_run_nums(master_dir) if master_dir is not None else []
         if not run_nums:
             run_nums = _discover_env_run_nums(env_dir)
         if not run_nums and master_dir is None:
-            return
+            return (None, None, [])
         max_species = _max_species(env_dir, run_nums)
+        total_species = _total_species(env_dir, run_nums)
+        max_frames = _max_frames(env_dir, run_nums)
         max_elapsed = _max_elapsed_seconds(env_dir, run_nums)
+        if master_dir is not None:
+            try:
+                master_run_num = int(master_dir.name.split("_", 1)[1])
+            except Exception:
+                master_run_num = None
+            row["master_dir"] = str(master_dir)
+        else:
+            master_run_num = None
+        if master_run_num is not None:
+            row["master_run_num"] = master_run_num
+        if row.get("planned_master_run_num") is None and master_run_num is not None:
+            row["planned_master_run_num"] = master_run_num
+        row["max_species"] = max_species
+        row["total_species"] = total_species
+        row["max_frames"] = max_frames
+        row["run_nums"] = run_nums
+        if _is_number(max_elapsed):
+            row["duration_s"] = float(max_elapsed)
+            if not (str(row.get("status", "")) == "running" and _is_number(row.get("started_at"))):
+                row["duration_base_s"] = float(max_elapsed)
+        return (env_dir, master_dir, run_nums)
+
+    def _refresh_row_from_disk(row: dict, rebuild_master_combined: bool = False) -> None:
+        env_dir, master_dir, run_nums = _refresh_row_runtime_from_disk(row)
+        if env_dir is None:
+            return
         if master_dir is not None:
             if rebuild_master_combined:
                 try:
@@ -2294,29 +2644,11 @@ def main() -> None:
         else:
             apex_x = fit.get("apex_x")
             apex_y = fit.get("apex_y")
-        if master_dir is not None:
-            try:
-                master_run_num = int(master_dir.name.split("_", 1)[1])
-            except Exception:
-                master_run_num = None
-            row["master_dir"] = str(master_dir)
-        else:
-            master_run_num = None
-        if master_run_num is not None:
-            row["master_run_num"] = master_run_num
-        if row.get("planned_master_run_num") is None and master_run_num is not None:
-            row["planned_master_run_num"] = master_run_num
-        row["max_species"] = max_species
         row["apex_evolution_rate"] = apex_x if _is_number(apex_x) else None
         row["apex_fitness"] = apex_y if _is_number(apex_y) else None
         row["fit"] = fit
         row["points"] = points
         row["point_count"] = int(len(points))
-        row["run_nums"] = run_nums
-        if _is_number(max_elapsed):
-            row["duration_s"] = float(max_elapsed)
-            if not (str(row.get("status", "")) == "running" and _is_number(row.get("started_at"))):
-                row["duration_base_s"] = float(max_elapsed)
 
     def _manual_update_rows_from_disk(rebuild_master_combined: bool = False) -> None:
         ready_rows = 0
@@ -2373,6 +2705,8 @@ def main() -> None:
             "master_run_num": None,
             "status": "pending",
             "max_species": None,
+            "total_species": None,
+            "max_frames": None,
             "apex_fitness": None,
             "apex_evolution_rate": None,
             "started_at": None,
@@ -2391,9 +2725,15 @@ def main() -> None:
                 row.get("master_run_num") is not None and bool(row.get("master_dir"))
             )
             max_species = row.get("max_species")
+            total_species = row.get("total_species")
+            species_measure = (
+                float(total_species)
+                if _is_number(total_species)
+                else (float(max_species) if _is_number(max_species) else None)
+            )
             step_complete = (
                 species_threshold <= 0
-                or (_is_number(max_species) and float(max_species) >= float(species_threshold))
+                or (_is_number(species_measure) and float(species_measure) >= float(species_threshold))
             )
             if has_existing_master:
                 if step_complete:
@@ -2544,6 +2884,8 @@ def main() -> None:
         env["MASTER_CLOSE_REQUEST_FILE"] = str(current_step_close_path)
         proc = subprocess.Popen(cmd, cwd=str(repo_root), env=env)
         current_step_proc = proc
+        live_metrics_refresh_s = 0.5
+        last_live_metrics_refresh = 0.0
         while proc.poll() is None:
             if abort_requested and (not current_step_close_requested):
                 _request_graceful_close(
@@ -2552,6 +2894,15 @@ def main() -> None:
                     f"hub step {step_idx + 1}",
                 )
                 current_step_close_requested = True
+            now_ts = time.time()
+            if (now_ts - last_live_metrics_refresh) >= live_metrics_refresh_s:
+                _refresh_row_runtime_from_disk(row_ref)
+                for candidate in step_rows:
+                    if candidate is row_ref:
+                        continue
+                    if bool(candidate.get("reopen_open")):
+                        _refresh_row_runtime_from_disk(candidate)
+                last_live_metrics_refresh = now_ts
             _refresh_reopened_processes()
             dashboard.update(dash_state)
             sleep_s = dashboard.poll_sleep_seconds() if dashboard.enabled else 0.12
@@ -2622,6 +2973,8 @@ def main() -> None:
 
         run_nums = _master_run_nums(master_dir)
         max_species = _max_species(env_dir, run_nums)
+        total_species = _total_species(env_dir, run_nums)
+        max_frames = _max_frames(env_dir, run_nums)
         points = _master_points(master_dir, run_nums)
         fit = _fit_stitched_gaussian(points)
         if fit is None:
@@ -2674,6 +3027,8 @@ def main() -> None:
                 "planned_master_run_num": planned_master_run,
                 "run_nums": run_nums,
                 "max_species": max_species,
+                "total_species": total_species,
+                "max_frames": max_frames,
                 "apex_evolution_rate": apex_x,
                 "apex_fitness": apex_y,
                 "fit": fit,
@@ -2685,6 +3040,8 @@ def main() -> None:
         row_ref["master_run_num"] = master_run_num
         row_ref["master_dir"] = str(master_dir)
         row_ref["max_species"] = max_species
+        row_ref["total_species"] = total_species
+        row_ref["max_frames"] = max_frames
         row_ref["apex_evolution_rate"] = apex_x
         row_ref["apex_fitness"] = apex_y
         dash_state["last_master"] = (
@@ -2720,7 +3077,15 @@ def main() -> None:
             }
         )
 
-        if species_threshold > 0 and (max_species is None or max_species < species_threshold):
+        species_measure = (
+            float(total_species)
+            if _is_number(total_species)
+            else (float(max_species) if _is_number(max_species) else None)
+        )
+        if species_threshold > 0 and (
+            (not _is_number(species_measure))
+            or float(species_measure) < float(species_threshold)
+        ):
             step_info["status"] = "stopped"
             step_info["stopped_threshold_not_reached"] = True
             hub_meta["status"] = "stopped_threshold_not_reached"

@@ -857,6 +857,80 @@ def _parse_env_rate_from_dir(path: Path):
         return None
 
 
+def _master_search_root(results_dir: Path) -> Path:
+    root = Path(results_dir)
+    for candidate in [root, *root.parents]:
+        if candidate.name == "results":
+            return candidate
+    return root
+
+
+def _parse_master_run_from_dir(path: Path):
+    try:
+        name = Path(path).name
+    except Exception:
+        return None
+    if not name.startswith("master_"):
+        return None
+    try:
+        return int(name.split("_", 1)[1])
+    except Exception:
+        return None
+
+
+def _resolve_continue_master(
+    results_dir: Path,
+    continue_master_run,
+    continue_master_dir,
+):
+    run_num = None
+    if continue_master_run is not None:
+        try:
+            run_num = int(continue_master_run)
+        except Exception:
+            run_num = None
+
+    dir_path = None
+    if continue_master_dir is not None:
+        try:
+            candidate = Path(continue_master_dir)
+            if candidate.is_dir():
+                dir_path = candidate
+        except Exception:
+            dir_path = None
+
+    if dir_path is not None:
+        parsed = _parse_master_run_from_dir(dir_path)
+        if parsed is not None:
+            # Directory identity is authoritative when both id+path are provided.
+            run_num = int(parsed)
+        if run_num is not None:
+            return run_num, dir_path, dir_path.parent
+
+    if run_num is None:
+        return None, None, results_dir
+
+    # Prefer masters in the current results scope before global search.
+    direct_local = results_dir / f"master_{run_num}"
+    if direct_local.is_dir():
+        return run_num, direct_local, direct_local.parent
+
+    for path in sorted(results_dir.rglob(f"master_{run_num}")):
+        if path.is_dir():
+            return run_num, path, path.parent
+
+    search_root = _master_search_root(results_dir)
+    direct_root = search_root / f"master_{run_num}"
+    if direct_root.is_dir():
+        return run_num, direct_root, direct_root.parent
+
+    for path in sorted(search_root.rglob(f"master_{run_num}")):
+        if path.is_dir():
+            return run_num, path, path.parent
+
+    return run_num, None, results_dir
+
+
 def _collect_hub_env_dirs(results_dir: Path):
     entries = []
     for hub_dir in sorted(results_dir.glob("hub_*")):
@@ -1260,9 +1334,19 @@ def _select_hub_env_ui(results_dir: Path, hub_idx_filter=None):
         clock.tick(30)
 
 
-def _select_master_run_ui(results_dir: Path, title_text: str = "Select Master Run"):
+def _select_master_run_ui(
+    results_dir: Path,
+    title_text: str = "Select Master Run",
+    include_nested: bool = False,
+):
     masters = []
-    for path in sorted(results_dir.glob("master_*")):
+    if include_nested:
+        candidates = sorted(results_dir.rglob("master_*"))
+    else:
+        candidates = sorted(results_dir.glob("master_*"))
+    for path in candidates:
+        if not path.is_dir():
+            continue
         try:
             run_num = int(path.name.split("_", 1)[1])
         except Exception:
@@ -1270,7 +1354,7 @@ def _select_master_run_ui(results_dir: Path, title_text: str = "Select Master Ru
         masters.append((run_num, path))
     if not masters:
         return None, None, None
-    masters.sort(key=lambda item: item[0])
+    masters.sort(key=lambda item: (item[0], str(item[1])))
 
     screen_w = 800
     screen_h = 520
@@ -1471,9 +1555,16 @@ def _select_master_run_ui(results_dir: Path, title_text: str = "Select Master Ru
         screen.blit(hint, (20, screen_h - 50))
 
         for idx in range(scroll, min(len(masters), scroll + visible_count)):
-            run_num, _ = masters[idx]
+            run_num, path = masters[idx]
             y = list_top + (idx - scroll) * line_h
             label = f"master_{run_num}"
+            if include_nested:
+                try:
+                    rel_parent = path.parent.relative_to(results_dir)
+                    if str(rel_parent) != ".":
+                        label = f"{label} | {rel_parent}"
+                except Exception:
+                    label = f"{label} | {path.parent}"
             color = (0, 200, 255) if idx == selected else (220, 220, 220)
             if idx == selected:
                 pygame.draw.rect(
@@ -1503,7 +1594,7 @@ def _select_master_run_ui(results_dir: Path, title_text: str = "Select Master Ru
         elapsed_vals = []
         species_vals = []
         for run_num in run_nums:
-            meta_path = results_dir / str(run_num) / "run_meta.json"
+            meta_path = sel_path.parent / str(run_num) / "run_meta.json"
             run_meta = _load_run_meta(meta_path)
             if isinstance(run_meta, dict):
                 elapsed = run_meta.get("elapsed_seconds")
@@ -1662,11 +1753,41 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
 
     confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
     select_rect = pygame.Rect(screen_w - 160, 220, 140, 32)
-    hub_select_rect = pygame.Rect(screen_w - 160, 260, 140, 32)
     upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
     exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
     upload_notice = ""
     upload_notice_time = 0.0
+
+    def _infer_continue_from_num_master():
+        try:
+            target_run = max(0, int(num_master))
+        except Exception:
+            return (None, None, None, None)
+        run_num, master_dir, master_results_dir = _resolve_continue_master(
+            results_dir,
+            target_run,
+            None,
+        )
+        if run_num is None or master_dir is None or int(run_num) != int(target_run):
+            return (None, None, None, None)
+        settings_snapshot = None
+        settings_path = _master_settings_path(master_dir)
+        if settings_path.exists():
+            try:
+                settings_snapshot = json.loads(settings_path.read_text())
+            except Exception:
+                settings_snapshot = None
+        if not isinstance(settings_snapshot, dict):
+            meta = _load_master_meta(master_dir)
+            settings_snapshot = (
+                meta.get("settings") if isinstance(meta, dict) else None
+            )
+        return (
+            int(run_num),
+            settings_snapshot,
+            master_dir,
+            master_results_dir,
+        )
 
     def _apply_edit():
         nonlocal num_tries, num_master, editing, edit_text, error_text
@@ -1700,7 +1821,19 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         message_value = message_text.strip() or "debug run"
                         if continue_master_run is None:
-                            message_for_new = message_value
+                            (
+                                inferred_run,
+                                _inferred_settings,
+                                inferred_dir,
+                                _inferred_results_dir,
+                            ) = _infer_continue_from_num_master()
+                            if inferred_run is not None and inferred_dir is not None:
+                                _write_master_message(
+                                    inferred_dir,
+                                    message_value,
+                                )
+                            else:
+                                message_for_new = message_value
                         else:
                             target_master_dir = continue_master_dir
                             if target_master_dir is None:
@@ -1779,17 +1912,33 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                 if exit_rect.collidepoint(mx, my):
                     return None
                 if confirm_rect.collidepoint(mx, my):
+                    effective_continue_run = continue_master_run
+                    effective_continue_settings = continue_settings
+                    effective_continue_dir = continue_master_dir
+                    effective_continue_results_dir = continue_results_dir
+                    if effective_continue_run is None:
+                        (
+                            inferred_run,
+                            inferred_settings,
+                            inferred_dir,
+                            inferred_results_dir,
+                        ) = _infer_continue_from_num_master()
+                        if inferred_run is not None and inferred_dir is not None:
+                            effective_continue_run = inferred_run
+                            effective_continue_settings = inferred_settings
+                            effective_continue_dir = inferred_dir
+                            effective_continue_results_dir = inferred_results_dir
                     settings["draw"] = draw_value
                     settings["num_tries"] = num_tries
                     settings["num_tries_master"] = num_master
                     save_settings(settings)
                     return (
                         settings,
-                        continue_master_run,
-                        continue_settings,
+                        effective_continue_run,
+                        effective_continue_settings,
                         message_for_new,
-                        continue_master_dir,
-                        continue_results_dir,
+                        effective_continue_dir,
+                        effective_continue_results_dir,
                     )
                 if upload_rect.collidepoint(mx, my):
                     try:
@@ -1802,39 +1951,30 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     upload_notice = "Uploaded counters to global settings"
                     upload_notice_time = time.time()
                 if select_rect.collidepoint(mx, my):
+                    pick_root = _master_search_root(results_dir)
                     picked_run, picked_settings, picked_path = _select_master_run_ui(
-                        results_dir, title_text="Select Root Master"
+                        pick_root,
+                        title_text="Select Master",
+                        include_nested=True,
                     )
                     if picked_run is not None:
+                        try:
+                            num_master = int(picked_run)
+                        except Exception:
+                            pass
                         continue_master_run = picked_run
                         continue_settings = picked_settings
                         continue_master_dir = picked_path
-                        continue_results_dir = results_dir
+                        continue_results_dir = (
+                            picked_path.parent if picked_path is not None else results_dir
+                        )
                         if continue_master_dir is None:
-                            continue_master_dir = results_dir / f"master_{continue_master_run}"
+                            continue_master_dir = (
+                                continue_results_dir / f"master_{continue_master_run}"
+                            )
                         message_value = _read_master_message(continue_master_dir)
                         message_text = message_value
                         editing_message = False
-                if hub_select_rect.collidepoint(mx, my):
-                    selected_hub = _select_hub_ui(results_dir)
-                    if selected_hub is not None:
-                        env_dir = _select_hub_env_ui(results_dir, hub_idx_filter=selected_hub)
-                        if env_dir is not None:
-                            selected_title = f"Select Hub Master ({env_dir.parent.name}/{env_dir.name})"
-                            picked_run, picked_settings, picked_path = _select_master_run_ui(
-                                env_dir,
-                                title_text=selected_title,
-                            )
-                            if picked_run is not None:
-                                continue_master_run = picked_run
-                                continue_settings = picked_settings
-                                continue_master_dir = picked_path
-                                continue_results_dir = env_dir
-                                if continue_master_dir is None:
-                                    continue_master_dir = env_dir / f"master_{continue_master_run}"
-                                message_value = _read_master_message(continue_master_dir)
-                            message_text = message_value
-                            editing_message = False
                 line_start = 120
                 line_gap = 50
                 for idx in range(4):
@@ -1873,12 +2013,32 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
         range_end = num_tries + sim_count - 1
         num_label = f"SIM run ids (num_tries) next {range_start}-{range_end}: {num_tries}"
         master_label = f"MASTER run id (num_tries_master): {num_master}"
-        if continue_master_run is None:
+        display_continue_run = continue_master_run
+        display_continue_dir = continue_master_dir
+        display_continue_results_dir = continue_results_dir
+        display_continue_auto = False
+        display_message_value = message_value
+        if display_continue_run is None:
+            (
+                inferred_run,
+                _inferred_settings,
+                inferred_dir,
+                inferred_results_dir,
+            ) = _infer_continue_from_num_master()
+            if inferred_run is not None and inferred_dir is not None:
+                display_continue_run = inferred_run
+                display_continue_dir = inferred_dir
+                display_continue_results_dir = inferred_results_dir
+                display_continue_auto = True
+                display_message_value = _read_master_message(inferred_dir)
+        if display_continue_run is None:
             master_label = f"{master_label} (new)"
-        if continue_master_run is None:
+        if display_continue_run is None:
             message_label = f"message (new): {message_value}"
         else:
-            message_label = f"message (master_{continue_master_run}): {message_value}"
+            message_label = (
+                f"message (master_{display_continue_run}): {display_message_value}"
+            )
 
         for idx, line in enumerate([draw_label, num_label, master_label, message_label]):
             y = 120 + idx * 50
@@ -1890,7 +2050,7 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
 
         pygame.draw.rect(screen, (60, 60, 60), select_rect)
         pygame.draw.rect(screen, (160, 160, 160), select_rect, 1)
-        select_text = small_font.render("Root Select", True, (230, 230, 230))
+        select_text = small_font.render("Select Master", True, (230, 230, 230))
         screen.blit(
             select_text,
             (
@@ -1898,27 +2058,17 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                 select_rect.y + 6,
             ),
         )
-        pygame.draw.rect(screen, (60, 60, 60), hub_select_rect)
-        pygame.draw.rect(screen, (160, 160, 160), hub_select_rect, 1)
-        hub_select_text = small_font.render("Hub Select", True, (230, 230, 230))
-        screen.blit(
-            hub_select_text,
-            (
-                hub_select_rect.x + (hub_select_rect.width - hub_select_text.get_width()) // 2,
-                hub_select_rect.y + 6,
-            ),
-        )
 
-        if continue_master_run is not None:
-            cont_loc = "root"
-            if continue_results_dir != results_dir:
+        if display_continue_run is not None:
+            cont_loc = "results"
+            if display_continue_results_dir != results_dir:
                 try:
-                    cont_loc = str(continue_results_dir.relative_to(results_dir))
+                    cont_loc = str(display_continue_results_dir.relative_to(results_dir))
                 except Exception:
-                    cont_loc = str(continue_results_dir)
-            mode_label = "Run mode: HUB continue" if continue_results_dir != results_dir else "Run mode: ROOT continue"
+                    cont_loc = str(display_continue_results_dir)
+            mode_label = "Run mode: CONTINUE (auto)" if display_continue_auto else "Run mode: CONTINUE"
             cont_text = small_font.render(
-                f"{mode_label} | master_{continue_master_run}",
+                f"{mode_label} | master_{display_continue_run}",
                 True,
                 (180, 220, 180),
             )
@@ -1931,11 +2081,11 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             screen.blit(loc_text, (22, 375))
         else:
             cont_text = small_font.render(
-                "Run mode: NEW root master", True, (180, 180, 220)
+                "Run mode: NEW master", True, (180, 180, 220)
             )
             screen.blit(cont_text, (22, 350))
             loc_text = small_font.render(
-                "Use Hub Select to continue hub masters.", True, (180, 180, 220)
+                "Use Select Master to continue an existing master.", True, (180, 180, 220)
             )
             screen.blit(loc_text, (22, 375))
 
@@ -4055,6 +4205,35 @@ def main() -> None:
             continue_master_dir,
             continue_results_dir,
         ) = startup
+    if (continue_master_run is not None) or (continue_master_dir is not None):
+        (
+            continue_master_run,
+            resolved_master_dir,
+            resolved_results_dir,
+        ) = _resolve_continue_master(
+            results_dir,
+            continue_master_run,
+            continue_master_dir,
+        )
+        if continue_master_run is not None and resolved_master_dir is None:
+            raise SystemExit(
+                f"Could not find master_{int(continue_master_run)} to continue."
+            )
+        if resolved_master_dir is not None:
+            continue_master_dir = resolved_master_dir
+            continue_results_dir = resolved_results_dir
+            if not isinstance(continue_settings, dict):
+                settings_path = _master_settings_path(continue_master_dir)
+                if settings_path.exists():
+                    try:
+                        continue_settings = json.loads(settings_path.read_text())
+                    except Exception:
+                        continue_settings = None
+                if not isinstance(continue_settings, dict):
+                    meta = _load_master_meta(continue_master_dir)
+                    continue_settings = (
+                        meta.get("settings") if isinstance(meta, dict) else None
+                    )
     if continue_results_dir is not None:
         try:
             selected_results_dir = Path(continue_results_dir)
@@ -4107,11 +4286,11 @@ def main() -> None:
     if continue_master_run is not None:
         master_run_num = int(continue_master_run)
         master_label = f"master_{master_run_num}"
-        if continue_master_dir is not None:
-            master_dir = Path(continue_master_dir)
-        else:
-            master_dir = results_dir / master_label
-        master_dir.mkdir(parents=True, exist_ok=True)
+        if continue_master_dir is None:
+            raise SystemExit(f"Missing directory for continuation: {master_label}")
+        master_dir = Path(continue_master_dir)
+        if not master_dir.is_dir():
+            raise SystemExit(f"Master directory not found: {master_dir}")
         master_meta = _load_master_meta(master_dir)
         existing_run_nums = []
         if isinstance(master_meta, dict):
@@ -4482,6 +4661,8 @@ def main() -> None:
             return True
         now_perf = time.perf_counter()
         need_meta_refresh = (stop_max_frames > 0) or (stop_max_species > 0) or (stop_max_runtime > 0)
+        combined_species = 0.0
+        saw_species = False
         for idx in range(count):
             meta = meta_series[idx] if idx < len(meta_series) else {}
             if need_meta_refresh:
@@ -4511,10 +4692,13 @@ def main() -> None:
                 elapsed_val = max(0.0, now_perf - sim_start_times[idx])
             if stop_max_frames > 0 and frame_val is not None and frame_val >= stop_max_frames:
                 return True
-            if stop_max_species > 0 and species_val is not None and species_val >= stop_max_species:
-                return True
+            if stop_max_species > 0 and species_val is not None:
+                combined_species += float(species_val)
+                saw_species = True
             if stop_max_runtime > 0 and elapsed_val is not None and elapsed_val >= stop_max_runtime:
                 return True
+        if stop_max_species > 0 and saw_species and combined_species >= stop_max_species:
+            return True
         return False
 
     while running:

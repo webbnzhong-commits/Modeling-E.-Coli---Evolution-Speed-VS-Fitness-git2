@@ -159,6 +159,15 @@
       "returncode": 0,
       "finished_at": 1771227087.636836,
       "status": "aborted"
+    },
+    {
+      "step_index": 0,
+      "env_rate": 0.5,
+      "env_dir": "results/hub_0/env_0p50",
+      "planned_master_run_num": 73,
+      "returncode": 0,
+      "finished_at": 1771261086.383598,
+      "status": "aborted"
     }
   ],
   "status": "aborted_by_user",
@@ -267,7 +276,7 @@
     173
   ],
   "planned_master_range": "73-173",
-  "resumed_at": 1771227067.976037,
-  "resume_count": 3,
-  "aborted_at": 1771227087.6368399
+  "resumed_at": 1771260998.5454972,
+  "resume_count": 4,
+  "aborted_at": 1771261086.383602
 }
