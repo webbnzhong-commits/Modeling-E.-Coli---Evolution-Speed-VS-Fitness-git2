@@ -5235,21 +5235,41 @@ def main() -> None:
                 running = False
                 break
 
+    def _all_simulations_stopped() -> bool:
+        for proc in procs:
+            if proc.poll() is None:
+                return False
+        return True
+
+    # Ask every simulation to exit itself first so it can write final run_meta/logs.
     try:
         _write_control(control_path, -1, enabled, draw_modes, draw_every, mode_values, update_tokens)
     except Exception:
         pass
 
-    for proc in procs:
-        if proc.poll() is None:
-            proc.terminate()
+    graceful_deadline = time.time() + 8.0
+    while (not _all_simulations_stopped()) and time.time() < graceful_deadline:
+        time.sleep(0.05)
 
-    deadline = time.time() + 3
+    # If any process did not exit gracefully, terminate it.
     for proc in procs:
-        while proc.poll() is None and time.time() < deadline:
-            time.sleep(0.05)
         if proc.poll() is None:
-            proc.kill()
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    terminate_deadline = time.time() + 4.0
+    while (not _all_simulations_stopped()) and time.time() < terminate_deadline:
+        time.sleep(0.05)
+
+    # Hard-kill only the stubborn leftovers.
+    for proc in procs:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     try:
         _combine_master_logs(results_dir, master_dir, master_label, master_run_nums)
