@@ -17,8 +17,16 @@ DEFAULT_SETTINGS = {
     "immune_system_quan_factor": 0.15,
     "num_tries": 0,
     "num_tries_master": 0,
+    "num_tries_hub": 0,
     "simulations": {"count": 3},
     "master_graph": {"dot_alpha": 110, "dot_radius": 3},
+    "hub": {
+        "start_rate": 0.5,
+        "end_rate": 1.5,
+        "step": 0.01,
+        "species_threshold": 100000,
+        "max_masters": 101,
+    },
     "stop_conditions": {
         "runtime_enabled": False,
         "max_runtime_hours": 0.0,
@@ -84,10 +92,16 @@ def load_settings():
         num_tries_master = int(merged.get("num_tries_master", 0))
     except Exception:
         num_tries_master = 0
+    try:
+        num_tries_hub = int(merged.get("num_tries_hub", 0))
+    except Exception:
+        num_tries_hub = 0
     if (Path("results") / str(num_tries)).exists():
         merged["num_tries"] = max(0, num_tries + 1)
     if (Path("results") / f"master_{num_tries_master}").exists():
         merged["num_tries_master"] = max(0, num_tries_master + 1)
+    if (Path("results") / f"hub_{num_tries_hub}").exists():
+        merged["num_tries_hub"] = max(0, num_tries_hub + 1)
     if not SETTINGS_PATH.exists() or _has_missing_keys(DEFAULT_SETTINGS, loaded):
         save_settings(merged)
     return merged

@@ -147,6 +147,31 @@ def _step_decimals(step: float) -> int:
     return max(0, -exp)
 
 
+def _draw_text_with_caret(
+    surface,
+    font,
+    text: str,
+    pos: tuple[int, int],
+    color: tuple[int, int, int],
+    show_caret: bool = False,
+    max_caret_x: int | None = None,
+):
+    text_surf = font.render(text, True, color)
+    x, y = pos
+    surface.blit(text_surf, (x, y))
+    if not show_caret:
+        return
+    # Blink at ~2 Hz while editing.
+    if int(time.time() * 2) % 2 != 0:
+        return
+    caret_x = x + text_surf.get_width() + 1
+    if isinstance(max_caret_x, int):
+        caret_x = min(caret_x, max_caret_x)
+    top = y + 2
+    bottom = y + max(2, text_surf.get_height() - 2)
+    pygame.draw.line(surface, color, (caret_x, top), (caret_x, bottom), 1)
+
+
 def _apply_master_graph_settings(settings: dict) -> None:
     global _DOT_ALPHA, _DOT_ALPHA_HI, _DOT_ALPHA_DIM, _DOT_RADIUS
     cfg = settings.get("master_graph", {}) if isinstance(settings, dict) else {}
@@ -350,8 +375,15 @@ def _edit_stop_conditions_ui(settings: dict):
         if editing:
             edit_line = f"Edit: {edit_text}"
             edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
-            edit_text_surf = small_font.render(edit_line, True, edit_color)
-            screen.blit(edit_text_surf, (20, screen_h - 55))
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                edit_line,
+                (20, screen_h - 55),
+                edit_color,
+                show_caret=True,
+                max_caret_x=screen_w - 12,
+            )
         if error_text:
             err_surf = small_font.render(error_text, True, (255, 160, 160))
             screen.blit(err_surf, (20, screen_h - 35))
@@ -653,8 +685,15 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
         if editing:
             edit_line = f"Edit {items[selected]['label']}: {edit_text}"
             edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
-            edit_text_surf = small_font.render(edit_line, True, edit_color)
-            screen.blit(edit_text_surf, (20, screen_h - 55))
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                edit_line,
+                (20, screen_h - 55),
+                edit_color,
+                show_caret=True,
+                max_caret_x=screen_w - 12,
+            )
         if error_text:
             err_surf = small_font.render(error_text, True, (255, 160, 160))
             screen.blit(err_surf, (20, screen_h - 35))
@@ -664,8 +703,16 @@ def _edit_settings_ui(settings: dict, master_dir=None, write_global_on_confirm: 
             msg_color = (255, 220, 160) if editing_message else (210, 210, 210)
             pygame.draw.rect(screen, (28, 28, 28), message_rect)
             pygame.draw.rect(screen, (120, 120, 120), message_rect, 1)
-            msg_line = small_font.render(f"Message: {msg_display}", True, msg_color)
-            screen.blit(msg_line, (message_rect.x + 6, message_rect.y + 3))
+            msg_line_text = f"Message: {msg_display}"
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                msg_line_text,
+                (message_rect.x + 6, message_rect.y + 3),
+                msg_color,
+                show_caret=editing_message,
+                max_caret_x=message_rect.right - 6,
+            )
 
         pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
         pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
@@ -792,7 +839,428 @@ def _save_master_meta(
         pass
 
 
-def _select_master_run_ui(results_dir: Path):
+def _parse_hub_index(path: Path):
+    try:
+        return int(path.name.split("_", 1)[1])
+    except Exception:
+        return None
+
+
+def _parse_env_rate_from_dir(path: Path):
+    name = path.name
+    if not name.startswith("env_"):
+        return None
+    token = name[4:].replace("p", ".")
+    try:
+        return float(token)
+    except Exception:
+        return None
+
+
+def _collect_hub_env_dirs(results_dir: Path):
+    entries = []
+    for hub_dir in sorted(results_dir.glob("hub_*")):
+        if not hub_dir.is_dir():
+            continue
+        hub_idx = _parse_hub_index(hub_dir)
+        if hub_idx is None:
+            continue
+        for env_dir in sorted(hub_dir.iterdir()):
+            if not env_dir.is_dir():
+                continue
+            if not env_dir.name.startswith("env_"):
+                continue
+            master_count = 0
+            for master_path in env_dir.glob("master_*"):
+                if master_path.is_dir():
+                    master_count += 1
+            if master_count <= 0:
+                continue
+            env_rate = _parse_env_rate_from_dir(env_dir)
+            entries.append(
+                {
+                    "hub_idx": int(hub_idx),
+                    "hub_dir": hub_dir,
+                    "env_dir": env_dir,
+                    "env_rate": env_rate,
+                    "master_count": int(master_count),
+                }
+            )
+    entries.sort(
+        key=lambda e: (
+            int(e["hub_idx"]),
+            float("inf") if e["env_rate"] is None else float(e["env_rate"]),
+            str(e["env_dir"]),
+        )
+    )
+    return entries
+
+
+def _collect_hub_dirs(results_dir: Path):
+    hubs = []
+    for hub_dir in sorted(results_dir.glob("hub_*")):
+        if not hub_dir.is_dir():
+            continue
+        hub_idx = _parse_hub_index(hub_dir)
+        if hub_idx is None:
+            continue
+        env_count = 0
+        master_count = 0
+        for env_dir in sorted(hub_dir.iterdir()):
+            if not env_dir.is_dir() or not env_dir.name.startswith("env_"):
+                continue
+            local_masters = 0
+            for master_path in env_dir.glob("master_*"):
+                if master_path.is_dir():
+                    local_masters += 1
+            if local_masters <= 0:
+                continue
+            env_count += 1
+            master_count += int(local_masters)
+        if env_count <= 0:
+            continue
+        hubs.append(
+            {
+                "hub_idx": int(hub_idx),
+                "hub_dir": hub_dir,
+                "env_count": int(env_count),
+                "master_count": int(master_count),
+            }
+        )
+    hubs.sort(key=lambda e: int(e["hub_idx"]))
+    return hubs
+
+
+def _select_hub_ui(results_dir: Path):
+    hub_entries = _collect_hub_dirs(results_dir)
+    if not hub_entries:
+        return None
+
+    screen_w = 760
+    screen_h = 520
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    pygame.display.set_caption("Select Hub")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+
+    selected = 0
+    scroll = 0
+    list_top = 80
+    list_bottom = screen_h - 90
+    line_h = small_font.get_height() + 8
+    visible = max(1, (list_bottom - list_top) // line_h)
+    list_left = 20
+    list_w = 300
+    detail_x = list_left + list_w + 20
+    detail_w = screen_w - detail_x - 20
+    choose_rect = pygame.Rect(detail_x, screen_h - 70, detail_w, 30)
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
+
+    def _ensure_visible():
+        nonlocal scroll
+        if selected < scroll:
+            scroll = selected
+        elif selected >= scroll + visible:
+            scroll = selected - visible + 1
+        scroll = max(0, min(scroll, max(0, len(hub_entries) - visible)))
+
+    _ensure_visible()
+    while True:
+        selected = max(0, min(selected, len(hub_entries) - 1))
+        current = hub_entries[selected]
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None
+                if event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(hub_entries)
+                    _ensure_visible()
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(hub_entries)
+                    _ensure_visible()
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    return int(current["hub_idx"])
+            if event.type == pygame.MOUSEWHEEL:
+                if event.y > 0:
+                    selected = (selected - 1) % len(hub_entries)
+                elif event.y < 0:
+                    selected = (selected + 1) % len(hub_entries)
+                _ensure_visible()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None
+                if choose_rect.collidepoint(mx, my):
+                    return int(current["hub_idx"])
+                if list_left <= mx <= list_left + list_w and list_top <= my <= list_bottom:
+                    idx = (my - list_top) // line_h + scroll
+                    if 0 <= idx < len(hub_entries):
+                        selected = int(idx)
+                        _ensure_visible()
+
+        screen.fill((18, 18, 18))
+        title = font.render("Hub Selection", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
+
+        list_title = small_font.render("Hubs", True, (200, 200, 200))
+        screen.blit(list_title, (list_left, list_top - 26))
+        for idx in range(scroll, min(len(hub_entries), scroll + visible)):
+            entry = hub_entries[idx]
+            y = list_top + (idx - scroll) * line_h
+            if idx == selected:
+                pygame.draw.rect(screen, (35, 35, 35), (list_left - 4, y - 2, list_w, line_h))
+            color = (0, 200, 255) if idx == selected else (220, 220, 220)
+            text = small_font.render(f"hub_{entry['hub_idx']}", True, color)
+            screen.blit(text, (list_left, y))
+
+        pygame.draw.rect(screen, (30, 30, 30), (detail_x, list_top, detail_w, list_bottom - list_top))
+        pygame.draw.rect(screen, (80, 80, 80), (detail_x, list_top, detail_w, list_bottom - list_top), 1)
+        detail_lines = [
+            f"hub_{current['hub_idx']}",
+            f"env buckets: {current['env_count']}",
+            f"masters: {current['master_count']}",
+            f"path: {current['hub_dir']}",
+        ]
+        y = list_top + 10
+        for line in detail_lines:
+            line_surf = small_font.render(line, True, (220, 220, 220))
+            screen.blit(line_surf, (detail_x + 8, y))
+            y += line_h
+
+        pygame.draw.rect(screen, (40, 40, 40), choose_rect)
+        pygame.draw.rect(screen, (180, 180, 180), choose_rect, 1)
+        choose_text = small_font.render("Choose Hub", True, (230, 230, 230))
+        screen.blit(
+            choose_text,
+            (
+                choose_rect.x + (choose_rect.width - choose_text.get_width()) // 2,
+                choose_rect.y + 6,
+            ),
+        )
+
+        hint = small_font.render(
+            "Up/Down select  Enter choose  Esc cancel",
+            True,
+            (180, 180, 180),
+        )
+        screen.blit(hint, (20, screen_h - 45))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _select_hub_env_ui(results_dir: Path, hub_idx_filter=None):
+    env_entries = _collect_hub_env_dirs(results_dir)
+    if hub_idx_filter is not None:
+        env_entries = [
+            entry for entry in env_entries if int(entry.get("hub_idx", -1)) == int(hub_idx_filter)
+        ]
+    if not env_entries:
+        return None
+    hubs = sorted({int(entry["hub_idx"]) for entry in env_entries})
+
+    screen_w = 800
+    screen_h = 520
+    screen = pygame.display.set_mode((screen_w, screen_h))
+    if len(hubs) == 1:
+        pygame.display.set_caption(f"Select Env (hub_{hubs[0]})")
+    else:
+        pygame.display.set_caption("Select Hub")
+    font = pygame.font.SysFont("Consolas", 22)
+    small_font = pygame.font.SysFont("Consolas", 18)
+    clock = pygame.time.Clock()
+
+    selected_hub_idx = 0
+    selected_env_idx = 0
+    hub_scroll = 0
+    env_scroll = 0
+
+    list_top = 80
+    list_bottom = screen_h - 80
+    line_h = small_font.get_height() + 6
+    visible_hubs = max(1, (list_bottom - list_top) // line_h)
+    visible_envs = visible_hubs
+    hub_left = 20
+    hub_w = 180
+    env_left = hub_left + hub_w + 20
+    env_w = 340
+    detail_x = env_left + env_w + 20
+    detail_w = screen_w - detail_x - 20
+    choose_rect = pygame.Rect(detail_x, screen_h - 70, detail_w, 30)
+    exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
+
+    def _hub_envs(hub_idx):
+        return [entry for entry in env_entries if int(entry["hub_idx"]) == int(hub_idx)]
+
+    def _ensure_visible():
+        nonlocal hub_scroll, env_scroll
+        if selected_hub_idx < hub_scroll:
+            hub_scroll = selected_hub_idx
+        elif selected_hub_idx >= hub_scroll + visible_hubs:
+            hub_scroll = selected_hub_idx - visible_hubs + 1
+        hub_scroll = max(0, min(hub_scroll, max(0, len(hubs) - visible_hubs)))
+
+        current_envs = _hub_envs(hubs[selected_hub_idx])
+        if selected_env_idx < env_scroll:
+            env_scroll = selected_env_idx
+        elif selected_env_idx >= env_scroll + visible_envs:
+            env_scroll = selected_env_idx - visible_envs + 1
+        env_scroll = max(0, min(env_scroll, max(0, len(current_envs) - visible_envs)))
+
+    _ensure_visible()
+    while True:
+        current_hub = hubs[selected_hub_idx]
+        current_envs = _hub_envs(current_hub)
+        if not current_envs:
+            return None
+        selected_env_idx = max(0, min(selected_env_idx, len(current_envs) - 1))
+        selected_entry = current_envs[selected_env_idx]
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None
+                if event.key == pygame.K_UP:
+                    selected_env_idx = (selected_env_idx - 1) % len(current_envs)
+                    _ensure_visible()
+                elif event.key == pygame.K_DOWN:
+                    selected_env_idx = (selected_env_idx + 1) % len(current_envs)
+                    _ensure_visible()
+                elif event.key == pygame.K_LEFT and len(hubs) > 1:
+                    selected_hub_idx = (selected_hub_idx - 1) % len(hubs)
+                    selected_env_idx = 0
+                    _ensure_visible()
+                elif event.key == pygame.K_RIGHT and len(hubs) > 1:
+                    selected_hub_idx = (selected_hub_idx + 1) % len(hubs)
+                    selected_env_idx = 0
+                    _ensure_visible()
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    return selected_entry["env_dir"]
+            if event.type == pygame.MOUSEWHEEL:
+                if event.y > 0:
+                    selected_env_idx = (selected_env_idx - 1) % len(current_envs)
+                elif event.y < 0:
+                    selected_env_idx = (selected_env_idx + 1) % len(current_envs)
+                _ensure_visible()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if exit_rect.collidepoint(mx, my):
+                    return None
+                if choose_rect.collidepoint(mx, my):
+                    return selected_entry["env_dir"]
+                if list_top <= my <= list_bottom:
+                    if len(hubs) > 1 and hub_left <= mx <= hub_left + hub_w:
+                        idx = (my - list_top) // line_h + hub_scroll
+                        if 0 <= idx < len(hubs):
+                            selected_hub_idx = int(idx)
+                            selected_env_idx = 0
+                            _ensure_visible()
+                    elif env_left <= mx <= env_left + env_w:
+                        idx = (my - list_top) // line_h + env_scroll
+                        if 0 <= idx < len(current_envs):
+                            selected_env_idx = int(idx)
+                            _ensure_visible()
+
+        screen.fill((18, 18, 18))
+        if len(hubs) == 1:
+            title = font.render(f"hub_{hubs[0]} -> Env Selection", True, (230, 230, 230))
+        else:
+            title = font.render("Hub -> Env Selection", True, (230, 230, 230))
+        screen.blit(title, (20, 20))
+        pygame.draw.rect(screen, (60, 60, 60), exit_rect)
+        pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
+        exit_text = small_font.render("Exit", True, (230, 230, 230))
+        screen.blit(
+            exit_text,
+            (
+                exit_rect.x + (exit_rect.width - exit_text.get_width()) // 2,
+                exit_rect.y + 4,
+            ),
+        )
+
+        hubs_title = small_font.render("Hubs", True, (200, 200, 200))
+        envs_title = small_font.render("Env Buckets", True, (200, 200, 200))
+        screen.blit(hubs_title, (hub_left, list_top - 26))
+        screen.blit(envs_title, (env_left, list_top - 26))
+
+        for idx in range(hub_scroll, min(len(hubs), hub_scroll + visible_hubs)):
+            hub_idx = hubs[idx]
+            y = list_top + (idx - hub_scroll) * line_h
+            if idx == selected_hub_idx:
+                pygame.draw.rect(screen, (35, 35, 35), (hub_left - 4, y - 2, hub_w, line_h))
+            color = (0, 200, 255) if idx == selected_hub_idx else (220, 220, 220)
+            text = small_font.render(f"hub_{hub_idx}", True, color)
+            screen.blit(text, (hub_left, y))
+
+        for idx in range(env_scroll, min(len(current_envs), env_scroll + visible_envs)):
+            entry = current_envs[idx]
+            y = list_top + (idx - env_scroll) * line_h
+            if idx == selected_env_idx:
+                pygame.draw.rect(screen, (35, 35, 35), (env_left - 4, y - 2, env_w, line_h))
+            color = (0, 220, 160) if idx == selected_env_idx else (220, 220, 220)
+            env_rate = entry["env_rate"]
+            if env_rate is None:
+                env_label = entry["env_dir"].name
+            else:
+                env_label = f"env {env_rate:.2f}"
+            text = small_font.render(
+                f"{env_label} | masters: {entry['master_count']}",
+                True,
+                color,
+            )
+            screen.blit(text, (env_left, y))
+
+        pygame.draw.rect(screen, (30, 30, 30), (detail_x, list_top, detail_w, list_bottom - list_top))
+        pygame.draw.rect(screen, (80, 80, 80), (detail_x, list_top, detail_w, list_bottom - list_top), 1)
+        env_rate = selected_entry["env_rate"]
+        detail_lines = [
+            f"hub_{selected_entry['hub_idx']}",
+            f"env: {selected_entry['env_dir'].name if env_rate is None else f'{env_rate:.2f}'}",
+            f"masters: {selected_entry['master_count']}",
+            f"path: {selected_entry['env_dir']}",
+        ]
+        y = list_top + 10
+        for line in detail_lines:
+            line_surf = small_font.render(line, True, (220, 220, 220))
+            screen.blit(line_surf, (detail_x + 8, y))
+            y += line_h
+
+        pygame.draw.rect(screen, (40, 40, 40), choose_rect)
+        pygame.draw.rect(screen, (180, 180, 180), choose_rect, 1)
+        choose_text = small_font.render("Choose Env", True, (230, 230, 230))
+        screen.blit(
+            choose_text,
+            (
+                choose_rect.x + (choose_rect.width - choose_text.get_width()) // 2,
+                choose_rect.y + 6,
+            ),
+        )
+
+        if len(hubs) > 1:
+            hint_text = "Left/Right hub  Up/Down env  Enter choose  Esc cancel"
+        else:
+            hint_text = "Up/Down env  Enter choose  Esc cancel"
+        hint = small_font.render(hint_text, True, (180, 180, 180))
+        screen.blit(hint, (20, screen_h - 45))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _select_master_run_ui(results_dir: Path, title_text: str = "Select Master Run"):
     masters = []
     for path in sorted(results_dir.glob("master_*")):
         try:
@@ -801,7 +1269,7 @@ def _select_master_run_ui(results_dir: Path):
             continue
         masters.append((run_num, path))
     if not masters:
-        return None, None
+        return None, None, None
     masters.sort(key=lambda item: item[0])
 
     screen_w = 800
@@ -868,7 +1336,7 @@ def _select_master_run_ui(results_dir: Path):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return None, None
+                return None, None, None
             if event.type == pygame.KEYDOWN:
                 if editing_message:
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -887,7 +1355,7 @@ def _select_master_run_ui(results_dir: Path):
                             message_text += ch
                 else:
                     if event.key == pygame.K_ESCAPE:
-                        return None, None
+                        return None, None, None
                     if event.key == pygame.K_UP:
                         selected = (selected - 1) % len(masters)
                         editing_message = False
@@ -915,7 +1383,7 @@ def _select_master_run_ui(results_dir: Path):
                             settings_snapshot = (
                                 meta.get("settings") if isinstance(meta, dict) else None
                             )
-                        return run_num, settings_snapshot
+                        return run_num, settings_snapshot, path
                     elif event.key == pygame.K_DELETE:
                         confirm_delete = True
                         delete_target = masters[selected]
@@ -929,7 +1397,7 @@ def _select_master_run_ui(results_dir: Path):
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if exit_rect.collidepoint(mx, my):
-                    return None, None
+                    return None, None, None
                 if confirm_delete:
                     if delete_yes_rect.collidepoint(mx, my):
                         if delete_target is None:
@@ -941,7 +1409,7 @@ def _select_master_run_ui(results_dir: Path):
                             pass
                         masters = [m for m in masters if m[1] != path]
                         if not masters:
-                            return None, None
+                            return None, None, None
                         selected = max(0, min(selected, len(masters) - 1))
                         confirm_delete = False
                         delete_target = None
@@ -978,13 +1446,13 @@ def _select_master_run_ui(results_dir: Path):
                         settings_snapshot = (
                             meta.get("settings") if isinstance(meta, dict) else None
                         )
-                    return run_num, settings_snapshot
+                    return run_num, settings_snapshot, path
                 if delete_rect.collidepoint(mx, my):
                     confirm_delete = True
                     delete_target = masters[selected]
 
         screen.fill((18, 18, 18))
-        title = font.render("Select Master Run", True, (230, 230, 230))
+        title = font.render(title_text, True, (230, 230, 230))
         screen.blit(title, (20, 20))
         pygame.draw.rect(screen, (60, 60, 60), exit_rect)
         pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
@@ -1062,13 +1530,21 @@ def _select_master_run_ui(results_dir: Path):
             f"Runs: {len(run_nums)}",
             f"Runtime mean: {_format_duration(mean_elapsed)}",
             f"Species mean: {mean_species:.1f}",
-            f"Message: {message_display}",
         ]
         text_y = detail_y + 10
         for line in detail_lines:
             text = small_font.render(line, True, (220, 220, 220))
             screen.blit(text, (detail_x + 10, text_y))
             text_y += line_h
+        _draw_text_with_caret(
+            screen,
+            small_font,
+            f"Message: {message_display}",
+            (detail_x + 10, text_y),
+            (255, 220, 160) if editing_message else (220, 220, 220),
+            show_caret=editing_message,
+            max_caret_x=detail_x + detail_w - 12,
+        )
 
         # Arithmetic mean preview
         pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
@@ -1153,7 +1629,7 @@ def _select_master_run_ui(results_dir: Path):
 
 def _edit_startup_ui(settings: dict, results_dir: Path):
     screen_w = 700
-    screen_h = 420
+    screen_h = 520
     screen = pygame.display.set_mode((screen_w, screen_h))
     pygame.display.set_caption("Startup Options")
     font = pygame.font.SysFont("Consolas", 22)
@@ -1179,11 +1655,14 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
     error_text = ""
     continue_master_run = None
     continue_settings = None
+    continue_master_dir = None
+    continue_results_dir = results_dir
     message_for_new = "debug run"
     message_value = message_for_new
 
     confirm_rect = pygame.Rect(screen_w - 160, screen_h - 60, 140, 36)
     select_rect = pygame.Rect(screen_w - 160, 220, 140, 32)
+    hub_select_rect = pygame.Rect(screen_w - 160, 260, 140, 32)
     upload_rect = pygame.Rect(screen_w - 320, screen_h - 60, 140, 36)
     exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
     upload_notice = ""
@@ -1192,6 +1671,7 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
     def _apply_edit():
         nonlocal num_tries, num_master, editing, edit_text, error_text
         nonlocal continue_master_run, continue_settings, message_value, message_for_new
+        nonlocal continue_master_dir, continue_results_dir
         target = "num_tries" if selected == 1 else "num_master"
         original = num_tries if target == "num_tries" else num_master
         new_val = _parse_numeric(edit_text.strip(), original)
@@ -1204,6 +1684,8 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
             num_master = max(0, int(new_val))
             continue_master_run = None
             continue_settings = None
+            continue_master_dir = None
+            continue_results_dir = results_dir
             message_value = message_for_new
         editing = False
         edit_text = ""
@@ -1220,8 +1702,11 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                         if continue_master_run is None:
                             message_for_new = message_value
                         else:
+                            target_master_dir = continue_master_dir
+                            if target_master_dir is None:
+                                target_master_dir = results_dir / f"master_{continue_master_run}"
                             _write_master_message(
-                                results_dir / f"master_{continue_master_run}",
+                                target_master_dir,
                                 message_value,
                             )
                         editing_message = False
@@ -1275,6 +1760,8 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                             num_master = max(0, int(round(num_master + delta)))
                             continue_master_run = None
                             continue_settings = None
+                            continue_master_dir = None
+                            continue_results_dir = results_dir
                             message_value = message_for_new
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         if selected in (1, 2):
@@ -1296,7 +1783,14 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     settings["num_tries"] = num_tries
                     settings["num_tries_master"] = num_master
                     save_settings(settings)
-                    return settings, continue_master_run, continue_settings, message_for_new
+                    return (
+                        settings,
+                        continue_master_run,
+                        continue_settings,
+                        message_for_new,
+                        continue_master_dir,
+                        continue_results_dir,
+                    )
                 if upload_rect.collidepoint(mx, my):
                     try:
                         global_settings = load_settings()
@@ -1308,15 +1802,39 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                     upload_notice = "Uploaded counters to global settings"
                     upload_notice_time = time.time()
                 if select_rect.collidepoint(mx, my):
-                    picked_run, picked_settings = _select_master_run_ui(results_dir)
+                    picked_run, picked_settings, picked_path = _select_master_run_ui(
+                        results_dir, title_text="Select Root Master"
+                    )
                     if picked_run is not None:
                         continue_master_run = picked_run
                         continue_settings = picked_settings
-                        message_value = _read_master_message(
-                            results_dir / f"master_{continue_master_run}"
-                        )
+                        continue_master_dir = picked_path
+                        continue_results_dir = results_dir
+                        if continue_master_dir is None:
+                            continue_master_dir = results_dir / f"master_{continue_master_run}"
+                        message_value = _read_master_message(continue_master_dir)
                         message_text = message_value
                         editing_message = False
+                if hub_select_rect.collidepoint(mx, my):
+                    selected_hub = _select_hub_ui(results_dir)
+                    if selected_hub is not None:
+                        env_dir = _select_hub_env_ui(results_dir, hub_idx_filter=selected_hub)
+                        if env_dir is not None:
+                            selected_title = f"Select Hub Master ({env_dir.parent.name}/{env_dir.name})"
+                            picked_run, picked_settings, picked_path = _select_master_run_ui(
+                                env_dir,
+                                title_text=selected_title,
+                            )
+                            if picked_run is not None:
+                                continue_master_run = picked_run
+                                continue_settings = picked_settings
+                                continue_master_dir = picked_path
+                                continue_results_dir = env_dir
+                                if continue_master_dir is None:
+                                    continue_master_dir = env_dir / f"master_{continue_master_run}"
+                                message_value = _read_master_message(continue_master_dir)
+                            message_text = message_value
+                            editing_message = False
                 line_start = 120
                 line_gap = 50
                 for idx in range(4):
@@ -1353,8 +1871,8 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
         sim_count = max(1, sim_count)
         range_start = num_tries
         range_end = num_tries + sim_count - 1
-        num_label = f"num_tries (next {range_start}-{range_end}): {num_tries}"
-        master_label = f"num_tries_master: {num_master}"
+        num_label = f"SIM run ids (num_tries) next {range_start}-{range_end}: {num_tries}"
+        master_label = f"MASTER run id (num_tries_master): {num_master}"
         if continue_master_run is None:
             master_label = f"{master_label} (new)"
         if continue_master_run is None:
@@ -1372,7 +1890,7 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
 
         pygame.draw.rect(screen, (60, 60, 60), select_rect)
         pygame.draw.rect(screen, (160, 160, 160), select_rect, 1)
-        select_text = small_font.render("Select", True, (230, 230, 230))
+        select_text = small_font.render("Root Select", True, (230, 230, 230))
         screen.blit(
             select_text,
             (
@@ -1380,37 +1898,80 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                 select_rect.y + 6,
             ),
         )
+        pygame.draw.rect(screen, (60, 60, 60), hub_select_rect)
+        pygame.draw.rect(screen, (160, 160, 160), hub_select_rect, 1)
+        hub_select_text = small_font.render("Hub Select", True, (230, 230, 230))
+        screen.blit(
+            hub_select_text,
+            (
+                hub_select_rect.x + (hub_select_rect.width - hub_select_text.get_width()) // 2,
+                hub_select_rect.y + 6,
+            ),
+        )
 
         if continue_master_run is not None:
+            cont_loc = "root"
+            if continue_results_dir != results_dir:
+                try:
+                    cont_loc = str(continue_results_dir.relative_to(results_dir))
+                except Exception:
+                    cont_loc = str(continue_results_dir)
+            mode_label = "Run mode: HUB continue" if continue_results_dir != results_dir else "Run mode: ROOT continue"
             cont_text = small_font.render(
-                f"Continuing master_{continue_master_run}", True, (180, 220, 180)
+                f"{mode_label} | master_{continue_master_run}",
+                True,
+                (180, 220, 180),
             )
-            screen.blit(cont_text, (22, 320))
+            screen.blit(cont_text, (22, 350))
+            loc_text = small_font.render(
+                f"Path: {cont_loc}",
+                True,
+                (180, 220, 180),
+            )
+            screen.blit(loc_text, (22, 375))
         else:
             cont_text = small_font.render(
-                "Starting a new master run", True, (180, 180, 220)
+                "Run mode: NEW root master", True, (180, 180, 220)
             )
-            screen.blit(cont_text, (22, 320))
+            screen.blit(cont_text, (22, 350))
+            loc_text = small_font.render(
+                "Use Hub Select to continue hub masters.", True, (180, 180, 220)
+            )
+            screen.blit(loc_text, (22, 375))
 
         hint_text = "Up/Down select  Left/Right adjust  Enter edit  Esc cancel  M edit message"
         if editing_message:
             hint_text = "Editing message: Enter=save  Esc=cancel"
         hint = small_font.render(hint_text, True, (180, 180, 180))
-        screen.blit(hint, (20, screen_h - 80))
+        screen.blit(hint, (20, screen_h - 115))
 
         if editing:
             edit_line = f"Edit: {edit_text}"
             edit_color = (255, 220, 160) if not error_text else (255, 160, 160)
-            edit_text_surf = small_font.render(edit_line, True, edit_color)
-            screen.blit(edit_text_surf, (20, screen_h - 55))
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                edit_line,
+                (20, screen_h - 88),
+                edit_color,
+                show_caret=True,
+                max_caret_x=screen_w - 12,
+            )
         if editing_message:
             msg_line = f"Message: {message_text}"
             msg_color = (255, 220, 160)
-            msg_surf = small_font.render(msg_line, True, msg_color)
-            screen.blit(msg_surf, (20, screen_h - 55))
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                msg_line,
+                (20, screen_h - 88),
+                msg_color,
+                show_caret=True,
+                max_caret_x=screen_w - 12,
+            )
         if error_text:
             err_surf = small_font.render(error_text, True, (255, 160, 160))
-            screen.blit(err_surf, (20, screen_h - 35))
+            screen.blit(err_surf, (20, screen_h - 62))
 
         pygame.draw.rect(screen, (60, 60, 60), confirm_rect)
         pygame.draw.rect(screen, (160, 160, 160), confirm_rect, 1)
@@ -1571,31 +2132,108 @@ def _parse_args() -> argparse.Namespace:
         default="simulation_entry.py",
         help="Path to the simulation script",
     )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="results",
+        help="Root results directory for this run",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Skip startup/settings UIs and run directly with current settings/args",
+    )
+    parser.add_argument(
+        "--env-change-rate",
+        type=float,
+        default=None,
+        help="Override enviormentChangeRate for this run",
+    )
+    parser.add_argument(
+        "--species-stop",
+        type=int,
+        default=None,
+        help="Enable species stop limit with this threshold",
+    )
+    parser.add_argument(
+        "--master-run-num",
+        type=int,
+        default=None,
+        help="Force a specific master run id (used by hub orchestration).",
+    )
+    parser.add_argument(
+        "--continue-master-run",
+        type=int,
+        default=None,
+        help="Directly continue an existing master run id.",
+    )
+    parser.add_argument(
+        "--continue-master-dir",
+        type=str,
+        default=None,
+        help="Path to the master_<id> directory to continue directly.",
+    )
     return parser.parse_args()
 
 
-def _allocate_run_numbers(count: int) -> list[int]:
-    results_dir = Path("results")
+def _path_in_use(path: Path) -> bool:
+    try:
+        return path.exists() or path.is_symlink()
+    except Exception:
+        return False
+
+
+def _allocate_run_numbers(count: int, results_dir: Path | None = None) -> list[int]:
+    if results_dir is None:
+        results_dir = Path("results")
     results_dir.mkdir(parents=True, exist_ok=True)
     settings = load_settings()
     try:
         current = int(settings.get("num_tries", 0))
     except Exception:
         current = 0
-    base = current
-    run_nums = list(range(base, base + count))
-    settings["num_tries"] = base + count
+    root_results = Path("results")
+    run_nums = []
+    candidate = max(0, current)
+    while len(run_nums) < count:
+        if (not _path_in_use(root_results / str(candidate))) and (
+            not _path_in_use(results_dir / str(candidate))
+        ):
+            run_nums.append(candidate)
+        candidate += 1
+    settings["num_tries"] = candidate
     save_settings(settings)
     return run_nums
 
 
-def _allocate_master_run_number(results_dir: Path) -> int:
+def _allocate_master_run_number(
+    results_dir: Path, forced_num: int | None = None
+) -> int:
     settings = load_settings()
     try:
         current = int(settings.get("num_tries_master", 0))
     except Exception:
         current = 0
-    new_val = current
+    root_results = Path("results")
+    if forced_num is not None:
+        new_val = int(forced_num)
+        if new_val < 0:
+            raise ValueError("master run id must be >= 0")
+        if _path_in_use(root_results / f"master_{new_val}") or _path_in_use(
+            results_dir / f"master_{new_val}"
+        ):
+            raise FileExistsError(
+                f"master_{new_val} already exists in results paths; refusing overlap"
+            )
+        settings["num_tries_master"] = max(int(current), int(new_val) + 1)
+        save_settings(settings)
+        return new_val
+
+    new_val = max(0, current)
+    while _path_in_use(root_results / f"master_{new_val}") or _path_in_use(
+        results_dir / f"master_{new_val}"
+    ):
+        new_val += 1
     settings["num_tries_master"] = new_val + 1
     save_settings(settings)
     return new_val
@@ -2691,30 +3329,31 @@ def _view_arithmetic_snapshots(
             since_start = _format_duration(max(0.0, max_elapsed))
         return saved_label, since_start
 
-    def _species_label_for_view(mode: str | None = None, sim_index: int | None = None) -> str:
+    def _species_label_for_view(
+        view_snaps,
+        mode: str | None = None,
+        sim_index: int | None = None,
+    ) -> str:
         if mode is None:
             mode = view_mode
         if sim_index is None:
             sim_index = view_sim_index
+
         if mode == "sim":
-            if not (0 <= sim_index < len(run_nums)):
+            if not view_snaps:
                 return "Species: --"
-            run_num = run_nums[sim_index]
-            meta = run_meta_by_run.get(run_num, {})
-            val = meta.get("amnt_of_species") if isinstance(meta, dict) else None
-            if isinstance(val, (int, float)):
-                return f"Species: {int(val)}"
+            snap = view_snaps[0][1]
+            points = snap.get("points", []) if isinstance(snap, dict) else []
+            return f"Species: {len(points)}"
+
+        counts = []
+        for _, snap in view_snaps:
+            points = snap.get("points", []) if isinstance(snap, dict) else []
+            counts.append(len(points))
+        if not counts:
             return "Species: --"
-        vals = []
-        for run_num in run_nums:
-            meta = run_meta_by_run.get(run_num, {})
-            val = meta.get("amnt_of_species") if isinstance(meta, dict) else None
-            if isinstance(val, (int, float)):
-                vals.append(float(val))
-        if not vals:
-            return "Species: --"
-        total = int(sum(vals))
-        mean_val = sum(vals) / len(vals)
+        total = sum(counts)
+        mean_val = total / len(counts)
         return f"Species total: {total} | mean: {mean_val:.1f}"
 
     def _series_for_frame(frame_val, mode: str | None = None, sim_index: int | None = None):
@@ -2921,7 +3560,12 @@ def _view_arithmetic_snapshots(
             surf = pygame.Surface((export_w, export_h))
             surf.fill((18, 18, 18))
             saved_label, _ = _labels_for_snaps(view_snaps)
-            label1 = small_font.render(f"Saved: {saved_label}", True, (220, 220, 220))
+            species_label = _species_label_for_view(view_snaps, mode, sim_index)
+            label1 = small_font.render(
+                f"Saved: {saved_label}   {species_label}",
+                True,
+                (220, 220, 220),
+            )
             label2 = small_font.render(f"FPS: {fps}", True, (220, 220, 220))
             surf.blit(label1, (6, 2))
             surf.blit(label2, (6, 2 + info_line_h + 2))
@@ -3187,7 +3831,7 @@ def _view_arithmetic_snapshots(
             )
             screen.blit(info_line1, (40, line1_y))
             info_saved = small_font.render(
-                f"Saved: {saved_label}   {_species_label_for_view()}",
+                f"Saved: {saved_label}   {_species_label_for_view(view_snaps)}",
                 True,
                 (200, 200, 200),
             )
@@ -3348,16 +3992,78 @@ def _pick_fps_point(
 
 def main() -> None:
     args = _parse_args()
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    forced_continue_run = (
+        int(args.continue_master_run)
+        if args.continue_master_run is not None
+        else None
+    )
+    forced_continue_dir = (
+        Path(args.continue_master_dir)
+        if args.continue_master_dir
+        else None
+    )
     settings = load_settings()
+    if args.env_change_rate is not None:
+        try:
+            settings["enviormentChangeRate"] = float(args.env_change_rate)
+        except Exception:
+            pass
+    if args.species_stop is not None:
+        cond = settings.get("stop_conditions", {})
+        if not isinstance(cond, dict):
+            cond = {}
+        species_limit = max(0, int(args.species_stop))
+        cond["species_enabled"] = bool(species_limit > 0)
+        cond["max_species"] = species_limit
+        if species_limit > 0:
+            cond["runtime_enabled"] = False
+            cond["frames_enabled"] = False
+            cond["datetime_enabled"] = False
+        settings["stop_conditions"] = cond
     _apply_master_graph_settings(settings)
     pygame.init()
-    startup = _edit_startup_ui(settings, Path("results"))
-    if startup is None:
-        pygame.quit()
-        return
-    settings, continue_master_run, continue_settings, startup_message = startup
+    if args.non_interactive:
+        continue_master_run = forced_continue_run
+        continue_settings = None
+        startup_message = ""
+        continue_master_dir = forced_continue_dir
+        if continue_master_dir is not None:
+            continue_results_dir = continue_master_dir.parent
+        else:
+            continue_results_dir = results_dir
+    elif forced_continue_run is not None:
+        continue_master_run = forced_continue_run
+        continue_settings = None
+        startup_message = ""
+        continue_master_dir = forced_continue_dir
+        if continue_master_dir is not None:
+            continue_results_dir = continue_master_dir.parent
+        else:
+            continue_results_dir = results_dir
+    else:
+        startup = _edit_startup_ui(settings, results_dir)
+        if startup is None:
+            pygame.quit()
+            return
+        (
+            settings,
+            continue_master_run,
+            continue_settings,
+            startup_message,
+            continue_master_dir,
+            continue_results_dir,
+        ) = startup
+    if continue_results_dir is not None:
+        try:
+            selected_results_dir = Path(continue_results_dir)
+            selected_results_dir.mkdir(parents=True, exist_ok=True)
+            results_dir = selected_results_dir
+        except Exception:
+            pass
     _apply_master_graph_settings(settings)
-    if continue_master_run is not None:
+    if (not args.non_interactive) and continue_master_run is not None:
         if isinstance(continue_settings, dict):
             preserved_draw = settings.get("draw", True)
             preserved_num_tries = settings.get("num_tries", 0)
@@ -3379,7 +4085,7 @@ def main() -> None:
             except Exception:
                 pass
             _apply_master_graph_settings(settings)
-    else:
+    elif not args.non_interactive:
         settings = _edit_settings_ui(settings)
         if settings is None:
             pygame.quit()
@@ -3398,11 +4104,13 @@ def main() -> None:
 
     interpreter = sys.executable
 
-    results_dir = Path("results")
     if continue_master_run is not None:
         master_run_num = int(continue_master_run)
         master_label = f"master_{master_run_num}"
-        master_dir = results_dir / master_label
+        if continue_master_dir is not None:
+            master_dir = Path(continue_master_dir)
+        else:
+            master_dir = results_dir / master_label
         master_dir.mkdir(parents=True, exist_ok=True)
         master_meta = _load_master_meta(master_dir)
         existing_run_nums = []
@@ -3419,8 +4127,10 @@ def main() -> None:
         count = len(run_nums)
         master_run_nums = existing_run_nums
     else:
-        run_nums = _allocate_run_numbers(count)
-        master_run_num = _allocate_master_run_number(results_dir)
+        run_nums = _allocate_run_numbers(count, results_dir)
+        master_run_num = _allocate_master_run_number(
+            results_dir, forced_num=args.master_run_num
+        )
         master_label = f"master_{master_run_num}"
         master_dir = results_dir / master_label
         master_dir.mkdir(parents=True, exist_ok=True)
@@ -3430,7 +4140,7 @@ def main() -> None:
         master_dir,
         master_run_nums,
         settings,
-        update_global=(continue_master_run is None),
+        update_global=((continue_master_run is None) and (not args.non_interactive)),
     )
     if continue_master_run is None and startup_message:
         _write_master_message(master_dir, startup_message)
@@ -3438,7 +4148,8 @@ def main() -> None:
     control_path = Path(tempfile.gettempdir()) / f"sim_master_active_{os.getpid()}.txt"
     selected_row = 0
     enabled = [True for _ in range(count)]
-    draw_modes = [0 for _ in range(count)]
+    # Startup default: draw every N frames (DRAW/500), not always draw.
+    draw_modes = [1 for _ in range(count)]
     draw_every = [500 for _ in range(count)]
     mode_values = [2 for _ in range(count)]
     update_tokens = [0 for _ in range(count)]
@@ -3480,6 +4191,9 @@ def main() -> None:
     clock = pygame.time.Clock()
 
     env_base = os.environ.copy()
+    env_base["SIM_RESULTS_DIR"] = str(results_dir)
+    if args.env_change_rate is not None:
+        env_base["SIM_ENV_CHANGE_RATE"] = str(float(args.env_change_rate))
     procs = []
     sim_start_times = []
     for idx in range(count):
