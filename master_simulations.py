@@ -22,68 +22,6 @@ except Exception:
 from settings_manager import load_settings, save_settings
 from simulatino_parser import parse_run
 
-'''
-things to add:
-
-add in species amount in timeline
-
-to stats on master_sim add in information such as amount of new species per minute.
-
-Big things:
-
-Create a hub folder which is similar to master:
-it holds one hundred master, in which the settings for enviorment change rate ranges from 0.5-1.5. After 100,000 (amount determined later with a more sucssesful run of everything including timeline and stuff)
-Inside of this hub folder, it will first run master xy, when it reaches 100,000 (amount determined later) species it will start a new master (xy + 1) with enviorment change rate increase by .01, enviormental rate of change will start at 0.5, and end at 1.5.
-They way we will look at this will be through a huge ass graph. 
-First find the equation of best fit for each graph. This should be comprised of two normal distribution graph stitched together at the apex. 
-Using these numbers, you can then create a deeper graph that shows the correlation between evolutionspeed and fitness, and how that correlation/ratio changes as the change in enviomental change changes. 
-prob looking at the apex point, or which point will have the highest apex. Furthermore, this should be a range though,
-For the graph:
-X - enviormental change rate
-y - evo speed
-size - fitness. Fitness should also control the brihtness, and or transparency.
-
-Format looks like the following:
-hub 0
-    Enviormental change speed 0.5
-        Master xy and stuff inside
-        Sim xy and stuff inside
-        Sim XY and stuff inside
-        e.t.c.
-
-    Enviormental change speed 0.51
-    Enviormental change speed 0.52
-hub 1
-hub 2
-hub 3
-
-Make sure that all of the masters is still accssessible within the master_simulations even if there is diffrent formating,
-
-
-
----
-
- Will my macbook break? YES IT WILL, will it be funny watching this thousand dollar equitment start a fire inside of upper macloed end up buring millions of dollars worth of items, yeah maybe.
-
-if we need to go bigger to allow for multicomputer threading proccesses that we can use the name "mommy"
-So order goes
-mommy - daddy - Master - Sim - Sim (resetable) - Dot
-Or size can be the z
-all stitched together with a 3d graph finding the correlationship between diffrent things. Jesuse christ.
-
-
-Results
-    
-
-Two diffrent main conclusions
-
-Our main 
-
-Final conclusion smth like:
-
-What is the relationship between evolution speed and fitness within an asexual species such as Escherchia Coli, and how might that relationship change as the speed in which the enviorment changes change. 
-
-'''
 
 
 _SIM_COLORS = [
