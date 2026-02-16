@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -472,6 +473,24 @@ def _read_species_from_run_meta(path: Path) -> float | None:
     return float(species)
 
 
+def _read_elapsed_from_run_meta(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    elapsed = payload.get("elapsed_seconds")
+    if not isinstance(elapsed, (int, float)):
+        return None
+    elapsed_f = float(elapsed)
+    if not math.isfinite(elapsed_f) or elapsed_f < 0:
+        return None
+    return elapsed_f
+
+
 def _max_species(results_dir: Path, run_nums: list[int]) -> float | None:
     best = None
     for run_num in run_nums:
@@ -479,6 +498,16 @@ def _max_species(results_dir: Path, run_nums: list[int]) -> float | None:
         if species is None:
             continue
         best = species if best is None else max(best, species)
+    return best
+
+
+def _max_elapsed_seconds(results_dir: Path, run_nums: list[int]) -> float | None:
+    best = None
+    for run_num in run_nums:
+        elapsed = _read_elapsed_from_run_meta(results_dir / str(run_num) / "run_meta.json")
+        if elapsed is None:
+            continue
+        best = elapsed if best is None else max(best, elapsed)
     return best
 
 
@@ -505,6 +534,10 @@ def _extract_points_from_csv(path: Path) -> list[tuple[float, float]]:
 
 
 def _master_points(master_dir: Path, run_nums: list[int]) -> list[tuple[float, float]]:
+    combined_path = master_dir / f"combinedArithmeticMeanSimulatino{master_dir.name}_Log.csv"
+    points = _extract_points_from_csv(combined_path)
+    if points:
+        return points
     master_path = master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_Log.csv"
     points = _extract_points_from_csv(master_path)
     if points:
@@ -514,6 +547,167 @@ def _master_points(master_dir: Path, run_nums: list[int]) -> list[tuple[float, f
     for run_num in run_nums:
         run_path = parent / str(run_num) / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
         merged.extend(_extract_points_from_csv(run_path))
+    return merged
+
+
+def _combine_master_logs_for_update(
+    results_dir: Path,
+    master_dir: Path,
+    master_label: str,
+    run_nums: list[int],
+) -> None:
+    master_raw = master_dir / "raw_data"
+    master_raw.mkdir(parents=True, exist_ok=True)
+    out_path = master_raw / f"simulation_log_{master_label}.csv"
+    wrote_header = False
+    with open(out_path, "w", newline="") as out_handle:
+        writer = csv.writer(out_handle)
+        for run_num in run_nums:
+            raw_dir = results_dir / str(run_num) / "raw_data"
+            base = raw_dir / f"simulation_log_{run_num}.csv"
+            part_files = sorted(raw_dir.glob(f"simulation_log_{run_num}_part*.csv"))
+            for path in [base] + part_files:
+                if not path.exists():
+                    continue
+                with open(path, newline="") as in_handle:
+                    reader = csv.reader(in_handle)
+                    try:
+                        header = next(reader)
+                    except StopIteration:
+                        continue
+                    if not wrote_header:
+                        writer.writerow(header)
+                        wrote_header = True
+                    for row in reader:
+                        writer.writerow(row)
+
+
+def _combine_master_mean_kind_for_update(
+    results_dir: Path,
+    master_dir: Path,
+    master_label: str,
+    run_nums: list[int],
+    kind: str,
+    fieldnames: list[str],
+) -> None:
+    out_path = master_dir / f"combined{kind}MeanSimulatino{master_label}_Log.csv"
+    rows: list[dict[str, str]] = []
+    for run_num in run_nums:
+        in_path = results_dir / str(run_num) / f"parsed{kind}MeanSimulatino{run_num}_Log.csv"
+        if not in_path.exists():
+            continue
+        with open(in_path, newline="") as in_handle:
+            reader = csv.DictReader(in_handle)
+            for row in reader:
+                if not row:
+                    continue
+                rows.append({name: row.get(name, "") for name in fieldnames})
+
+    def _evo_key(row: dict[str, str]) -> float:
+        try:
+            return float(row.get("evolution rate", ""))
+        except Exception:
+            return float("inf")
+
+    rows.sort(key=_evo_key)
+    with open(out_path, "w", newline="") as out_handle:
+        writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _combine_master_means_for_update(
+    results_dir: Path,
+    master_dir: Path,
+    master_label: str,
+    run_nums: list[int],
+) -> None:
+    _combine_master_mean_kind_for_update(
+        results_dir,
+        master_dir,
+        master_label,
+        run_nums,
+        "Arithmetic",
+        [
+            "evolution rate",
+            "arithmetic mean length lived",
+            "arithmetic mean species population time",
+        ],
+    )
+    _combine_master_mean_kind_for_update(
+        results_dir,
+        master_dir,
+        master_label,
+        run_nums,
+        "Geometric",
+        [
+            "evolution rate",
+            "geometric mean length lived",
+            "geometric mean species population time",
+        ],
+    )
+
+
+def _rebuild_master_combined_for_update(
+    results_dir: Path, master_dir: Path, run_nums: list[int]
+) -> None:
+    if not run_nums:
+        return
+    master_label = master_dir.name
+    _combine_master_logs_for_update(results_dir, master_dir, master_label, run_nums)
+    _combine_master_means_for_update(results_dir, master_dir, master_label, run_nums)
+
+
+def _discover_env_run_nums(env_dir: Path) -> list[int]:
+    out = []
+    if not env_dir.is_dir():
+        return out
+    for entry in env_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if not name.isdigit():
+            continue
+        try:
+            out.append(int(name))
+        except Exception:
+            continue
+    return sorted(set(out))
+
+
+def _latest_snapshot_points(run_dir: Path) -> list[tuple[float, float]]:
+    snaps_dir = run_dir / "snapshots"
+    if not snaps_dir.is_dir():
+        return []
+    newest = None
+    newest_key = None
+    for snap_path in snaps_dir.glob("arith_mean_*.csv"):
+        if not snap_path.is_file():
+            continue
+        frame = None
+        try:
+            frame = int(snap_path.stem.rsplit("_", 1)[-1])
+        except Exception:
+            frame = None
+        try:
+            mtime = float(snap_path.stat().st_mtime)
+        except Exception:
+            mtime = 0.0
+        key = (frame if frame is not None else -1, mtime, snap_path.name)
+        if newest_key is None or key > newest_key:
+            newest_key = key
+            newest = snap_path
+    if newest is None:
+        return []
+    return _extract_points_from_csv(newest)
+
+
+def _snapshot_points_from_runs(env_dir: Path, run_nums: list[int]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for run_num in run_nums:
+        run_dir = env_dir / str(int(run_num))
+        merged.extend(_latest_snapshot_points(run_dir))
     return merged
 
 
@@ -765,6 +959,27 @@ def _fmt_eta(unix_ts: float | None) -> str:
         return "--:--"
 
 
+def _fit_text(font, text: str, max_width: int) -> str:
+    raw = str(text) if text is not None else ""
+    if max_width <= 0:
+        return ""
+    if font.size(raw)[0] <= max_width:
+        return raw
+    ellipsis = "..."
+    if font.size(ellipsis)[0] >= max_width:
+        return ""
+    lo = 0
+    hi = len(raw)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = raw[:mid] + ellipsis
+        if font.size(candidate)[0] <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return raw[:lo] + ellipsis
+
+
 def _linear_fit(xs: list[float], ys: list[float]):
     if len(xs) != len(ys) or len(xs) < 2:
         return None
@@ -796,14 +1011,42 @@ def _project_metric(rows: list[dict], value_key: str) -> list[dict]:
         model = (0.0, float(actual_points[0][1]))
 
     projected = []
-    for row in sorted(rows, key=lambda r: float(r.get("env_rate", 0.0))):
+    indexed_rows = list(enumerate(rows))
+    indexed_rows.sort(
+        key=lambda item: (
+            float(item[1].get("env_rate", 0.0))
+            if _is_number(item[1].get("env_rate"))
+            else 0.0
+        )
+    )
+    for row_idx, row in indexed_rows:
         x = row.get("env_rate")
         if not _is_number(x):
             continue
         x = float(x)
         y_actual = row.get(value_key)
+        point_meta = {
+            "row_index": int(row_idx),
+            "step_index": (
+                int(row.get("step_index"))
+                if isinstance(row.get("step_index"), int)
+                else row.get("step_index")
+            ),
+            "status": row.get("status"),
+            "master_run_num": row.get("master_run_num"),
+            "planned_master_run_num": row.get("planned_master_run_num"),
+            "max_species": row.get("max_species"),
+            "duration_s": row.get("duration_s"),
+        }
         if _is_number(y_actual):
-            projected.append({"x": x, "y": float(y_actual), "actual": True})
+            projected.append(
+                {
+                    "x": x,
+                    "y": float(y_actual),
+                    "actual": True,
+                    **point_meta,
+                }
+            )
             continue
         y_pred = None
         if model is not None:
@@ -812,7 +1055,14 @@ def _project_metric(rows: list[dict], value_key: str) -> list[dict]:
                 y_pred = None
             elif y_pred < 0:
                 y_pred = 0.0
-        projected.append({"x": x, "y": y_pred, "actual": False})
+        projected.append(
+            {
+                "x": x,
+                "y": y_pred,
+                "actual": False,
+                **point_meta,
+            }
+        )
     return projected
 
 
@@ -837,7 +1087,16 @@ def _project_final_bubble(rows: list[dict]) -> list[dict]:
                 "x": x,
                 "evo": float(evo["y"]),
                 "fitness": fitness,
+                "actual_evo": bool(evo.get("actual")),
+                "actual_fitness": fit_actual,
                 "actual": bool(evo.get("actual")) and fit_actual,
+                "row_index": evo.get("row_index"),
+                "step_index": evo.get("step_index"),
+                "status": evo.get("status"),
+                "master_run_num": evo.get("master_run_num"),
+                "planned_master_run_num": evo.get("planned_master_run_num"),
+                "max_species": evo.get("max_species"),
+                "duration_s": evo.get("duration_s"),
             }
         )
     return out
@@ -896,6 +1155,7 @@ class _HubDashboard:
         hub_dir: Path,
         planned_master_span: str,
         species_threshold: int,
+        update_callback=None,
         reopen_callback=None,
         close_callback=None,
         shutdown_callback=None,
@@ -914,6 +1174,7 @@ class _HubDashboard:
         self.capped_fps = 1
         self.uncapped_fps = 120
         self.draw_fps = self.capped_fps
+        self.update_callback = update_callback
         self.reopen_callback = reopen_callback
         self.close_callback = close_callback
         self.shutdown_callback = shutdown_callback
@@ -924,6 +1185,11 @@ class _HubDashboard:
         self._rows_base_y = 0
         self._scroll_i = 0
         self._visible_rows = 0
+        self._pending_manual_update = False
+        self._graph_plot_rect = None
+        self._graph_dots = []
+        self._selected_graph_point = None
+        self._update_button_rect = None
         self._reopen_button_rect = None
         self._close_button_rect = None
         self._shutdown_button_rect = None
@@ -980,6 +1246,26 @@ class _HubDashboard:
         self.selected_row_index = idx
         return self._rows_cache[idx]
 
+    def _pick_graph_dot(self, mx: int, my: int):
+        best = None
+        best_d2 = None
+        for entry in self._graph_dots:
+            px = int(entry.get("px", -10_000))
+            py = int(entry.get("py", -10_000))
+            radius = int(entry.get("radius", 4))
+            hit_r = max(6, radius + 4)
+            dx = mx - px
+            dy = my - py
+            d2 = (dx * dx) + (dy * dy)
+            if d2 > (hit_r * hit_r):
+                continue
+            if best_d2 is None or d2 < best_d2:
+                best = entry
+                best_d2 = d2
+        if best is None:
+            return None
+        return best.get("point")
+
     def _trigger_reopen(self) -> None:
         if not callable(self.reopen_callback):
             return
@@ -990,6 +1276,11 @@ class _HubDashboard:
             self.reopen_callback(row)
         except Exception:
             pass
+
+    def _trigger_update(self) -> None:
+        self._pending_manual_update = True
+        # Force immediate redraw after a manual update request.
+        self._last_draw = 0.0
 
     def _trigger_close(self) -> None:
         if not callable(self.close_callback):
@@ -1021,6 +1312,8 @@ class _HubDashboard:
                     self.closed = True
                 elif event.key == self.pg.K_f:
                     self._apply_fps_mode((self.fps_mode + 1) % 3)
+                elif event.key == self.pg.K_u:
+                    self._trigger_update()
                 elif event.key == self.pg.K_r:
                     self._trigger_reopen()
                 elif event.key == self.pg.K_c:
@@ -1046,6 +1339,22 @@ class _HubDashboard:
                     self.scroll_target += 2.0
             elif event.type == self.pg.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                picked = self._pick_graph_dot(mx, my)
+                if isinstance(picked, dict):
+                    self._selected_graph_point = picked
+                    step_idx = picked.get("step_index")
+                    if isinstance(step_idx, int) and 0 <= step_idx < len(self._rows_cache):
+                        self.selected_row_index = int(step_idx)
+                elif (
+                    self._graph_plot_rect is not None
+                    and self._graph_plot_rect.collidepoint(mx, my)
+                ):
+                    self._selected_graph_point = None
+                if (
+                    self._update_button_rect is not None
+                    and self._update_button_rect.collidepoint(mx, my)
+                ):
+                    self._trigger_update()
                 if (
                     self._reopen_button_rect is not None
                     and self._reopen_button_rect.collidepoint(mx, my)
@@ -1078,22 +1387,33 @@ class _HubDashboard:
 
     def _draw_graph(self, rect, rows: list[dict]) -> None:
         pg = self.pg
+        self._graph_plot_rect = None
+        self._graph_dots = []
         pg.draw.rect(self.screen, (22, 24, 29), rect)
         pg.draw.rect(self.screen, (70, 74, 86), rect, 1)
         title = self.font.render("Possible Final Results", True, (220, 220, 220))
         self.screen.blit(title, (rect.x + 10, rect.y + 8))
-        subtitle = self.small.render(
-            "x: env change rate   y: evolution speed   dot size: fitness",
-            True,
-            (170, 170, 170),
+        subtitle_text = _fit_text(
+            self.small,
+            "x: evolution speed   y: env change rate   dot size: fitness",
+            rect.width - 24,
         )
+        subtitle = self.small.render(subtitle_text, True, (170, 170, 170))
         self.screen.blit(subtitle, (rect.x + 12, rect.y + 36))
         projected = _project_final_bubble(rows)
-        ys = [p["evo"] for p in projected if _is_number(p.get("evo"))]
-        xs = [p["x"] for p in projected if _is_number(p.get("x"))]
+        xs = [p["evo"] for p in projected if _is_number(p.get("evo"))]
+        ys = [p["x"] for p in projected if _is_number(p.get("x"))]
         if not ys or not xs:
-            msg = self.small.render("Need more data to project final bubbles.", True, (170, 170, 170))
-            self.screen.blit(msg, (rect.x + 12, rect.y + 38))
+            msg = self.small.render(
+                _fit_text(
+                    self.small,
+                    "Need more data to project final bubbles.",
+                    rect.width - 24,
+                ),
+                True,
+                (170, 170, 170),
+            )
+            self.screen.blit(msg, (rect.x + 12, rect.y + 56))
             return
         min_x = min(xs)
         max_x = max(xs)
@@ -1108,6 +1428,7 @@ class _HubDashboard:
         max_y = max_y + y_pad
 
         plot = pg.Rect(rect.x + 46, rect.y + 62, rect.width - 62, rect.height - 86)
+        self._graph_plot_rect = plot
         pg.draw.rect(self.screen, (16, 18, 23), plot)
         pg.draw.rect(self.screen, (64, 68, 79), plot, 1)
 
@@ -1130,20 +1451,46 @@ class _HubDashboard:
                 return 0.35
             return max(0.0, min(1.0, (float(value) - fit_min) / fit_denom))
 
-        line_pts = [_to_px(float(point["x"]), float(point["evo"])) for point in projected]
+        line_pts = [_to_px(float(point["evo"]), float(point["x"])) for point in projected]
         if len(line_pts) >= 2:
             pg.draw.lines(self.screen, (68, 82, 108), False, line_pts, 1)
 
+        selected_found = False
         for point in projected:
-            px, py = _to_px(float(point["x"]), float(point["evo"]))
+            px, py = _to_px(float(point["evo"]), float(point["x"]))
             n = _fit_norm(point.get("fitness"))
             radius = 4 + int(round(8.0 * n))
+            is_selected = False
+            selected = self._selected_graph_point
+            if isinstance(selected, dict):
+                sel_step = selected.get("step_index")
+                cur_step = point.get("step_index")
+                if isinstance(sel_step, int) and isinstance(cur_step, int):
+                    is_selected = int(sel_step) == int(cur_step)
+                else:
+                    try:
+                        is_selected = abs(float(selected.get("x")) - float(point.get("x"))) <= 1e-9
+                    except Exception:
+                        is_selected = False
             if point.get("actual"):
                 color = (40 + int(70 * n), 170 + int(70 * n), 215 + int(40 * n))
                 pg.draw.circle(self.screen, color, (px, py), radius)
             else:
                 color = (255, 145 + int(70 * n), 80 + int(70 * n))
                 pg.draw.circle(self.screen, color, (px, py), max(3, radius - 1), 1)
+            if is_selected:
+                selected_found = True
+                pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
+            self._graph_dots.append(
+                {
+                    "px": int(px),
+                    "py": int(py),
+                    "radius": int(radius),
+                    "point": point,
+                }
+            )
+        if self._selected_graph_point is not None and (not selected_found):
+            self._selected_graph_point = None
 
         min_label = self.small.render(f"{min_y:.1f}", True, (150, 150, 150))
         max_label = self.small.render(f"{max_y:.1f}", True, (150, 150, 150))
@@ -1153,8 +1500,8 @@ class _HubDashboard:
         x2 = self.small.render(f"{max_x:.2f}", True, (150, 150, 150))
         self.screen.blit(x1, (plot.x, plot.bottom + 4))
         self.screen.blit(x2, (plot.right - x2.get_width(), plot.bottom + 4))
-        x_label = self.small.render("env change rate", True, (155, 155, 155))
-        y_label = self.small.render("evo speed", True, (155, 155, 155))
+        x_label = self.small.render("evo speed", True, (155, 155, 155))
+        y_label = self.small.render("env change rate", True, (155, 155, 155))
         self.screen.blit(x_label, (plot.x + 4, plot.bottom + 22))
         self.screen.blit(y_label, (plot.x - 42, plot.y + 8))
 
@@ -1171,6 +1518,15 @@ class _HubDashboard:
         self._pump_events()
         if not self.enabled:
             return
+        if self._pending_manual_update:
+            self._pending_manual_update = False
+            if callable(self.update_callback):
+                try:
+                    self.update_callback()
+                except Exception:
+                    pass
+            self._rows_cache = list(state.get("rows", []))
+            force = True
         now = time.time()
         if (not force) and ((now - self._last_draw) < self._refresh_s):
             return
@@ -1193,31 +1549,49 @@ class _HubDashboard:
             _FPS_MODE_UNCAPPED: f"UNCAPPED({self.uncapped_fps})",
             _FPS_MODE_FULL_THROTTLE: "FULL",
         }.get(self.fps_mode, "CAPPED")
+        self._shutdown_button_rect = pg.Rect(self.window_w - 188, 96, 168, 30)
+        header_left = 20
+        header_max_w = max(160, self._shutdown_button_rect.x - header_left - 12)
         header1 = self.title.render(
-            f"HUB {self.hub_idx} Dashboard    status: {status.upper()}",
+            _fit_text(
+                self.title,
+                f"HUB {self.hub_idx} Dashboard    status: {status.upper()}",
+                header_max_w,
+            ),
             True,
             (230, 230, 230),
         )
-        self.screen.blit(header1, (20, 16))
+        self.screen.blit(header1, (header_left, 16))
         header2 = self.font.render(
-            f"Hub dir: {self.hub_dir}    planned master ids: {self.planned_master_span}",
+            _fit_text(
+                self.font,
+                f"Hub dir: {self.hub_dir}    planned master ids: {self.planned_master_span}",
+                header_max_w,
+            ),
             True,
             (180, 180, 180),
         )
-        self.screen.blit(header2, (20, 48))
+        self.screen.blit(header2, (header_left, 48))
         header3 = self.font.render(
-            f"Elapsed: {elapsed}    Pred total: {total_pred}    Remaining: {remain}    ETA: {eta}",
+            _fit_text(
+                self.font,
+                f"Elapsed: {elapsed}    Pred total: {total_pred}    Remaining: {remain}    ETA: {eta}",
+                header_max_w,
+            ),
             True,
             (170, 220, 180),
         )
-        self.screen.blit(header3, (20, 74))
+        self.screen.blit(header3, (header_left, 74))
         header4 = self.font.render(
-            f"Completed: {completed}/{total}    Species threshold: {self.species_threshold}    Running step: {running_row if running_row is not None else '-'}    FPS mode: {fps_mode_label} (F)",
+            _fit_text(
+                self.font,
+                f"Completed: {completed}/{total}    Species threshold: {self.species_threshold}    Running step: {running_row if running_row is not None else '-'}    FPS mode: {fps_mode_label} (F)",
+                header_max_w,
+            ),
             True,
             (170, 200, 230),
         )
-        self.screen.blit(header4, (20, 100))
-        self._shutdown_button_rect = pg.Rect(self.window_w - 188, 96, 168, 30)
+        self.screen.blit(header4, (header_left, 100))
         pg.draw.rect(self.screen, (110, 50, 50), self._shutdown_button_rect)
         pg.draw.rect(self.screen, (180, 160, 160), self._shutdown_button_rect, 1)
         close_hub_text = self.small.render("Close Hub (X)", True, (235, 235, 235))
@@ -1234,10 +1608,16 @@ class _HubDashboard:
         top_y = 132
         right_margin = 20
         mid_gap = 16
+        min_table_w = 704
         min_right_w = 380
-        right_w = max(min_right_w, int(self.window_w * 0.30))
+        available_w = self.window_w - left_margin - right_margin - mid_gap
+        if available_w < (min_table_w + min_right_w):
+            min_table_w = max(560, available_w - min_right_w)
+            min_right_w = max(260, available_w - min_table_w)
+        table_w = max(min_table_w, int(available_w * 0.67))
+        table_w = min(table_w, max(min_table_w, available_w - min_right_w))
+        right_w = max(min_right_w, available_w - table_w)
         right_x = self.window_w - right_margin - right_w
-        table_w = max(560, right_x - left_margin - mid_gap)
         table_h = max(320, self.window_h - top_y - 16)
         table_rect = pg.Rect(left_margin, top_y, table_w, table_h)
         self._table_rect = table_rect
@@ -1254,16 +1634,33 @@ class _HubDashboard:
             ("evo", 74),
             ("dur", 66),
         ]
+        col_layout = []
         x = table_rect.x + 8
         y = table_rect.y + 8
         for name, width in cols:
-            surf = self.small.render(name, True, (190, 190, 190))
+            col_layout.append((x, width))
+            surf = self.small.render(
+                _fit_text(self.small, name, max(8, width - 6)),
+                True,
+                (190, 190, 190),
+            )
             self.screen.blit(surf, (x, y))
             x += width
-        pg.draw.line(self.screen, (58, 60, 70), (table_rect.x + 6, y + 20), (table_rect.right - 6, y + 20), 1)
+        divider_y = y + 20
+        pg.draw.line(
+            self.screen,
+            (58, 60, 70),
+            (table_rect.x + 6, divider_y),
+            (table_rect.right - 6, divider_y),
+            1,
+        )
 
         row_h = 20
-        max_rows = max(1, (table_rect.height - 36) // row_h)
+        table_footer_h = 26
+        base_y = divider_y + 6
+        rows_bottom = table_rect.bottom - table_footer_h - 6
+        available_rows_h = max(0, rows_bottom - base_y)
+        max_rows = max(1, available_rows_h // row_h)
         total_rows = len(rows)
         max_scroll = max(0, total_rows - max_rows)
         self._set_scroll_target(self.scroll_target, max_scroll)
@@ -1275,7 +1672,6 @@ class _HubDashboard:
         # Rounding here can trap at index 1 when target is 0.
         scroll_i = int(self.scroll)
         visible = rows[scroll_i : scroll_i + max_rows]
-        base_y = y + 24
         self._row_h = row_h
         self._rows_base_y = base_y
         self._scroll_i = scroll_i
@@ -1304,7 +1700,10 @@ class _HubDashboard:
             }.get(status_text, (200, 200, 200))
             dur = row.get("duration_s")
             if status_text == "running" and _is_number(row.get("started_at")):
-                dur = max(0.0, now - float(row["started_at"]))
+                base_dur = row.get("duration_base_s")
+                if not _is_number(base_dur):
+                    base_dur = 0.0
+                dur = float(base_dur) + max(0.0, now - float(row["started_at"]))
             values = [
                 str(int(row.get("step_index", 0)) + 1),
                 f"{float(row.get('env_rate', 0.0)):.2f}" if _is_number(row.get("env_rate")) else "",
@@ -1316,25 +1715,33 @@ class _HubDashboard:
                 f"{float(row.get('apex_evolution_rate')):.3f}" if _is_number(row.get("apex_evolution_rate")) else "",
                 _fmt_duration(dur),
             ]
-            x = table_rect.x + 8
-            for c_idx, (_, width) in enumerate(cols):
-                text = self.small.render(values[c_idx], True, color if c_idx == 4 else (205, 205, 205))
-                self.screen.blit(text, (x, ry))
-                x += width
+            for c_idx, (cell_x, width) in enumerate(col_layout):
+                text = self.small.render(
+                    _fit_text(self.small, values[c_idx], max(8, width - 6)),
+                    True,
+                    color if c_idx == 4 else (205, 205, 205),
+                )
+                self.screen.blit(text, (cell_x, ry))
 
+        rows_first = 0 if total_rows == 0 else (scroll_i + 1)
+        rows_last = scroll_i + len(visible)
         scroll_info = self.small.render(
-            f"rows {scroll_i + 1}-{scroll_i + len(visible)} / {total_rows} (wheel/up/down/page/home/end)",
+            _fit_text(
+                self.small,
+                f"rows {rows_first}-{rows_last} / {total_rows} (wheel/up/down/page/home/end)",
+                table_rect.width - 20,
+            ),
             True,
             (150, 150, 150),
         )
-        self.screen.blit(scroll_info, (table_rect.x + 8, table_rect.bottom - 22))
+        self.screen.blit(scroll_info, (table_rect.x + 8, table_rect.bottom - table_footer_h + 4))
         if total_rows > max_rows:
             bar_x = table_rect.right - 8
-            bar_y = table_rect.y + 28
-            bar_h = table_rect.height - 56
+            bar_y = base_y
+            bar_h = max(18, rows_bottom - base_y)
             self.pg.draw.rect(self.screen, (44, 47, 56), (bar_x, bar_y, 4, bar_h))
             thumb_h = max(18, int((max_rows / max(1, total_rows)) * bar_h))
-            top_ratio = scroll_i / max(1, max_scroll)
+            top_ratio = float(self.scroll) / max(1.0, float(max_scroll))
             thumb_y = bar_y + int((bar_h - thumb_h) * top_ratio)
             self.pg.draw.rect(self.screen, (120, 130, 150), (bar_x - 1, thumb_y, 6, thumb_h))
 
@@ -1349,7 +1756,11 @@ class _HubDashboard:
         info_rect = pg.Rect(right_x, graph_rect.bottom + 12, right_w, info_h)
         pg.draw.rect(self.screen, (20, 22, 27), info_rect)
         pg.draw.rect(self.screen, (70, 74, 86), info_rect, 1)
-        info_title = self.font.render("Other Information", True, (220, 220, 220))
+        info_title = self.font.render(
+            _fit_text(self.font, "Other Information", info_rect.width - 20),
+            True,
+            (220, 220, 220),
+        )
         self.screen.blit(info_title, (info_rect.x + 10, info_rect.y + 10))
         selected_row = self._selected_row()
         selected_step = "-"
@@ -1379,32 +1790,117 @@ class _HubDashboard:
             f"Selected row: {selected_step}  status: {selected_status}",
             f"Selected master: {selected_master}",
             f"Selected env: {selected_env}",
+            f"Graph-ready rows: {state.get('graph_ready_rows', 0)} / {len(rows)}",
             f"Summary file: {state.get('summary_path', '')}",
+            f"Fit file: {state.get('fit_path', '')}",
+            "Controls: Update(U)  Reopen(R)  Close(C)  Close Hub(X)  FPS(F)",
+            "Graph: click a dot to inspect values",
         ]
-        yy = info_rect.y + 42
-        for line in info_lines:
-            surf = self.small.render(str(line), True, (185, 185, 185))
-            self.screen.blit(surf, (info_rect.x + 10, yy))
-            yy += 24
+        dot = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
+        if dot is not None:
+            dot_type = "actual" if bool(dot.get("actual")) else "projected"
+            step_idx = dot.get("step_index")
+            step_label = (
+                str(int(step_idx) + 1)
+                if isinstance(step_idx, int)
+                else "--"
+            )
+            rate_val = dot.get("x")
+            evo_val = dot.get("evo")
+            fit_val = dot.get("fitness")
+            dot_lines = [
+                f"Dot: step {step_label} ({dot_type})",
+                f"dot x (evo speed): {float(evo_val):.4f}" if _is_number(evo_val) else "dot x (evo speed): --",
+                f"dot y (rate): {float(rate_val):.4f}" if _is_number(rate_val) else "dot y (rate): --",
+                f"dot size (fitness): {float(fit_val):.3f}" if _is_number(fit_val) else "dot size (fitness): --",
+                f"dot rate: {float(rate_val):.4f}" if _is_number(rate_val) else "dot rate: --",
+                f"dot evo speed: {float(evo_val):.4f}" if _is_number(evo_val) else "dot evo speed: --",
+                f"dot fitness: {float(fit_val):.3f}" if _is_number(fit_val) else "dot fitness: --",
+            ]
+            master_val = dot.get("master_run_num")
+            if master_val is not None:
+                dot_lines.append(f"dot master: master_{master_val}")
+            status_val = dot.get("status")
+            if status_val:
+                dot_lines.append(f"dot status: {status_val}")
+            if _is_number(dot.get("max_species")):
+                dot_lines.append(f"dot species: {float(dot.get('max_species')):.1f}")
+            if _is_number(dot.get("duration_s")):
+                dot_lines.append(f"dot duration: {_fmt_duration(float(dot.get('duration_s')))}")
+            info_lines.extend(dot_lines)
+        button_y = info_rect.bottom - 42
+        info_text_x = info_rect.x + 10
+        info_text_w = info_rect.width - 20
+        info_text_top = info_rect.y + 42
+        info_text_bottom = button_y - 8
+        line_h = 22
+        max_info_lines = max(0, (info_text_bottom - info_text_top) // line_h)
+        lines_to_render = list(info_lines)
+        if len(lines_to_render) > max_info_lines:
+            if max_info_lines <= 0:
+                lines_to_render = []
+            elif max_info_lines == 1:
+                lines_to_render = ["..."]
+            else:
+                lines_to_render = lines_to_render[: max_info_lines - 1] + ["..."]
+        yy = info_text_top
+        for line in lines_to_render:
+            surf = self.small.render(
+                _fit_text(self.small, str(line), info_text_w),
+                True,
+                (185, 185, 185),
+            )
+            self.screen.blit(surf, (info_text_x, yy))
+            yy += line_h
 
-        button_w = max(120, (info_rect.width - 30) // 2)
+        button_gap = 8
+        button_w = max(56, (info_rect.width - 20 - (2 * button_gap)) // 3)
+        button_y = info_rect.bottom - 42
+        button_x0 = info_rect.x + 10
+        self._update_button_rect = self.pg.Rect(
+            button_x0,
+            button_y,
+            button_w,
+            30,
+        )
         self._reopen_button_rect = self.pg.Rect(
-            info_rect.x + 10,
-            info_rect.bottom - 42,
+            self._update_button_rect.right + button_gap,
+            button_y,
             button_w,
             30,
         )
         self._close_button_rect = self.pg.Rect(
-            self._reopen_button_rect.right + 10,
-            self._reopen_button_rect.y,
+            self._reopen_button_rect.right + button_gap,
+            button_y,
             button_w,
             30,
+        )
+        upd_bg = (60, 80, 118)
+        upd_fg = (230, 230, 230)
+        pg.draw.rect(self.screen, upd_bg, self._update_button_rect)
+        pg.draw.rect(self.screen, (150, 150, 150), self._update_button_rect, 1)
+        upd_text = self.small.render(
+            _fit_text(self.small, "Update (U)", self._update_button_rect.width - 12),
+            True,
+            upd_fg,
+        )
+        self.screen.blit(
+            upd_text,
+            (
+                self._update_button_rect.x
+                + (self._update_button_rect.width - upd_text.get_width()) // 2,
+                self._update_button_rect.y + 7,
+            ),
         )
         btn_bg = (40, 90, 60) if can_reopen else (42, 42, 46)
         btn_fg = (230, 230, 230) if can_reopen else (150, 150, 150)
         pg.draw.rect(self.screen, btn_bg, self._reopen_button_rect)
         pg.draw.rect(self.screen, (150, 150, 150), self._reopen_button_rect, 1)
-        btn_text = self.small.render("Reopen (R)", True, btn_fg)
+        btn_text = self.small.render(
+            _fit_text(self.small, "Reopen (R)", self._reopen_button_rect.width - 12),
+            True,
+            btn_fg,
+        )
         self.screen.blit(
             btn_text,
             (
@@ -1417,7 +1913,11 @@ class _HubDashboard:
         close_fg = (230, 230, 230) if can_close else (150, 150, 150)
         pg.draw.rect(self.screen, close_bg, self._close_button_rect)
         pg.draw.rect(self.screen, (150, 150, 150), self._close_button_rect, 1)
-        close_text = self.small.render("Close (C)", True, close_fg)
+        close_text = self.small.render(
+            _fit_text(self.small, "Close (C)", self._close_button_rect.width - 12),
+            True,
+            close_fg,
+        )
         self.screen.blit(
             close_text,
             (
@@ -1627,8 +2127,13 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parent
     master_script = repo_root / "master_simulations.py"
     interpreter = sys.executable
+    close_signal_dir = hub_dir / ".hub_control"
+    close_signal_dir.mkdir(parents=True, exist_ok=True)
     reopened_master_procs = {}
+    reopened_master_close_paths = {}
     current_step_proc = None
+    current_step_close_path = None
+    current_step_close_requested = False
     abort_requested = False
 
     def _step_row_for_master(master_run_num: int):
@@ -1637,32 +2142,27 @@ def main() -> None:
                 return item
         return None
 
-    def _terminate_process(proc: subprocess.Popen, label: str) -> None:
+    def _request_graceful_close(
+        proc: subprocess.Popen, close_path: Path | None, label: str
+    ) -> None:
         if proc is None:
             return
         if proc.poll() is not None:
             return
+        if close_path is None:
+            return
         try:
-            print(f"[hub_{hub_idx}] terminating {label} (pid={proc.pid})")
+            close_path.write_text(str(time.time()))
+            print(
+                f"[hub_{hub_idx}] close requested for {label} (pid={proc.pid}) via {close_path}"
+            )
         except Exception:
             pass
-        try:
-            proc.terminate()
-            proc.wait(timeout=2.0)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
 
     def _close_all_reopened() -> None:
         for master_num, proc in list(reopened_master_procs.items()):
-            _terminate_process(proc, f"reopened master_{int(master_num)}")
-            row = _step_row_for_master(master_num)
-            if isinstance(row, dict):
-                row["reopen_open"] = False
-                row["reopen_pid"] = None
-        reopened_master_procs.clear()
+            close_path = reopened_master_close_paths.get(int(master_num))
+            _request_graceful_close(proc, close_path, f"reopened master_{int(master_num)}")
 
     def _refresh_reopened_processes() -> None:
         stale = []
@@ -1680,6 +2180,12 @@ def main() -> None:
                     row["reopen_pid"] = None
         for key in stale:
             reopened_master_procs.pop(key, None)
+            close_path = reopened_master_close_paths.pop(key, None)
+            if isinstance(close_path, Path):
+                try:
+                    close_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _reopen_master_row(row: dict) -> None:
         if not isinstance(row, dict):
@@ -1710,8 +2216,16 @@ def main() -> None:
         print(
             f"[hub_{hub_idx}] reopen requested for master_{int(master_run)} @ {env_dir}"
         )
-        proc = subprocess.Popen(cmd, cwd=str(repo_root))
+        close_path = close_signal_dir / f"close_master_{int(master_run)}.signal"
+        try:
+            close_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        env = os.environ.copy()
+        env["MASTER_CLOSE_REQUEST_FILE"] = str(close_path)
+        proc = subprocess.Popen(cmd, cwd=str(repo_root), env=env)
         reopened_master_procs[int(master_run)] = proc
+        reopened_master_close_paths[int(master_run)] = close_path
         row["reopen_open"] = True
         row["reopen_pid"] = int(proc.pid)
 
@@ -1722,24 +2236,129 @@ def main() -> None:
         if master_run is None:
             return
         proc = reopened_master_procs.get(int(master_run))
+        close_path = reopened_master_close_paths.get(int(master_run))
         if proc is None:
             row["reopen_open"] = False
             row["reopen_pid"] = None
             return
-        _terminate_process(proc, f"master_{int(master_run)}")
-        reopened_master_procs.pop(int(master_run), None)
-        row["reopen_open"] = False
-        row["reopen_pid"] = None
+        _request_graceful_close(proc, close_path, f"master_{int(master_run)}")
+
+    def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, float | None]:
+        if not points:
+            return (None, None)
+        try:
+            x_val, y_val = max(points, key=lambda p: p[1])
+        except Exception:
+            return (None, None)
+        if not (_is_number(x_val) and _is_number(y_val)):
+            return (None, None)
+        return (float(x_val), float(y_val))
+
+    def _refresh_row_from_disk(row: dict, rebuild_master_combined: bool = False) -> None:
+        if not isinstance(row, dict):
+            return
+        env_dir_raw = row.get("env_dir")
+        if not env_dir_raw:
+            return
+        env_dir = Path(str(env_dir_raw))
+        if not env_dir.is_dir():
+            return
+        master_dir = _latest_master_dir(env_dir)
+        run_nums = _master_run_nums(master_dir) if master_dir is not None else []
+        if not run_nums:
+            run_nums = _discover_env_run_nums(env_dir)
+        if not run_nums and master_dir is None:
+            return
+        max_species = _max_species(env_dir, run_nums)
+        max_elapsed = _max_elapsed_seconds(env_dir, run_nums)
+        if master_dir is not None:
+            if rebuild_master_combined:
+                try:
+                    _rebuild_master_combined_for_update(env_dir, master_dir, run_nums)
+                except Exception:
+                    pass
+            points = _master_points(master_dir, run_nums)
+        else:
+            points = []
+            for run_num in run_nums:
+                points.extend(
+                    _extract_points_from_csv(
+                        env_dir / str(run_num) / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
+                    )
+                )
+        if not points:
+            points = _snapshot_points_from_runs(env_dir, run_nums)
+        fit = _fit_stitched_gaussian(points)
+        if fit is None:
+            apex_x, apex_y = _apex_from_points(points)
+        else:
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+        if master_dir is not None:
+            try:
+                master_run_num = int(master_dir.name.split("_", 1)[1])
+            except Exception:
+                master_run_num = None
+            row["master_dir"] = str(master_dir)
+        else:
+            master_run_num = None
+        if master_run_num is not None:
+            row["master_run_num"] = master_run_num
+        if row.get("planned_master_run_num") is None and master_run_num is not None:
+            row["planned_master_run_num"] = master_run_num
+        row["max_species"] = max_species
+        row["apex_evolution_rate"] = apex_x if _is_number(apex_x) else None
+        row["apex_fitness"] = apex_y if _is_number(apex_y) else None
+        row["fit"] = fit
+        row["points"] = points
+        row["point_count"] = int(len(points))
+        row["run_nums"] = run_nums
+        if _is_number(max_elapsed):
+            row["duration_s"] = float(max_elapsed)
+            if not (str(row.get("status", "")) == "running" and _is_number(row.get("started_at"))):
+                row["duration_base_s"] = float(max_elapsed)
+
+    def _manual_update_rows_from_disk(rebuild_master_combined: bool = False) -> None:
+        ready_rows = 0
+        for row in step_rows:
+            _refresh_row_from_disk(row, rebuild_master_combined=rebuild_master_combined)
+            if _is_number(row.get("apex_evolution_rate")) and _is_number(row.get("apex_fitness")):
+                ready_rows += 1
+        rows_with_master = [
+            row for row in step_rows if isinstance(row, dict) and row.get("master_run_num") is not None
+        ]
+        if rows_with_master:
+            last_row = max(rows_with_master, key=lambda r: int(r.get("step_index", -1)))
+            try:
+                dash_state["last_master"] = f"master_{int(last_row.get('master_run_num'))}"
+            except Exception:
+                pass
+        dash_state["graph_ready_rows"] = int(ready_rows)
+        if rebuild_master_combined:
+            print(
+                f"[hub_{hub_idx}] update rebuilt combined master logs/means and refreshed graph data "
+                f"({ready_rows}/{len(step_rows)} rows with graph points)"
+            )
+        else:
+            print(
+                f"[hub_{hub_idx}] manual update refreshed hub dashboard data "
+                f"({ready_rows}/{len(step_rows)} rows with graph points)"
+            )
 
     def _shutdown_hub_run() -> None:
-        nonlocal abort_requested, current_step_proc
+        nonlocal abort_requested, current_step_proc, current_step_close_requested
         if abort_requested:
             return
         abort_requested = True
         print(f"[hub_{hub_idx}] close hub requested")
         _close_all_reopened()
         if current_step_proc is not None:
-            _terminate_process(current_step_proc, "active hub step")
+            _request_graceful_close(
+                current_step_proc,
+                current_step_close_path,
+                "active hub step",
+            )
+            current_step_close_requested = True
 
     hub_rows = []
     step_rows = []
@@ -1759,44 +2378,39 @@ def main() -> None:
             "started_at": None,
             "finished_at": None,
             "duration_s": None,
+            "duration_base_s": 0.0,
             "env_dir": str(env_dir),
             "master_dir": None,
+            "resume_existing": False,
             "reopen_open": False,
             "reopen_pid": None,
         }
         if continuing and env_dir.is_dir():
-            master_dir = _latest_master_dir(env_dir)
-            if master_dir is not None:
-                run_nums = _master_run_nums(master_dir)
-                max_species = _max_species(env_dir, run_nums)
-                points = _master_points(master_dir, run_nums)
-                fit = _fit_stitched_gaussian(points)
-                if fit is None:
-                    apex_x, apex_y = (None, None)
+            _refresh_row_from_disk(row)
+            has_existing_master = (
+                row.get("master_run_num") is not None and bool(row.get("master_dir"))
+            )
+            max_species = row.get("max_species")
+            step_complete = (
+                species_threshold <= 0
+                or (_is_number(max_species) and float(max_species) >= float(species_threshold))
+            )
+            if has_existing_master:
+                if step_complete:
+                    row["status"] = "ok"
+                    row["resume_existing"] = False
+                    hub_rows.append(
+                        {
+                            "env_rate": float(rate),
+                            "apex_x": row.get("apex_evolution_rate"),
+                            "apex_y": row.get("apex_fitness"),
+                            "fit": row.get("fit"),
+                            "points": row.get("points") or [],
+                        }
+                    )
                 else:
-                    apex_x = fit["apex_x"]
-                    apex_y = fit["apex_y"]
-                try:
-                    master_run_num = int(master_dir.name.split("_", 1)[1])
-                except Exception:
-                    master_run_num = None
-                row["status"] = "ok"
-                row["master_run_num"] = master_run_num
-                row["master_dir"] = str(master_dir)
-                row["max_species"] = max_species
-                row["apex_evolution_rate"] = apex_x
-                row["apex_fitness"] = apex_y
-                if row["planned_master_run_num"] is None and master_run_num is not None:
-                    row["planned_master_run_num"] = int(master_run_num)
-                hub_rows.append(
-                    {
-                        "env_rate": float(rate),
-                        "apex_x": apex_x,
-                        "apex_y": apex_y,
-                        "fit": fit,
-                        "points": points,
-                    }
-                )
+                    row["status"] = "pending"
+                    row["resume_existing"] = True
         step_rows.append(row)
     dashboard = _HubDashboard(
         enabled=(not args.no_screen),
@@ -1804,6 +2418,7 @@ def main() -> None:
         hub_dir=hub_dir,
         planned_master_span=planned_master_span,
         species_threshold=species_threshold,
+        update_callback=lambda: _manual_update_rows_from_disk(rebuild_master_combined=True),
         reopen_callback=_reopen_master_row,
         close_callback=_close_master_row,
         shutdown_callback=_shutdown_hub_run,
@@ -1818,6 +2433,7 @@ def main() -> None:
         "last_master": "--",
         "summary_path": str(hub_summary_path),
         "fit_path": str(fit_csv_path),
+        "graph_ready_rows": 0,
     }
     if continuing:
         print(f"[hub_{hub_idx}] continuing hub run at {hub_dir}")
@@ -1842,6 +2458,7 @@ def main() -> None:
             f"completed, {len(pending_rows)} pending"
         )
     _refresh_reopened_processes()
+    _manual_update_rows_from_disk()
     dashboard.update(dash_state, force=True)
 
     for step_idx, rate in enumerate(rates):
@@ -1852,6 +2469,8 @@ def main() -> None:
             continue
         row_ref["status"] = "running"
         row_ref["started_at"] = time.time()
+        base_dur = row_ref.get("duration_s")
+        row_ref["duration_base_s"] = float(base_dur) if _is_number(base_dur) else 0.0
         dash_state["status"] = "running"
         dash_state["running_row"] = int(step_idx) + 1
         dash_state["current_rate"] = f"{float(rate):.2f}"
@@ -1865,33 +2484,74 @@ def main() -> None:
         dash_state["current_planned_master"] = (
             "--" if planned_master_run is None else str(int(planned_master_run))
         )
-        cmd = [
-            interpreter,
-            str(master_script),
-            "--non-interactive",
-            "--results-dir",
-            str(env_dir),
-            "--env-change-rate",
-            str(rate),
-            "--species-stop",
-            str(species_threshold),
-            "--script",
-            str(args.script),
-        ]
-        if planned_master_run is not None:
-            cmd.extend(["--master-run-num", str(int(planned_master_run))])
-        if args.count is not None:
-            cmd.extend(["--count", str(int(args.count))])
+        resume_existing = bool(row_ref.get("resume_existing"))
+        existing_master_run = row_ref.get("master_run_num")
+        existing_master_dir = row_ref.get("master_dir")
+        if resume_existing and existing_master_run is not None:
+            cmd = [
+                interpreter,
+                str(master_script),
+                "--non-interactive",
+                "--results-dir",
+                str(env_dir),
+                "--continue-master-run",
+                str(int(existing_master_run)),
+                "--env-change-rate",
+                str(rate),
+                "--species-stop",
+                str(species_threshold),
+                "--script",
+                str(args.script),
+            ]
+            if existing_master_dir:
+                cmd.extend(["--continue-master-dir", str(existing_master_dir)])
+        else:
+            cmd = [
+                interpreter,
+                str(master_script),
+                "--non-interactive",
+                "--results-dir",
+                str(env_dir),
+                "--env-change-rate",
+                str(rate),
+                "--species-stop",
+                str(species_threshold),
+                "--script",
+                str(args.script),
+            ]
+            if planned_master_run is not None:
+                cmd.extend(["--master-run-num", str(int(planned_master_run))])
+            if args.count is not None:
+                cmd.extend(["--count", str(int(args.count))])
 
-        print(
-            f"[hub_{hub_idx}] step {step_idx + 1}/{len(rates)} "
-            f"rate={rate:.2f} planned_master={'' if planned_master_run is None else planned_master_run}"
-        )
-        proc = subprocess.Popen(cmd, cwd=str(repo_root))
+        if resume_existing and existing_master_run is not None:
+            print(
+                f"[hub_{hub_idx}] step {step_idx + 1}/{len(rates)} "
+                f"rate={rate:.2f} continuing master_{int(existing_master_run)}"
+            )
+        else:
+            print(
+                f"[hub_{hub_idx}] step {step_idx + 1}/{len(rates)} "
+                f"rate={rate:.2f} planned_master={'' if planned_master_run is None else planned_master_run}"
+            )
+        current_step_close_path = close_signal_dir / f"close_step_{int(step_idx)}.signal"
+        try:
+            current_step_close_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        current_step_close_requested = False
+        env = os.environ.copy()
+        env["MASTER_CLOSE_REQUEST_FILE"] = str(current_step_close_path)
+        proc = subprocess.Popen(cmd, cwd=str(repo_root), env=env)
         current_step_proc = proc
         while proc.poll() is None:
-            if abort_requested:
-                _terminate_process(proc, f"hub step {step_idx + 1}")
+            if abort_requested and (not current_step_close_requested):
+                _request_graceful_close(
+                    proc,
+                    current_step_close_path,
+                    f"hub step {step_idx + 1}",
+                )
+                current_step_close_requested = True
             _refresh_reopened_processes()
             dashboard.update(dash_state)
             sleep_s = dashboard.poll_sleep_seconds() if dashboard.enabled else 0.12
@@ -1899,11 +2559,21 @@ def main() -> None:
                 time.sleep(sleep_s)
         returncode = int(proc.returncode if proc.returncode is not None else 1)
         current_step_proc = None
+        if isinstance(current_step_close_path, Path):
+            try:
+                current_step_close_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        current_step_close_path = None
+        current_step_close_requested = False
         row_ref["finished_at"] = time.time()
         if _is_number(row_ref.get("started_at")):
             row_ref["duration_s"] = max(
                 0.0, float(row_ref["finished_at"]) - float(row_ref["started_at"])
             )
+        base_dur = row_ref.get("duration_base_s")
+        if _is_number(base_dur) and _is_number(row_ref.get("duration_s")):
+            row_ref["duration_s"] = float(base_dur) + float(row_ref["duration_s"])
 
         step_info = {
             "step_index": int(step_idx),
@@ -2011,6 +2681,7 @@ def main() -> None:
             }
         )
         row_ref["status"] = "ok"
+        row_ref["resume_existing"] = False
         row_ref["master_run_num"] = master_run_num
         row_ref["master_dir"] = str(master_dir)
         row_ref["max_species"] = max_species
@@ -2050,8 +2721,11 @@ def main() -> None:
         )
 
         if species_threshold > 0 and (max_species is None or max_species < species_threshold):
+            step_info["status"] = "stopped"
+            step_info["stopped_threshold_not_reached"] = True
             hub_meta["status"] = "stopped_threshold_not_reached"
             row_ref["status"] = "stopped"
+            row_ref["resume_existing"] = True
             dash_state["status"] = hub_meta["status"]
             hub_meta["stopped_step"] = int(step_idx)
             hub_meta_path.write_text(json.dumps(hub_meta, indent=2))

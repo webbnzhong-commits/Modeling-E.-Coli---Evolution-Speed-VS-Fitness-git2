@@ -2084,10 +2084,10 @@ def _apply_mode_toggle(selected_row: int, mode_values: list[int]) -> None:
             mode_values[idx] = (mode_values[idx] + 1) % 3
 
 
-def _apply_update(selected_row: int, update_tokens: list[int]) -> None:
+def _apply_update(selected_row: int, update_tokens: list[int], force_all: bool = False) -> None:
     if not update_tokens:
         return
-    if selected_row == 0:
+    if force_all or selected_row == 0:
         for i in range(len(update_tokens)):
             update_tokens[i] += 1
     else:
@@ -4239,6 +4239,8 @@ def main() -> None:
     saved_mode_values = None
     pressed_button = None
     confirm_quit = False
+    close_request_file = os.environ.get("MASTER_CLOSE_REQUEST_FILE", "").strip()
+    close_request_path = Path(close_request_file) if close_request_file else None
 
 
     max_scroll = max(0, content_h - window_h)
@@ -4262,6 +4264,24 @@ def main() -> None:
     running = True
     temp_uncap_until = 0.0
     temp_uncap_prev = None
+
+    def _trigger_graph_update_all() -> None:
+        nonlocal last_chart_refresh
+        _apply_update(selected_row, update_tokens, force_all=True)
+        _write_control(
+            control_path,
+            active_sim_index,
+            enabled,
+            draw_modes,
+            draw_every,
+            mode_values,
+            update_tokens,
+        )
+        # Force immediate reload from disk so partial results show up without waiting.
+        fps_cache.clear()
+        arithmetic_cache.clear()
+        snapshot_cache.clear()
+        last_chart_refresh = 0.0
 
     def _refresh_stop_conditions() -> None:
         nonlocal stop_max_runtime, stop_max_frames, stop_max_species, stop_at_ts
@@ -4498,6 +4518,14 @@ def main() -> None:
         return False
 
     while running:
+        if close_request_path is not None and close_request_path.exists():
+            running = False
+            confirm_quit = False
+            try:
+                close_request_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            break
         now = time.time()
         render_scroll = int(round(scroll_offset))
         margin = 20
@@ -4528,7 +4556,7 @@ def main() -> None:
         button_order = [
             "draw",
             "mode",
-            "info",
+            "update",
             "mean",
             "fps",
             "onoff",
@@ -4546,7 +4574,7 @@ def main() -> None:
             button_rects[key] = pygame.Rect(bx, by, button_w, button_h)
         draw_btn = button_rects["draw"]
         mode_btn = button_rects["mode"]
-        info_btn = button_rects["info"]
+        update_btn = button_rects["update"]
         mean_btn = button_rects["mean"]
         fps_btn = button_rects["fps"]
         onoff_btn = button_rects["onoff"]
@@ -4615,8 +4643,9 @@ def main() -> None:
                         _apply_mode_toggle(selected_row, mode_values)
                         _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
                 elif event.key == pygame.K_s:
-                    _apply_update(selected_row, update_tokens)
-                    _write_control(control_path, active_sim_index, enabled, draw_modes, draw_every, mode_values, update_tokens)
+                    _trigger_graph_update_all()
+                elif event.key == pygame.K_u:
+                    _trigger_graph_update_all()
                 elif event.key == pygame.K_f:
                     _apply_master_fps_mode((master_fps_mode + 1) % 3)
                 elif event.key == pygame.K_t:
@@ -4652,17 +4681,8 @@ def main() -> None:
                                 mode_values,
                                 update_tokens,
                             )
-                    elif pressed_button == "info" and info_btn.collidepoint(mx, content_y):
-                        _apply_update(selected_row, update_tokens)
-                        _write_control(
-                            control_path,
-                            active_sim_index,
-                            enabled,
-                            draw_modes,
-                            draw_every,
-                            mode_values,
-                            update_tokens,
-                        )
+                    elif pressed_button == "update" and update_btn.collidepoint(mx, content_y):
+                        _trigger_graph_update_all()
                     elif pressed_button == "mean" and mean_btn.collidepoint(mx, content_y):
                         mean_kind = "Geometric" if mean_kind == "Arithmetic" else "Arithmetic"
                         selected_mean_point = None
@@ -4723,6 +4743,7 @@ def main() -> None:
                         continue
                     if confirm_layout["no_rect"].collidepoint(mx, my):
                         confirm_quit = False
+                        running = True
                         continue
                 if draw_btn.collidepoint(mx, content_y):
                     pressed_button = "draw"
@@ -4730,8 +4751,8 @@ def main() -> None:
                 elif mode_btn.collidepoint(mx, content_y):
                     pressed_button = "mode"
                     handled_click = True
-                elif info_btn.collidepoint(mx, content_y):
-                    pressed_button = "info"
+                elif update_btn.collidepoint(mx, content_y):
+                    pressed_button = "update"
                     handled_click = True
                 elif mean_btn.collidepoint(mx, content_y):
                     pressed_button = "mean"
@@ -4888,7 +4909,7 @@ def main() -> None:
             else:
                 cap_label = "FULL"
             hint3 = small_font.render(
-                "D: draw  M: mode  S: update  F: fps mode  T: timeline  L: limits  Esc/Q: quit",
+                "D: draw  M: mode  S/U: update all  F: fps mode  T: timeline  L: limits  Esc/Q: quit",
                 True,
                 (200, 200, 200),
             )
@@ -4918,7 +4939,7 @@ def main() -> None:
             for rect, label in [
                 (draw_btn, "Draw"),
                 (mode_btn, "Mode"),
-                (info_btn, "Info"),
+                (update_btn, "Update"),
                 (mean_btn, f"Mean {mean_kind[:4]}"),
                 (fps_btn, "FPS Mode"),
                 (onoff_btn, "On/Off"),
