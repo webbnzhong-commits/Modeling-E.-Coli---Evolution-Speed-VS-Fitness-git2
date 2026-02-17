@@ -2,6 +2,7 @@ from pathlib import Path
 import pygame
 
 #debug thing for github
+#debug 2.0
 
 core_path = Path(__file__).with_name("import pygrame.py")
 exec(core_path.read_text(), globals())
