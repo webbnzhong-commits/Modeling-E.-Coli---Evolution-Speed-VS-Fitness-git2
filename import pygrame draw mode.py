@@ -1,6 +1,8 @@
 from pathlib import Path
 import pygame
 
+#debug thing for github
+
 core_path = Path(__file__).with_name("import pygrame.py")
 exec(core_path.read_text(), globals())
 
