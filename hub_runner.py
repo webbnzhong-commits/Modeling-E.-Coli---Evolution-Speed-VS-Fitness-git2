@@ -268,18 +268,14 @@ def _fitness_weight_count(fitness: float) -> int:
     return max(1, int(round(value)))
 
 
-def _write_hub_all_points_weighted_csv(path: Path, rows: list[dict]) -> None:
+def _hub_all_points_weighted_by_fitness(rows: list[dict]) -> list[tuple[float, float, float]]:
     flattened = _hub_point_triples_from_rows(rows)
-    try:
-        with open(path, "w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["evo rate", "enviormentChangeRate", "fitness"])
-            for env, evo, fitness in flattened:
-                copies = _fitness_weight_count(fitness)
-                for _ in range(copies):
-                    writer.writerow([evo, env, fitness])
-    except Exception:
-        pass
+    weighted: list[tuple[float, float, float]] = []
+    for env, evo, fitness in flattened:
+        copies = _fitness_weight_count(fitness)
+        for _ in range(copies):
+            weighted.append((env, evo, fitness))
+    return weighted
 
 
 def _select_hub_run_ui(results_root: Path):
@@ -3170,7 +3166,7 @@ def main() -> None:
     fit_csv_path = hub_dir / "hub_fit_equations.csv"
     hub_stats_path = hub_dir / "hub_stats.csv"
     all_points_csv_path = hub_dir / "hub_all_points.csv"
-    weighted_all_points_csv_path = hub_dir / "hub_all_points_weighted_by_fitness.csv"
+    hub_all_points_weighted_by_fitness: list[tuple[float, float, float]] = []
     settings_snapshot = load_settings()
     try:
         master_cursor = int(settings_snapshot.get("num_tries_master", 0))
@@ -3501,13 +3497,14 @@ def main() -> None:
         row["point_count"] = int(len(points))
 
     def _manual_update_rows_from_disk(rebuild_master_combined: bool = False) -> None:
+        nonlocal hub_all_points_weighted_by_fitness
         ready_rows = 0
         for row in step_rows:
             _refresh_row_from_disk(row, rebuild_master_combined=rebuild_master_combined)
             if _is_number(row.get("apex_evolution_rate")) and _is_number(row.get("apex_fitness")):
                 ready_rows += 1
+        hub_all_points_weighted_by_fitness = _hub_all_points_weighted_by_fitness(step_rows)
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
-        _write_hub_all_points_weighted_csv(weighted_all_points_csv_path, step_rows)
         _write_hub_stats_csv(hub_stats_path, step_rows)
         rows_with_master = [
             row for row in step_rows if isinstance(row, dict) and row.get("master_run_num") is not None
@@ -3933,8 +3930,8 @@ def main() -> None:
                 "points": points,
             }
         )
+        hub_all_points_weighted_by_fitness = _hub_all_points_weighted_by_fitness(step_rows)
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
-        _write_hub_all_points_weighted_csv(weighted_all_points_csv_path, step_rows)
         _write_hub_stats_csv(hub_stats_path, step_rows)
 
         species_measure = (
@@ -4018,7 +4015,10 @@ def main() -> None:
     print(f"Equations: {fit_csv_path}")
     print(f"Hub stats: {hub_stats_path}")
     print(f"All datapoints: {all_points_csv_path}")
-    print(f"Weighted datapoints: {weighted_all_points_csv_path}")
+    print(
+        "Weighted datapoints kept in memory variable "
+        f"`hub_all_points_weighted_by_fitness` ({len(hub_all_points_weighted_by_fitness)} rows)"
+    )
 
 
 if __name__ == "__main__":
