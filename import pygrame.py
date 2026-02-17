@@ -69,7 +69,15 @@ draw = bool(settings["draw"])
 drawSometimes = bool(settings["drawSometimes"])
 drawAmnt = int(settings["drawAmnt"])
 population_cap = float(settings["population_cap"])
-enviormentChangeRate = float(settings["enviormentChangeRate"])
+
+def _env_change_rate_from_settings(cfg):
+    try:
+        return float(os.environ.get("SIM_ENV_CHANGE_RATE", cfg["enviormentChangeRate"]))
+    except Exception:
+        return float(cfg["enviormentChangeRate"])
+
+
+enviormentChangeRate = _env_change_rate_from_settings(settings)
 PH_EFFECT_SCALE = float(settings["ph_effect"]["scale"])
 PH_EFFECT_DIVISOR = float(settings["ph_effect"]["divisor"])
 TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
@@ -181,7 +189,7 @@ def apply_settings(new_settings):
     drawSometimes = bool(settings["drawSometimes"])
     drawAmnt = int(settings["drawAmnt"])
     population_cap = float(settings["population_cap"])
-    enviormentChangeRate = float(settings["enviormentChangeRate"])
+    enviormentChangeRate = _env_change_rate_from_settings(settings)
     PH_EFFECT_SCALE = float(settings["ph_effect"]["scale"])
     PH_EFFECT_DIVISOR = float(settings["ph_effect"]["divisor"])
     TEMP_EFFECT_SCALE = float(settings["temp_effect"]["scale"])
