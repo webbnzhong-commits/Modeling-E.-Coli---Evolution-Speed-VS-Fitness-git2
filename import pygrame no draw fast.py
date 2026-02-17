@@ -117,7 +117,7 @@ while running:
     
 
 
-    if frame_count % (500 / enviormentChangeRate) == 0:
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         # Find the most common immune_system value among all dots
         immune_counts = Counter(dot.immune_system for dot in dots)
         if immune_counts:
@@ -243,13 +243,13 @@ while running:
     else:
         for dot in list(dots):
             dot.update()
-    if frame_count % 400 / enviormentChangeRate == 0:
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         phLevel += random.uniform(-2, 2)
         if phLevel < 4:
             phLevel = 4
         if phLevel > 10:
             phLevel = 10
-    if frame_count % 10 / enviormentChangeRate == 0:
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         if tempDirUp:
             temp += random.uniform(0, 1)
         else:
@@ -261,7 +261,7 @@ while running:
             temp = 34
             tempDirUp = True
     '''
-    if frame_count % 10 / enviormentChangeRate == 0:
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         enviormentChangeRate += random.uniform(-0.5, 0.5)
         if enviormentChangeRate < 0.5:
             enviormentChangeRate = 0.5

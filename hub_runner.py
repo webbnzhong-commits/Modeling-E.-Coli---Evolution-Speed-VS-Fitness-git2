@@ -224,6 +224,35 @@ def _ensure_csv_with_header(path: Path, header_line: str) -> None:
         pass
 
 
+def _write_hub_all_points_csv(path: Path, rows: list[dict]) -> None:
+    flattened: list[tuple[float, float, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        env_rate = row.get("env_rate")
+        points = row.get("points")
+        if (not _is_number(env_rate)) or (not isinstance(points, list)):
+            continue
+        env = float(env_rate)
+        for point in points:
+            if not isinstance(point, (tuple, list)) or len(point) < 2:
+                continue
+            evo_val = point[0]
+            fit_val = point[1]
+            if not (_is_number(evo_val) and _is_number(fit_val)):
+                continue
+            flattened.append((env, float(evo_val), float(fit_val)))
+    flattened.sort(key=lambda item: (item[0], item[1], item[2]))
+    try:
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["evo rate", "enviormentChangeRate", "fitness"])
+            for env, evo, fitness in flattened:
+                writer.writerow([evo, env, fitness])
+    except Exception:
+        pass
+
+
 def _select_hub_run_ui(results_root: Path):
     hub_rows = _collect_hub_runs(results_root)
     try:
@@ -1347,6 +1376,7 @@ class _HubDashboard:
         self._rows_base_y = 0
         self._scroll_i = 0
         self._visible_rows = 0
+        self._row_hitboxes = []
         self._pending_manual_update = False
         self._graph_plot_rect = None
         self._graph_dots = []
@@ -1559,7 +1589,17 @@ class _HubDashboard:
                 ):
                     self._trigger_shutdown()
                 if self._table_rect is not None and self._table_rect.collidepoint(mx, my):
-                    if my >= self._rows_base_y:
+                    picked_row = None
+                    for hit in self._row_hitboxes:
+                        if not isinstance(hit, tuple) or len(hit) != 3:
+                            continue
+                        row_idx, y0, y1 = hit
+                        if y0 <= my < y1:
+                            picked_row = int(row_idx)
+                            break
+                    if picked_row is not None and 0 <= picked_row < len(self._rows_cache):
+                        self.selected_row_index = int(picked_row)
+                    elif my >= self._rows_base_y:
                         local = int((my - self._rows_base_y) // self._row_h)
                         if 0 <= local < self._visible_rows:
                             idx = int(self._scroll_i + local)
@@ -1573,114 +1613,222 @@ class _HubDashboard:
                 pass
             self.enabled = False
 
+    def _draw_master_inline_graph(self, row: dict, rect) -> None:
+        pg = self.pg
+        pg.draw.rect(self.screen, (13, 15, 20), rect)
+        pg.draw.rect(self.screen, (58, 62, 72), rect, 1)
+        title = self.small.render(
+            _fit_text(self.small, "Selected Master Graph: evo speed vs fitness", rect.width - 12),
+            True,
+            (185, 195, 210),
+        )
+        self.screen.blit(title, (rect.x + 6, rect.y + 4))
+
+        fit = row.get("fit")
+        fit_lines = []
+        if isinstance(fit, dict):
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+            sigma_left = fit.get("sigma_left")
+            sigma_right = fit.get("sigma_right")
+            r2 = fit.get("r2")
+            if (
+                _is_number(apex_x)
+                and _is_number(apex_y)
+                and _is_number(sigma_left)
+                and _is_number(sigma_right)
+            ):
+                fit_lines.append(
+                    "Best-fit normal: y=A*exp(-((x-mu)^2)/(2*sigma^2)); sigma=sigmaL (x<=mu), sigmaR (x>mu)"
+                )
+                params = (
+                    f"A={float(apex_y):.6g}, mu={float(apex_x):.6g}, "
+                    f"sigmaL={float(sigma_left):.6g}, sigmaR={float(sigma_right):.6g}"
+                )
+                if _is_number(r2):
+                    params += f", R^2={float(r2):.4f}"
+                fit_lines.append(params)
+
+        eq_font_size = max(8, int(round(float(self.small.get_height()) / 1.5)))
+        eq_font = pg.font.SysFont("Consolas", eq_font_size)
+        line_h = max(8, int(eq_font.get_linesize()))
+        fit_base_y = rect.y + 18
+        if fit_lines:
+            fit_w = max(0, rect.width - 12)
+            for line_i, line_text in enumerate(fit_lines):
+                fit_surf = eq_font.render(
+                    _fit_text(eq_font, line_text, fit_w),
+                    True,
+                    (170, 182, 198),
+                )
+                self.screen.blit(fit_surf, (rect.x + 6, fit_base_y + (line_i * line_h)))
+
+        points = []
+        raw_points = row.get("points")
+        if isinstance(raw_points, list):
+            for point in raw_points:
+                if not isinstance(point, (tuple, list)) or len(point) < 2:
+                    continue
+                evo_val = point[0]
+                fit_val = point[1]
+                if _is_number(evo_val) and _is_number(fit_val):
+                    points.append((float(evo_val), float(fit_val)))
+
+        plot_top = rect.y + 24 + (len(fit_lines) * line_h)
+        plot = pg.Rect(rect.x + 34, plot_top, rect.width - 44, rect.height - ((plot_top - rect.y) + 8))
+        if plot.width <= 20 or plot.height <= 20:
+            return
+        pg.draw.rect(self.screen, (9, 11, 15), plot)
+        pg.draw.rect(self.screen, (52, 56, 64), plot, 1)
+
+        if not points:
+            msg = self.small.render(
+                _fit_text(self.small, "No points yet for selected master.", plot.width - 8),
+                True,
+                (150, 150, 150),
+            )
+            self.screen.blit(msg, (plot.x + 6, plot.y + 6))
+            return
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        raw_min_x = min(xs)
+        raw_max_x = max(xs)
+        raw_min_y = min(ys)
+        raw_max_y = max(ys)
+        if raw_max_x <= raw_min_x:
+            min_x = raw_min_x - 0.05
+            max_x = raw_max_x + 0.05
+        else:
+            x_pad = (raw_max_x - raw_min_x) * 0.04
+            min_x = raw_min_x - x_pad
+            max_x = raw_max_x + x_pad
+        if raw_max_y <= raw_min_y:
+            min_y = raw_min_y - 0.05
+            max_y = raw_max_y + 0.05
+        else:
+            y_pad = (raw_max_y - raw_min_y) * 0.04
+            min_y = raw_min_y - y_pad
+            max_y = raw_max_y + y_pad
+
+        def _to_px(xv: float, yv: float) -> tuple[int, int]:
+            px = plot.x + int(((xv - min_x) / (max_x - min_x)) * plot.width)
+            py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
+            return (px, py)
+
+        if isinstance(fit, dict):
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+            sigma_left = fit.get("sigma_left")
+            sigma_right = fit.get("sigma_right")
+            if (
+                _is_number(apex_x)
+                and _is_number(apex_y)
+                and _is_number(sigma_left)
+                and _is_number(sigma_right)
+            ):
+                sample = []
+                for idx in range(120):
+                    x_val = min_x + ((max_x - min_x) * float(idx) / 119.0)
+                    y_val = _predict_piecewise_gaussian(
+                        float(x_val),
+                        float(apex_x),
+                        float(apex_y),
+                        float(sigma_left),
+                        float(sigma_right),
+                    )
+                    if _is_number(y_val):
+                        sample.append((float(x_val), float(y_val)))
+                if len(sample) >= 2:
+                    for idx in range(1, len(sample)):
+                        p0 = _to_px(sample[idx - 1][0], sample[idx - 1][1])
+                        p1 = _to_px(sample[idx][0], sample[idx][1])
+                        pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
+
+        fit_min = min(ys)
+        fit_max = max(ys)
+        fit_denom = max(1e-9, fit_max - fit_min)
+        for evo_val, fit_val in points:
+            px, py = _to_px(evo_val, fit_val)
+            n = max(0.0, min(1.0, (fit_val - fit_min) / fit_denom))
+            radius = 1 + int(round(3 * n))
+            color = (
+                40 + int(210 * n),
+                128 + int(95 * n),
+                236 - int(166 * n),
+            )
+            pg.draw.circle(self.screen, color, (px, py), radius)
+
+        min_y_txt = self.small.render(f"{raw_min_y:.3f}", True, (145, 145, 145))
+        max_y_txt = self.small.render(f"{raw_max_y:.3f}", True, (145, 145, 145))
+        min_x_txt = self.small.render(f"{raw_min_x:.3f}", True, (145, 145, 145))
+        max_x_txt = self.small.render(f"{raw_max_x:.3f}", True, (145, 145, 145))
+        x_lab = self.small.render("evo speed", True, (150, 150, 150))
+        y_lab = self.small.render("fitness", True, (150, 150, 150))
+
+        self.screen.blit(max_y_txt, (plot.x - 30, plot.y - 2))
+        self.screen.blit(min_y_txt, (plot.x - 30, plot.bottom - 14))
+        self.screen.blit(min_x_txt, (plot.x, plot.bottom - 14))
+        self.screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom - 14))
+        self.screen.blit(x_lab, (plot.x + 4, plot.y + 4))
+        self.screen.blit(y_lab, (plot.x - 30, plot.y + 14))
+
     def _draw_graph(self, rect, rows: list[dict]) -> None:
         pg = self.pg
         self._graph_plot_rect = None
         self._graph_dots = []
         pg.draw.rect(self.screen, (22, 24, 29), rect)
         pg.draw.rect(self.screen, (70, 74, 86), rect, 1)
-        selected_row = self._selected_row()
-        graph_mode = "hub"
         graph_points = []
-        selected_master = None
-
-        if isinstance(selected_row, dict):
-            raw_points = selected_row.get("points")
-            if isinstance(raw_points, list):
-                for src_idx, point in enumerate(raw_points, start=1):
-                    if not isinstance(point, (tuple, list)) or len(point) < 2:
-                        continue
-                    evo_val = point[0]
-                    fit_val = point[1]
-                    if not (_is_number(evo_val) and _is_number(fit_val)):
-                        continue
-                    graph_points.append(
-                        {
-                            "graph_mode": "master",
-                            "x": float(evo_val),
-                            "y": float(fit_val),
-                            "evo": float(evo_val),
-                            "fitness": float(fit_val),
-                            "actual": True,
-                            "row_index": int(self.selected_row_index),
-                            "step_index": (
-                                int(selected_row.get("step_index"))
-                                if isinstance(selected_row.get("step_index"), int)
-                                else selected_row.get("step_index")
-                            ),
-                            "source_row_index": int(src_idx),
-                            "status": selected_row.get("status"),
-                            "master_run_num": selected_row.get("master_run_num"),
-                            "planned_master_run_num": selected_row.get("planned_master_run_num"),
-                            "max_species": selected_row.get("max_species"),
-                            "total_species": selected_row.get("total_species"),
-                            "max_frames": selected_row.get("max_frames"),
-                            "duration_s": selected_row.get("duration_s"),
-                        }
-                    )
-                if graph_points:
-                    graph_mode = "master"
-                    selected_master = selected_row
-                else:
-                    graph_points = []
-
-        if graph_mode == "hub":
-            for row in rows:
-                env_rate = row.get("env_rate")
-                points = row.get("points")
-                if (not _is_number(env_rate)) or (not isinstance(points, list)):
+        for row in rows:
+            env_rate = row.get("env_rate")
+            points = row.get("points")
+            if (not _is_number(env_rate)) or (not isinstance(points, list)):
+                continue
+            point_meta = {
+                "graph_mode": "hub",
+                "row_index": (
+                    int(row.get("step_index"))
+                    if isinstance(row.get("step_index"), int)
+                    else row.get("step_index")
+                ),
+                "step_index": (
+                    int(row.get("step_index"))
+                    if isinstance(row.get("step_index"), int)
+                    else row.get("step_index")
+                ),
+                "status": row.get("status"),
+                "master_run_num": row.get("master_run_num"),
+                "planned_master_run_num": row.get("planned_master_run_num"),
+                "max_species": row.get("max_species"),
+                "total_species": row.get("total_species"),
+                "max_frames": row.get("max_frames"),
+                "duration_s": row.get("duration_s"),
+            }
+            for src_idx, point in enumerate(points, start=1):
+                if not isinstance(point, (tuple, list)) or len(point) < 2:
                     continue
-                point_meta = {
-                    "graph_mode": "hub",
-                    "row_index": (
-                        int(row.get("step_index"))
-                        if isinstance(row.get("step_index"), int)
-                        else row.get("step_index")
-                    ),
-                    "step_index": (
-                        int(row.get("step_index"))
-                        if isinstance(row.get("step_index"), int)
-                        else row.get("step_index")
-                    ),
-                    "status": row.get("status"),
-                    "master_run_num": row.get("master_run_num"),
-                    "planned_master_run_num": row.get("planned_master_run_num"),
-                    "max_species": row.get("max_species"),
-                    "total_species": row.get("total_species"),
-                    "max_frames": row.get("max_frames"),
-                    "duration_s": row.get("duration_s"),
-                }
-                for src_idx, point in enumerate(points, start=1):
-                    if not isinstance(point, (tuple, list)) or len(point) < 2:
-                        continue
-                    evo_val = point[0]
-                    fit_val = point[1]
-                    if not (_is_number(evo_val) and _is_number(fit_val)):
-                        continue
-                    graph_points.append(
-                        {
-                            "x": float(env_rate),
-                            "y": float(evo_val),
-                            "evo": float(evo_val),
-                            "fitness": float(fit_val),
-                            "actual": True,
-                            "source_row_index": int(src_idx),
-                            **point_meta,
-                        }
-                    )
+                evo_val = point[0]
+                fit_val = point[1]
+                if not (_is_number(evo_val) and _is_number(fit_val)):
+                    continue
+                graph_points.append(
+                    {
+                        "x": float(env_rate),
+                        "y": float(evo_val),
+                        "evo": float(evo_val),
+                        "fitness": float(fit_val),
+                        "actual": True,
+                        "source_row_index": int(src_idx),
+                        **point_meta,
+                    }
+                )
 
         selected = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
-        if selected is not None and str(selected.get("graph_mode", "hub")) != graph_mode:
+        if selected is not None and str(selected.get("graph_mode", "hub")) != "hub":
             selected = None
             self._selected_graph_point = None
-        if selected is not None and str(selected.get("graph_mode", "hub")) == "master":
-            x_val = selected.get("x")
-            y_val = selected.get("y")
-            x_text = f"{float(x_val):.4f}" if _is_number(x_val) else "--"
-            y_text = f"{float(y_val):.4f}" if _is_number(y_val) else "--"
-            line_1 = f"evo rate: {x_text}, fitness: {y_text}"
-            header_color = (200, 220, 255)
-        elif selected is not None:
+        if selected is not None:
             rate_val = selected.get("x")
             evo_val = selected.get("evo")
             fit_val = selected.get("fitness")
@@ -1690,14 +1838,7 @@ class _HubDashboard:
             line_1 = f"x: {x_text}, y: {y_text}, size: {size_text}"
             header_color = (200, 220, 255)
         else:
-            if graph_mode == "master":
-                master_val = selected_master.get("master_run_num") if isinstance(selected_master, dict) else None
-                env_val = selected_master.get("env_rate") if isinstance(selected_master, dict) else None
-                master_txt = f"master_{master_val}" if master_val is not None else "selected row"
-                env_txt = f"{float(env_val):.2f}" if _is_number(env_val) else "--"
-                line_1 = f"{master_txt} graph (env {env_txt}): evo speed vs fitness"
-            else:
-                line_1 = "Hub graph: env change rate vs evo speed"
+            line_1 = "Hub graph: env change rate vs evo speed"
             header_color = (160, 170, 180)
 
         if selected is not None:
@@ -1741,13 +1882,12 @@ class _HubDashboard:
         xs = [float(p["x"]) for p in graph_points if _is_number(p.get("x"))]
         ys = [float(p["y"]) for p in graph_points if _is_number(p.get("y"))]
         if not ys or not xs:
-            msg_text = (
-                "Selected row has no master graph points yet."
-                if graph_mode == "master"
-                else "Need started/completed master points to draw graph."
-            )
             msg = self.small.render(
-                _fit_text(self.small, msg_text, rect.width - 24),
+                _fit_text(
+                    self.small,
+                    "Need started/completed master points to draw graph.",
+                    rect.width - 24,
+                ),
                 True,
                 (170, 170, 170),
             )
@@ -1789,37 +1929,6 @@ class _HubDashboard:
             if span >= 1:
                 return f"{value:.2f}"
             return f"{value:.3f}"
-
-        if graph_mode == "master" and isinstance(selected_master, dict):
-            fit = selected_master.get("fit")
-            if isinstance(fit, dict):
-                apex_x = fit.get("apex_x")
-                apex_y = fit.get("apex_y")
-                sigma_left = fit.get("sigma_left")
-                sigma_right = fit.get("sigma_right")
-                if (
-                    _is_number(apex_x)
-                    and _is_number(apex_y)
-                    and _is_number(sigma_left)
-                    and _is_number(sigma_right)
-                ):
-                    curve = []
-                    for i in range(140):
-                        x_val = min_x + ((max_x - min_x) * float(i) / 139.0)
-                        y_val = _predict_piecewise_gaussian(
-                            float(x_val),
-                            float(apex_x),
-                            float(apex_y),
-                            float(sigma_left),
-                            float(sigma_right),
-                        )
-                        if _is_number(y_val):
-                            curve.append((float(x_val), float(y_val)))
-                    if len(curve) >= 2:
-                        for idx in range(1, len(curve)):
-                            p0 = _to_px(curve[idx - 1][0], curve[idx - 1][1])
-                            p1 = _to_px(curve[idx][0], curve[idx][1])
-                            pg.draw.line(self.screen, (255, 210, 110), p0, p1, 2)
 
         fits = [float(p["fitness"]) for p in graph_points if _is_number(p.get("fitness"))]
         fit_min = min(fits) if fits else 0.0
@@ -1901,12 +2010,8 @@ class _HubDashboard:
         x2 = self.small.render(_axis_fmt(raw_max_x, x_span), True, (150, 150, 150))
         self.screen.blit(x1, (plot.x, plot.bottom + 4))
         self.screen.blit(x2, (plot.right - x2.get_width(), plot.bottom + 4))
-        if graph_mode == "master":
-            x_label = self.small.render("evo speed", True, (155, 155, 155))
-            y_label = self.small.render("fitness", True, (155, 155, 155))
-        else:
-            x_label = self.small.render("env change rate", True, (155, 155, 155))
-            y_label = self.small.render("evo speed", True, (155, 155, 155))
+        x_label = self.small.render("env change rate", True, (155, 155, 155))
+        y_label = self.small.render("evo speed", True, (155, 155, 155))
         self.screen.blit(x_label, (plot.x + 4, plot.bottom + 22))
         self.screen.blit(y_label, (plot.x - 42, plot.y + 8))
 
@@ -2075,16 +2180,32 @@ class _HubDashboard:
         # Keep sub-row precision so smooth scroll can still resolve to index 0.
         # Rounding here can trap at index 1 when target is 0.
         scroll_i = int(self.scroll)
-        visible = rows[scroll_i : scroll_i + max_rows]
+        selected_idx = int(self.selected_row_index)
+        selected_extra_h = 188
+        visible_entries = []
+        cursor_y = base_y
+        row_cursor = scroll_i
+        while row_cursor < total_rows and cursor_y < rows_bottom:
+            extra_h = selected_extra_h if row_cursor == selected_idx else 0
+            needed_h = row_h + extra_h
+            if (cursor_y + needed_h) > rows_bottom:
+                if not visible_entries:
+                    visible_entries.append((row_cursor, cursor_y, extra_h))
+                break
+            visible_entries.append((row_cursor, cursor_y, extra_h))
+            cursor_y += needed_h
+            row_cursor += 1
+
         self._row_h = row_h
         self._rows_base_y = base_y
         self._scroll_i = scroll_i
-        self._visible_rows = len(visible)
+        self._visible_rows = len(visible_entries)
+        self._row_hitboxes = []
 
-        for idx, row in enumerate(visible):
-            row_idx = scroll_i + idx
-            ry = base_y + (idx * row_h)
-            if idx % 2 == 0:
+        for vis_i, entry in enumerate(visible_entries):
+            row_idx, ry, extra_h = entry
+            row = rows[row_idx]
+            if vis_i % 2 == 0:
                 pg.draw.rect(self.screen, (15, 17, 22), (table_rect.x + 4, ry - 1, table_rect.width - 8, row_h))
             if row_idx == int(self.selected_row_index):
                 pg.draw.rect(
@@ -2133,9 +2254,66 @@ class _HubDashboard:
                     color if c_idx == 4 else (205, 205, 205),
                 )
                 self.screen.blit(text, (cell_x, ry))
+            self._row_hitboxes.append((int(row_idx), int(ry), int(ry + row_h + max(0, extra_h))))
 
-        rows_first = 0 if total_rows == 0 else (scroll_i + 1)
-        rows_last = scroll_i + len(visible)
+            if row_idx == int(self.selected_row_index) and extra_h > 0:
+                details_rect = pg.Rect(
+                    table_rect.x + 6,
+                    ry + row_h,
+                    table_rect.width - 12,
+                    extra_h - 2,
+                )
+                pg.draw.rect(self.screen, (21, 30, 41), details_rect)
+                pg.draw.rect(self.screen, (64, 79, 97), details_rect, 1)
+                info_x = details_rect.x + 8
+                info_y = details_rect.y + 6
+                line_w = details_rect.width - 16
+                master_val = row.get("master_run_num")
+                master_text = f"master_{master_val}" if master_val is not None else "master: --"
+                step_text = str(int(row.get("step_index", 0)) + 1)
+                rate_text = (
+                    f"{float(row.get('env_rate')):.2f}"
+                    if _is_number(row.get("env_rate"))
+                    else "--"
+                )
+                species_text = (
+                    f"{float(row.get('total_species')):.1f}"
+                    if _is_number(row.get("total_species"))
+                    else (
+                        f"{float(row.get('max_species')):.1f}"
+                        if _is_number(row.get("max_species"))
+                        else "--"
+                    )
+                )
+                dur_val = row.get("duration_s")
+                dur_text = _fmt_duration(float(dur_val)) if _is_number(dur_val) else "--:--"
+                selected_lines = [
+                    f"Selected: step {step_text} | {master_text} | status: {status_text} | env: {rate_text}",
+                    f"Species: {species_text} | Duration: {dur_text}",
+                ]
+                for line in selected_lines:
+                    surf = self.small.render(
+                        _fit_text(self.small, line, line_w),
+                        True,
+                        (188, 202, 224),
+                    )
+                    self.screen.blit(surf, (info_x, info_y))
+                    info_y += 18
+
+                graph_rect = pg.Rect(
+                    details_rect.x + 8,
+                    info_y + 2,
+                    details_rect.width - 16,
+                    max(60, details_rect.bottom - (info_y + 10)),
+                )
+                self._draw_master_inline_graph(row, graph_rect)
+
+        if visible_entries:
+            rows_first = int(visible_entries[0][0]) + 1
+            rows_last = int(visible_entries[-1][0]) + 1
+        else:
+            rows_first = 0
+            rows_last = 0
         scroll_info = self.small.render(
             _fit_text(
                 self.small,
@@ -2437,6 +2615,7 @@ def main() -> None:
     hub_meta_path = hub_dir / "hub_meta.json"
     hub_summary_path = hub_dir / "hub_summary.csv"
     fit_csv_path = hub_dir / "hub_fit_equations.csv"
+    all_points_csv_path = hub_dir / "hub_all_points.csv"
     settings_snapshot = load_settings()
     try:
         master_cursor = int(settings_snapshot.get("num_tries_master", 0))
@@ -2772,6 +2951,7 @@ def main() -> None:
             _refresh_row_from_disk(row, rebuild_master_combined=rebuild_master_combined)
             if _is_number(row.get("apex_evolution_rate")) and _is_number(row.get("apex_fitness")):
                 ready_rows += 1
+        _write_hub_all_points_csv(all_points_csv_path, step_rows)
         rows_with_master = [
             row for row in step_rows if isinstance(row, dict) and row.get("master_run_num") is not None
         ]
@@ -3160,6 +3340,9 @@ def main() -> None:
         row_ref["max_frames"] = max_frames
         row_ref["apex_evolution_rate"] = apex_x
         row_ref["apex_fitness"] = apex_y
+        row_ref["fit"] = fit
+        row_ref["points"] = points
+        row_ref["point_count"] = int(len(points))
         dash_state["last_master"] = (
             "--" if master_run_num is None else f"master_{int(master_run_num)}"
         )
@@ -3192,6 +3375,7 @@ def main() -> None:
                 "points": points,
             }
         )
+        _write_hub_all_points_csv(all_points_csv_path, step_rows)
 
         species_measure = (
             float(total_species)
@@ -3272,6 +3456,7 @@ def main() -> None:
         print(f"Hub complete: {hub_dir}")
     print(f"Summary: {hub_summary_path}")
     print(f"Equations: {fit_csv_path}")
+    print(f"All datapoints: {all_points_csv_path}")
 
 
 if __name__ == "__main__":

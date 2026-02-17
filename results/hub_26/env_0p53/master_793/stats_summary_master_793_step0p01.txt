@@ -1,25 +1,29 @@
 Estimated time for 1000 iterations at 60.00 FPS: 16.67 seconds
 --- Geometric mean ---
-Pearson correlation coefficient (r): -0.7463382141594307
-P-value: 1.7356007540706258e-07
-Coefficient of determination (r^2): 0.5570207299146882
-Linear equation: y = -1354.2095 * x + 507.4539
-Linear model R^2: 0.5570
-Quadratic equation: y = 10738.0012 * x^2 + -6186.3101 * x + 935.1843
-Quadratic model R^2: 0.8587
+Pearson correlation coefficient (r): -0.7434763185825912
+P-value: 2.0496915236282472e-07
+Coefficient of determination (r^2): 0.5527570362931227
+Linear equation: y = -1350.0628 * x + 505.4402
+Linear model R^2: 0.5528
+Stitched normal equation: y=868.991*exp(-((x-0.05)^2)/(2*0.13214^2)) for x<=0.05; y=868.991*exp(-((x-0.05)^2)/(2*0.13214^2)) for x>0.05
+Stitched normal model R^2: -1.3278
+Quadratic equation: y = 10797.9071 * x^2 + -6209.1210 * x + 935.5568
+Quadratic model R^2: 0.8573
 --- Arithmetic mean ---
-Pearson correlation coefficient (r): -0.7889586284203882
-P-value: 1.0898329817614371e-08
-Coefficient of determination (r^2): 0.6224557173589802
-Linear equation: y = -2930.4367 * x + 1008.6355
-Linear model R^2: 0.6225
-Quadratic equation: y = 20628.6304 * x^2 + -12213.3204 * x + 1830.3426
-Quadratic model R^2: 0.8881
+Pearson correlation coefficient (r): -0.7875564183574635
+P-value: 1.205511710771225e-08
+Coefficient of determination (r^2): 0.620245112096036
+Linear equation: y = -2925.8047 * x + 1006.4322
+Linear model R^2: 0.6202
+Stitched normal equation: y=1413.88*exp(-((x-0.05)^2)/(2*0.123025^2)) for x<=0.05; y=1413.88*exp(-((x-0.05)^2)/(2*0.123025^2)) for x>0.05
+Stitched normal model R^2: -0.0436
+Quadratic equation: y = 20694.6920 * x^2 + -12238.4162 * x + 1830.7708
+Quadratic model R^2: 0.8875
 Parsed geometric-mean data saved to results/hub_26/env_0p53/master_793/parsedGeometricMeanSimulatinomaster_793_step0p01_Log.csv
 Parsed arithmetic-mean data saved to results/hub_26/env_0p53/master_793/parsedArithmeticMeanSimulatinomaster_793_step0p01_Log.csv
 
 --- Species Summary (from logs) ---
-Species count: 1011
+Species count: 1019
 Medium species count: 126
 Big species count: 64
 

@@ -97,6 +97,98 @@ def _r2(y: Iterable[float], y_pred: Iterable[float]) -> float:
     return 1 - ss_res / ss_tot if ss_tot != 0 else 0.0
 
 
+def _predict_piecewise_gaussian(
+    x: float, apex_x: float, apex_y: float, sigma_left: float, sigma_right: float
+) -> float:
+    if apex_y <= 0:
+        return 0.0
+    sigma = sigma_left if x <= apex_x else sigma_right
+    sigma = max(1e-9, sigma)
+    expo = -((x - apex_x) ** 2) / (2.0 * sigma * sigma)
+    return apex_y * math.exp(expo)
+
+
+def _fit_side_sigma(apex_x: float, apex_y: float, side_points: list[tuple[float, float]]) -> float | None:
+    if apex_y <= 0:
+        return None
+    num = 0.0
+    den = 0.0
+    for x, y in side_points:
+        if y <= 0 or y >= apex_y:
+            continue
+        d2 = (x - apex_x) ** 2
+        if d2 <= 0:
+            continue
+        try:
+            lr = math.log(y / apex_y)
+        except Exception:
+            continue
+        if not math.isfinite(lr):
+            continue
+        num += d2 * lr
+        den += d2 * d2
+    if den <= 0:
+        return None
+    slope = num / den
+    if slope >= 0:
+        return None
+    sigma_sq = -1.0 / (2.0 * slope)
+    if sigma_sq <= 0 or not math.isfinite(sigma_sq):
+        return None
+    return math.sqrt(sigma_sq)
+
+
+def _fit_stitched_gaussian_equation(points: list[tuple[float, float]]) -> dict | None:
+    if len(points) < 3:
+        return None
+    apex_x, apex_y = max(points, key=lambda p: p[1])
+    if apex_y <= 0:
+        return None
+
+    left = [(x, y) for (x, y) in points if x <= apex_x]
+    right = [(x, y) for (x, y) in points if x >= apex_x]
+    sigma_left = _fit_side_sigma(apex_x, apex_y, left)
+    sigma_right = _fit_side_sigma(apex_x, apex_y, right)
+    if sigma_left is None and sigma_right is None:
+        sigma_left = 0.05
+        sigma_right = 0.05
+    elif sigma_left is None:
+        sigma_left = sigma_right
+    elif sigma_right is None:
+        sigma_right = sigma_left
+
+    assert sigma_left is not None
+    assert sigma_right is not None
+    if sigma_left <= 0 or sigma_right <= 0:
+        return None
+
+    ys = [float(y) for _, y in points]
+    y_mean = sum(ys) / len(ys)
+    ss_tot = sum((y - y_mean) ** 2 for y in ys)
+    ss_res = 0.0
+    for x, y in points:
+        pred = _predict_piecewise_gaussian(
+            float(x), float(apex_x), float(apex_y), float(sigma_left), float(sigma_right)
+        )
+        ss_res += (float(y) - pred) ** 2
+    if ss_tot > 0:
+        r2 = 1.0 - (ss_res / ss_tot)
+    else:
+        r2 = 0.0
+
+    return {
+        "apex_x": float(apex_x),
+        "apex_y": float(apex_y),
+        "sigma_left": float(sigma_left),
+        "sigma_right": float(sigma_right),
+        "r2": float(r2),
+        "equation": (
+            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_left:.6g}^2)) for x<={apex_x:.6g}; "
+            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_right:.6g}^2)) for x>{apex_x:.6g}"
+        ),
+    }
+
+
 def parse_run(
     results_dir: Path,
     run_num: int,
@@ -221,6 +313,8 @@ def parse_run(
         if not quiet:
             print(line)
 
+    is_master_summary = str(run_num).startswith("master_")
+
     def _print_stats(label: str, x: Iterable[float], y: Iterable[float]) -> None:
         x_list = list(x)
         y_list = list(y)
@@ -246,6 +340,14 @@ def parse_run(
         _add_line(f"Linear equation: y = {slope:.4f} * x + {intercept:.4f}")
         y_pred_linear = [slope * xi + intercept for xi in x_list]
         _add_line(f"Linear model R^2: {_r2(y_list, y_pred_linear):.4f}")
+
+        if is_master_summary:
+            stitched_fit = _fit_stitched_gaussian_equation(list(zip(x_list, y_list)))
+            if stitched_fit is not None:
+                _add_line(f"Stitched normal equation: {stitched_fit['equation']}")
+                _add_line(f"Stitched normal model R^2: {float(stitched_fit['r2']):.4f}")
+            else:
+                _add_line("Stitched normal fit: not enough usable data.")
 
         if _HAS_NUMPY:
             coeffs = np.polyfit(np.array(x_list), np.array(y_list), 2)

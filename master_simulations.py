@@ -39,6 +39,7 @@ _DOT_ALPHA = 110
 _DOT_ALPHA_HI = 220
 _DOT_ALPHA_DIM = 60
 _DOT_RADIUS = 3
+_EQUATION_FONT_CACHE = {}
 _FPS_MODE_CAPPED = 0
 _FPS_MODE_UNCAPPED = 1
 _FPS_MODE_FULL_THROTTLE = 2
@@ -2880,8 +2881,43 @@ def _draw_arithmetic_chart(
 
     max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
     min_label = font.render(f"min {raw_min_y:.2f}", True, (160, 160, 160))
-    surface.blit(max_label, (plot_left, rect.y + 2))
-    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
+    gaussian_fit = _fit_stitched_gaussian_equation(points_sorted)
+    if gaussian_fit is not None:
+        curve_points = []
+        for i in range(120):
+            x_val = min_x + ((max_x - min_x) * float(i) / 119.0)
+            y_val = _predict_piecewise_gaussian(
+                float(x_val),
+                float(gaussian_fit["apex_x"]),
+                float(gaussian_fit["apex_y"]),
+                float(gaussian_fit["sigma_left"]),
+                float(gaussian_fit["sigma_right"]),
+            )
+            if _is_number(y_val):
+                px, py = _scale_point(float(x_val), float(y_val))
+                curve_points.append((px + plot_left, py + plot_top))
+        if len(curve_points) >= 2:
+            pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
+
+        eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
+        params_text = (
+            f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
+            f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
+            f"R^2={float(gaussian_fit['r2']):.3f}"
+        )
+        eq_font = _equation_font(font)
+        left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
+        max_w = max(48, rect.right - 6 - left_reserved)
+        eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
+        params_text = _fit_text_to_width(eq_font, params_text, max_w)
+        eq = eq_font.render(eq_text, True, (170, 170, 170))
+        params = eq_font.render(params_text, True, (170, 170, 170))
+        eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
+        eq_y = rect.y + 2
+        params_x = max(left_reserved, rect.right - params.get_width() - 6)
+        params_y = eq_y + eq.get_height() + 1
+        surface.blit(eq, (eq_x, eq_y))
+        surface.blit(params, (params_x, params_y))
 
     if selected_point and selected_point.get("scope") == "sim":
         if selected_idx is None or selected_point.get("sim_index") == selected_idx:
@@ -2900,6 +2936,9 @@ def _draw_arithmetic_chart(
                     f"x:{x:.3f} y:{y:.2f}",
                     (px + 6, py - 6),
                 )
+    # Keep labels in front of dots/fit lines/selection markers.
+    surface.blit(max_label, (plot_left, rect.y + 2))
+    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
 
 
 def _draw_multi_fps_chart(
@@ -3034,8 +3073,43 @@ def _draw_multi_arithmetic_chart(
 
     max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
     min_label = font.render(f"min {raw_min_y:.2f}", True, (160, 160, 160))
-    surface.blit(max_label, (plot_left, rect.y + 2))
-    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
+    gaussian_fit = _fit_stitched_gaussian_equation(all_points)
+    if gaussian_fit is not None:
+        curve_points = []
+        for i in range(120):
+            x_val = min_x + ((max_x - min_x) * float(i) / 119.0)
+            y_val = _predict_piecewise_gaussian(
+                float(x_val),
+                float(gaussian_fit["apex_x"]),
+                float(gaussian_fit["apex_y"]),
+                float(gaussian_fit["sigma_left"]),
+                float(gaussian_fit["sigma_right"]),
+            )
+            if _is_number(y_val):
+                px, py = _scale_point(float(x_val), float(y_val))
+                curve_points.append((px + plot_left, py + plot_top))
+        if len(curve_points) >= 2:
+            pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
+
+        eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
+        params_text = (
+            f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
+            f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
+            f"R^2={float(gaussian_fit['r2']):.3f}"
+        )
+        eq_font = _equation_font(font)
+        left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
+        max_w = max(48, rect.right - 6 - left_reserved)
+        eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
+        params_text = _fit_text_to_width(eq_font, params_text, max_w)
+        eq = eq_font.render(eq_text, True, (170, 170, 170))
+        params = eq_font.render(params_text, True, (170, 170, 170))
+        eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
+        eq_y = rect.y + 2
+        params_x = max(left_reserved, rect.right - params.get_width() - 6)
+        params_y = eq_y + eq.get_height() + 1
+        surface.blit(eq, (eq_x, eq_y))
+        surface.blit(params, (params_x, params_y))
 
     if selected_point and selected_point.get("scope") == "global":
         x = selected_point.get("x")
@@ -3057,6 +3131,164 @@ def _draw_multi_arithmetic_chart(
                 label,
                 (px + 6, py - 6),
             )
+    # Keep labels in front of dots/fit lines/selection markers.
+    surface.blit(max_label, (plot_left, rect.y + 2))
+    surface.blit(min_label, (plot_left, rect.y + rect.height - min_label.get_height() - 2))
+
+
+def _predict_piecewise_gaussian(
+    x: float, apex_x: float, apex_y: float, sigma_left: float, sigma_right: float
+) -> float:
+    if apex_y <= 0:
+        return 0.0
+    sigma = sigma_left if x <= apex_x else sigma_right
+    sigma = max(1e-9, sigma)
+    expo = -((x - apex_x) ** 2) / (2.0 * sigma * sigma)
+    return apex_y * math.exp(expo)
+
+
+def _equation_font(base_font):
+    try:
+        base_h = int(base_font.get_height())
+    except Exception:
+        return base_font
+    target_h = max(8, int(round(float(base_h) / 1.5)))
+    cached = _EQUATION_FONT_CACHE.get(target_h)
+    if cached is not None:
+        return cached
+    try:
+        font = pygame.font.SysFont("Consolas", target_h)
+    except Exception:
+        font = base_font
+    _EQUATION_FONT_CACHE[target_h] = font
+    return font
+
+
+def _fit_text_to_width(font, text: str, max_width: int) -> str:
+    raw = str(text) if text is not None else ""
+    if max_width <= 0:
+        return ""
+    if font.size(raw)[0] <= max_width:
+        return raw
+    ellipsis = "..."
+    if font.size(ellipsis)[0] >= max_width:
+        return ""
+    lo = 0
+    hi = len(raw)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = raw[:mid] + ellipsis
+        if font.size(candidate)[0] <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return raw[:lo] + ellipsis
+
+
+def _fit_side_sigma(apex_x: float, apex_y: float, side_points: list[tuple[float, float]]) -> float | None:
+    if apex_y <= 0:
+        return None
+    num = 0.0
+    den = 0.0
+    for x, y in side_points:
+        if y <= 0 or y >= apex_y:
+            continue
+        d2 = (x - apex_x) ** 2
+        if d2 <= 0:
+            continue
+        try:
+            lr = math.log(y / apex_y)
+        except Exception:
+            continue
+        if not math.isfinite(lr):
+            continue
+        num += d2 * lr
+        den += d2 * d2
+    if den <= 0:
+        return None
+    slope = num / den
+    if slope >= 0:
+        return None
+    sigma_sq = -1.0 / (2.0 * slope)
+    if sigma_sq <= 0 or not math.isfinite(sigma_sq):
+        return None
+    return math.sqrt(sigma_sq)
+
+
+def _fit_stitched_gaussian_equation(points: list[tuple[float, float]]) -> dict | None:
+    if len(points) < 3:
+        return None
+    apex_x, apex_y = max(points, key=lambda p: p[1])
+    if apex_y <= 0:
+        return None
+
+    left = [(x, y) for (x, y) in points if x <= apex_x]
+    right = [(x, y) for (x, y) in points if x >= apex_x]
+    sigma_left = _fit_side_sigma(apex_x, apex_y, left)
+    sigma_right = _fit_side_sigma(apex_x, apex_y, right)
+    if sigma_left is None and sigma_right is None:
+        sigma_left = 0.05
+        sigma_right = 0.05
+    elif sigma_left is None:
+        sigma_left = sigma_right
+    elif sigma_right is None:
+        sigma_right = sigma_left
+
+    assert sigma_left is not None
+    assert sigma_right is not None
+    if sigma_left <= 0 or sigma_right <= 0:
+        return None
+
+    ys = [float(y) for _, y in points]
+    y_mean = sum(ys) / len(ys)
+    ss_tot = sum((y - y_mean) ** 2 for y in ys)
+    ss_res = 0.0
+    for x, y in points:
+        pred = _predict_piecewise_gaussian(
+            float(x), float(apex_x), float(apex_y), float(sigma_left), float(sigma_right)
+        )
+        ss_res += (float(y) - pred) ** 2
+    if ss_tot > 0:
+        r2 = 1.0 - (ss_res / ss_tot)
+    else:
+        r2 = 0.0
+    return {
+        "apex_x": float(apex_x),
+        "apex_y": float(apex_y),
+        "sigma_left": float(sigma_left),
+        "sigma_right": float(sigma_right),
+        "r2": float(r2),
+        "equation": (
+            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_left:.6g}^2)) for x<={apex_x:.6g}; "
+            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_right:.6g}^2)) for x>{apex_x:.6g}"
+        ),
+    }
+
+
+def _linear_fit_equation(points: list[tuple[float, float]]):
+    if len(points) < 2:
+        return None
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    n = float(len(xs))
+    sx = sum(xs)
+    sy = sum(ys)
+    sxx = sum(x * x for x in xs)
+    sxy = sum(x * y for x, y in zip(xs, ys))
+    den = (n * sxx) - (sx * sx)
+    if abs(den) < 1e-12:
+        return None
+    slope = ((n * sxy) - (sx * sy)) / den
+    intercept = (sy - (slope * sx)) / n
+
+    y_mean = sy / n
+    ss_tot = sum((y - y_mean) ** 2 for y in ys)
+    if ss_tot <= 0:
+        r2 = 0.0
+    else:
+        ss_res = sum((y - ((slope * x) + intercept)) ** 2 for x, y in zip(xs, ys))
+        r2 = 1.0 - (ss_res / ss_tot)
+    return float(slope), float(intercept), float(r2)
 
 
 def _draw_value_label(surface, font, rect: pygame.Rect, text: str, pos: tuple[int, int]) -> None:
