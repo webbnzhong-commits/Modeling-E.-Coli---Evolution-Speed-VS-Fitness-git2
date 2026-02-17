@@ -267,6 +267,8 @@ while running:
             enviormentChangeRate = 0.5
         if enviormentChangeRate > 5:
             enviormentChangeRate = 5'''
+    
+    
 
     frame_count += 1
     if display_mode == 2:

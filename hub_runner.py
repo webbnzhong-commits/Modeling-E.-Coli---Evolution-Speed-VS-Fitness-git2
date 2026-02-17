@@ -224,7 +224,7 @@ def _ensure_csv_with_header(path: Path, header_line: str) -> None:
         pass
 
 
-def _write_hub_all_points_csv(path: Path, rows: list[dict]) -> None:
+def _hub_point_triples_from_rows(rows: list[dict]) -> list[tuple[float, float, float]]:
     flattened: list[tuple[float, float, float]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -243,12 +243,41 @@ def _write_hub_all_points_csv(path: Path, rows: list[dict]) -> None:
                 continue
             flattened.append((env, float(evo_val), float(fit_val)))
     flattened.sort(key=lambda item: (item[0], item[1], item[2]))
+    return flattened
+
+
+def _write_hub_all_points_csv(path: Path, rows: list[dict]) -> None:
+    flattened = _hub_point_triples_from_rows(rows)
     try:
         with open(path, "w", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(["evo rate", "enviormentChangeRate", "fitness"])
             for env, evo, fitness in flattened:
                 writer.writerow([evo, env, fitness])
+    except Exception:
+        pass
+
+
+def _fitness_weight_count(fitness: float) -> int:
+    try:
+        value = float(fitness)
+    except Exception:
+        return 0
+    if value <= 0:
+        return 0
+    return max(1, int(round(value)))
+
+
+def _write_hub_all_points_weighted_csv(path: Path, rows: list[dict]) -> None:
+    flattened = _hub_point_triples_from_rows(rows)
+    try:
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["evo rate", "enviormentChangeRate", "fitness"])
+            for env, evo, fitness in flattened:
+                copies = _fitness_weight_count(fitness)
+                for _ in range(copies):
+                    writer.writerow([evo, env, fitness])
     except Exception:
         pass
 
@@ -1013,7 +1042,7 @@ def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
     # Fitness-dependent transparency: lower fitness is more transparent.
     for idx, n in enumerate(norms):
         rgba[idx][3] = 0.25 + (0.75 * float(n))
-    sc = ax.scatter(
+    ax.scatter(
         plot_x,
         plot_y,
         s=plot_sizes,
@@ -1181,6 +1210,454 @@ def _linear_fit(xs: list[float], ys: list[float]):
     slope = ((n * sxy) - (sx * sy)) / den
     intercept = (sy - (slope * sx)) / n
     return slope, intercept
+
+
+def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    n = len(vector)
+    if n <= 0 or len(matrix) != n:
+        return None
+    aug = []
+    for row_i in range(n):
+        row = matrix[row_i]
+        if len(row) != n:
+            return None
+        aug.append([float(v) for v in row] + [float(vector[row_i])])
+
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        if abs(aug[pivot][col]) < 1e-12:
+            return None
+        if pivot != col:
+            aug[col], aug[pivot] = aug[pivot], aug[col]
+        pivot_val = aug[col][col]
+        for j in range(col, n + 1):
+            aug[col][j] /= pivot_val
+        for r in range(n):
+            if r == col:
+                continue
+            factor = aug[r][col]
+            if abs(factor) < 1e-12:
+                continue
+            for j in range(col, n + 1):
+                aug[r][j] -= factor * aug[col][j]
+    return [aug[i][n] for i in range(n)]
+
+
+def _eval_polynomial(coeffs: list[float], x: float) -> float | None:
+    try:
+        x_val = float(x)
+    except Exception:
+        return None
+    total = 0.0
+    x_pow = 1.0
+    for coeff in coeffs:
+        try:
+            total += float(coeff) * x_pow
+        except Exception:
+            return None
+        x_pow *= x_val
+    return total if math.isfinite(total) else None
+
+
+def _format_polynomial_equation(coeffs: list[float]) -> str:
+    terms = []
+    for power, coeff in enumerate(coeffs):
+        try:
+            c = float(coeff)
+        except Exception:
+            continue
+        if (not math.isfinite(c)) or abs(c) < 1e-12:
+            continue
+        mag = abs(c)
+        if power == 0:
+            term = f"{mag:.6g}"
+        elif power == 1:
+            term = f"{mag:.6g}*x"
+        else:
+            term = f"{mag:.6g}*x^{power}"
+        if not terms:
+            terms.append(term if c >= 0 else f"-{term}")
+        else:
+            sign = "+" if c >= 0 else "-"
+            terms.append(f" {sign} {term}")
+    if not terms:
+        return "y=0"
+    return "y=" + "".join(terms)
+
+
+def _weighted_r2(
+    samples: list[tuple[float, float, float]],
+    predict_fn,
+) -> float | None:
+    if len(samples) < 2:
+        return None
+    sum_w = 0.0
+    sum_y = 0.0
+    for _, y_val, w_val in samples:
+        w = float(w_val)
+        if w <= 0 or (not math.isfinite(w)):
+            continue
+        y = float(y_val)
+        if not math.isfinite(y):
+            continue
+        sum_w += w
+        sum_y += w * y
+    if sum_w <= 0:
+        return None
+    mean_y = sum_y / sum_w
+    ss_tot = 0.0
+    ss_res = 0.0
+    for x_val, y_val, w_val in samples:
+        w = float(w_val)
+        if w <= 0 or (not math.isfinite(w)):
+            continue
+        y = float(y_val)
+        if not math.isfinite(y):
+            continue
+        pred = predict_fn(float(x_val))
+        if pred is None:
+            return None
+        try:
+            yp = float(pred)
+        except Exception:
+            return None
+        if not math.isfinite(yp):
+            return None
+        diff = y - yp
+        ss_res += w * (diff * diff)
+        d_tot = y - mean_y
+        ss_tot += w * (d_tot * d_tot)
+    if ss_tot <= 1e-12:
+        return None
+    r2 = 1.0 - (ss_res / ss_tot)
+    return float(r2) if math.isfinite(r2) else None
+
+
+def _fit_weighted_polynomial_model(
+    samples: list[tuple[float, float, float]],
+    degree: int,
+    model_name: str,
+) -> dict | None:
+    if degree < 1 or len(samples) < (degree + 1):
+        return None
+    m = degree + 1
+    matrix = [[0.0 for _ in range(m)] for _ in range(m)]
+    vector = [0.0 for _ in range(m)]
+    for x_raw, y_raw, w_raw in samples:
+        x = float(x_raw)
+        y = float(y_raw)
+        w = float(w_raw)
+        if (not math.isfinite(x)) or (not math.isfinite(y)) or (not math.isfinite(w)) or w <= 0:
+            continue
+        max_pow = 2 * degree
+        x_pows = [1.0]
+        for _ in range(max_pow):
+            x_pows.append(x_pows[-1] * x)
+        for r in range(m):
+            for c in range(m):
+                matrix[r][c] += w * x_pows[r + c]
+            vector[r] += w * y * x_pows[r]
+    coeffs = _solve_linear_system(matrix, vector)
+    if not coeffs:
+        return None
+
+    def _predict(x_value: float) -> float | None:
+        return _eval_polynomial(coeffs, x_value)
+
+    r2 = _weighted_r2(samples, _predict)
+    sum_w = sum(float(w) for _, _, w in samples if _is_number(w) and float(w) > 0)
+    return {
+        "model": str(model_name),
+        "r2": r2,
+        "equation": _format_polynomial_equation(coeffs),
+        "point_count": int(len(samples)),
+        "weighted_point_count": int(round(sum_w)),
+        "params": {"coeffs": [float(c) for c in coeffs]},
+    }
+
+
+def _fit_weighted_log_model(samples: list[tuple[float, float, float]]) -> dict | None:
+    usable = []
+    for x_raw, y_raw, w_raw in samples:
+        x = float(x_raw)
+        y = float(y_raw)
+        w = float(w_raw)
+        if x <= 0 or w <= 0:
+            continue
+        if (not math.isfinite(x)) or (not math.isfinite(y)) or (not math.isfinite(w)):
+            continue
+        usable.append((math.log(x), y, w))
+    if len(usable) < 2:
+        return None
+    linear = _fit_weighted_polynomial_model(usable, degree=1, model_name="log")
+    if not isinstance(linear, dict):
+        return None
+    params = linear.get("params", {})
+    coeffs = params.get("coeffs") if isinstance(params, dict) else None
+    if not isinstance(coeffs, list) or len(coeffs) < 2:
+        return None
+    b = float(coeffs[0])
+    a = float(coeffs[1])
+    base_samples = [(x, y, w) for x, y, w in samples if x > 0 and w > 0]
+
+    def _predict(x_value: float) -> float | None:
+        if x_value <= 0:
+            return None
+        y_hat = (a * math.log(x_value)) + b
+        return y_hat if math.isfinite(y_hat) else None
+
+    r2 = _weighted_r2(base_samples, _predict)
+    b_sign = "+" if b >= 0 else "-"
+    equation = f"y={a:.6g}*ln(x) {b_sign} {abs(b):.6g}"
+    sum_w = sum(float(w) for _, _, w in base_samples if _is_number(w) and float(w) > 0)
+    return {
+        "model": "log",
+        "r2": r2,
+        "equation": equation,
+        "point_count": int(len(base_samples)),
+        "weighted_point_count": int(round(sum_w)),
+        "params": {"a": a, "b": b},
+    }
+
+
+def _fit_weighted_bell_model(samples: list[tuple[float, float, float]]) -> dict | None:
+    usable = []
+    for x_raw, y_raw, w_raw in samples:
+        x = float(x_raw)
+        y = float(y_raw)
+        w = float(w_raw)
+        if y <= 0 or w <= 0:
+            continue
+        if (not math.isfinite(x)) or (not math.isfinite(y)) or (not math.isfinite(w)):
+            continue
+        usable.append((x, y, w))
+    if len(usable) < 3:
+        return None
+    transformed = [(x, math.log(y), w) for x, y, w in usable]
+    quad = _fit_weighted_polynomial_model(transformed, degree=2, model_name="bell")
+    if not isinstance(quad, dict):
+        return None
+    params = quad.get("params", {})
+    coeffs = params.get("coeffs") if isinstance(params, dict) else None
+    if not isinstance(coeffs, list) or len(coeffs) < 3:
+        return None
+    c0 = float(coeffs[0])
+    c1 = float(coeffs[1])
+    c2 = float(coeffs[2])
+    if c2 >= -1e-12:
+        return None
+    sigma_sq = -1.0 / (2.0 * c2)
+    if sigma_sq <= 0 or (not math.isfinite(sigma_sq)):
+        return None
+    sigma = math.sqrt(sigma_sq)
+    mu = c1 * sigma_sq
+    amp = math.exp(c0 + ((mu * mu) / (2.0 * sigma_sq)))
+    if (not math.isfinite(amp)) or amp <= 0:
+        return None
+
+    def _predict(x_value: float) -> float | None:
+        expo = -((x_value - mu) ** 2) / (2.0 * sigma_sq)
+        y_hat = amp * math.exp(expo)
+        return y_hat if math.isfinite(y_hat) else None
+
+    r2 = _weighted_r2(usable, _predict)
+    equation = f"y={amp:.6g}*exp(-((x-{mu:.6g})^2)/(2*{sigma:.6g}^2))"
+    sum_w = sum(float(w) for _, _, w in usable if _is_number(w) and float(w) > 0)
+    return {
+        "model": "bell_curve",
+        "r2": r2,
+        "equation": equation,
+        "point_count": int(len(usable)),
+        "weighted_point_count": int(round(sum_w)),
+        "params": {"amp": amp, "mu": mu, "sigma": sigma},
+    }
+
+
+def _weighted_hub_samples_from_rows(rows: list[dict]) -> list[tuple[float, float, float]]:
+    samples: list[tuple[float, float, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        env_rate = row.get("env_rate")
+        points = row.get("points")
+        if (not _is_number(env_rate)) or (not isinstance(points, list)):
+            continue
+        x = float(env_rate)
+        for point in points:
+            if not isinstance(point, (tuple, list)) or len(point) < 2:
+                continue
+            evo_val = point[0]
+            fit_val = point[1]
+            if not (_is_number(evo_val) and _is_number(fit_val)):
+                continue
+            weight = _fitness_weight_count(float(fit_val))
+            if weight <= 0:
+                continue
+            samples.append((x, float(evo_val), float(weight)))
+    return samples
+
+
+def _weighted_hub_samples_from_graph_points(
+    graph_points: list[dict],
+) -> list[tuple[float, float, float]]:
+    samples: list[tuple[float, float, float]] = []
+    for point in graph_points:
+        if not isinstance(point, dict):
+            continue
+        x_val = point.get("x")
+        y_val = point.get("y")
+        fit_val = point.get("fitness")
+        if not (_is_number(x_val) and _is_number(y_val) and _is_number(fit_val)):
+            continue
+        weight = _fitness_weight_count(float(fit_val))
+        if weight <= 0:
+            continue
+        samples.append((float(x_val), float(y_val), float(weight)))
+    return samples
+
+
+def _fit_hub_models_from_weighted_samples(
+    samples: list[tuple[float, float, float]],
+) -> dict:
+    models = []
+    linear = _fit_weighted_polynomial_model(samples, degree=1, model_name="linear")
+    if isinstance(linear, dict):
+        models.append(linear)
+    quadratic = _fit_weighted_polynomial_model(samples, degree=2, model_name="quadratic")
+    if isinstance(quadratic, dict):
+        models.append(quadratic)
+    polynomial = _fit_weighted_polynomial_model(samples, degree=3, model_name="polynomial")
+    if isinstance(polynomial, dict):
+        models.append(polynomial)
+    log_model = _fit_weighted_log_model(samples)
+    if isinstance(log_model, dict):
+        models.append(log_model)
+    bell_model = _fit_weighted_bell_model(samples)
+    if isinstance(bell_model, dict):
+        models.append(bell_model)
+    valid = [
+        model
+        for model in models
+        if _is_number(model.get("r2"))
+    ]
+    best_model = min(valid, key=lambda item: float(item["r2"])) if valid else None
+    total_weighted = int(round(sum(float(w) for _, _, w in samples if _is_number(w) and float(w) > 0)))
+    return {
+        "selection_rule": "lowest_r2",
+        "point_count": int(len(samples)),
+        "weighted_point_count": int(total_weighted),
+        "models": models,
+        "best_model": best_model,
+    }
+
+
+def _fit_hub_models_from_rows(rows: list[dict]) -> dict:
+    return _fit_hub_models_from_weighted_samples(_weighted_hub_samples_from_rows(rows))
+
+
+def _fit_hub_models_from_graph_points(graph_points: list[dict]) -> dict:
+    return _fit_hub_models_from_weighted_samples(_weighted_hub_samples_from_graph_points(graph_points))
+
+
+def _eval_hub_model(model: dict, x_value: float) -> float | None:
+    if not isinstance(model, dict) or (not _is_number(x_value)):
+        return None
+    model_name = str(model.get("model", ""))
+    params = model.get("params", {})
+    if not isinstance(params, dict):
+        params = {}
+    x = float(x_value)
+    if model_name in ("linear", "quadratic", "polynomial"):
+        coeffs = params.get("coeffs")
+        if not isinstance(coeffs, list):
+            return None
+        return _eval_polynomial([float(c) for c in coeffs], x)
+    if model_name == "log":
+        if x <= 0:
+            return None
+        a = params.get("a")
+        b = params.get("b")
+        if not (_is_number(a) and _is_number(b)):
+            return None
+        y = (float(a) * math.log(x)) + float(b)
+        return y if math.isfinite(y) else None
+    if model_name == "bell_curve":
+        amp = params.get("amp")
+        mu = params.get("mu")
+        sigma = params.get("sigma")
+        if not (_is_number(amp) and _is_number(mu) and _is_number(sigma)):
+            return None
+        s = float(sigma)
+        if s <= 0:
+            return None
+        expo = -((x - float(mu)) ** 2) / (2.0 * s * s)
+        y = float(amp) * math.exp(expo)
+        return y if math.isfinite(y) else None
+    return None
+
+
+def _write_hub_stats_csv(path: Path, rows: list[dict]) -> dict:
+    report = _fit_hub_models_from_rows(rows)
+    best = report.get("best_model")
+    best_model_name = str(best.get("model")) if isinstance(best, dict) else ""
+    best_r2 = best.get("r2") if isinstance(best, dict) else None
+    best_eq = str(best.get("equation", "")) if isinstance(best, dict) else ""
+    try:
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "selected",
+                    "selection rule",
+                    "model",
+                    "r2",
+                    "equation",
+                    "points used",
+                    "weighted copies used",
+                    "total points",
+                    "total weighted copies",
+                    "best model",
+                    "best r2",
+                    "best equation",
+                ]
+            )
+            models = report.get("models", [])
+            if isinstance(models, list):
+                for model in models:
+                    if not isinstance(model, dict):
+                        continue
+                    model_name = str(model.get("model", ""))
+                    writer.writerow(
+                        [
+                            ("yes" if model_name == best_model_name else ""),
+                            str(report.get("selection_rule", "lowest_r2")),
+                            model_name,
+                            (
+                                float(model["r2"])
+                                if _is_number(model.get("r2"))
+                                else ""
+                            ),
+                            str(model.get("equation", "")),
+                            (
+                                int(model["point_count"])
+                                if isinstance(model.get("point_count"), int)
+                                else ""
+                            ),
+                            (
+                                int(model["weighted_point_count"])
+                                if isinstance(model.get("weighted_point_count"), int)
+                                else ""
+                            ),
+                            int(report.get("point_count", 0)),
+                            int(report.get("weighted_point_count", 0)),
+                            best_model_name,
+                            (float(best_r2) if _is_number(best_r2) else ""),
+                            best_eq,
+                        ]
+                    )
+    except Exception:
+        pass
+    return report
 
 
 def _project_metric(rows: list[dict], value_key: str) -> list[dict]:
@@ -1381,6 +1858,8 @@ class _HubDashboard:
         self._graph_plot_rect = None
         self._graph_dots = []
         self._selected_graph_point = None
+        self._hub_fit_cache_key = None
+        self._hub_fit_cache_report = None
         self._update_button_rect = None
         self._reopen_button_rect = None
         self._close_button_rect = None
@@ -1475,6 +1954,43 @@ class _HubDashboard:
                 best_idx = int(idx)
                 best_delta = delta
         return best_idx
+
+    def _hub_fit_report(self, graph_points: list[dict]) -> dict:
+        valid_count = 0
+        sum_x = 0.0
+        sum_y = 0.0
+        sum_fit = 0.0
+        sum_w = 0.0
+        for point in graph_points:
+            if not isinstance(point, dict):
+                continue
+            x_val = point.get("x")
+            y_val = point.get("y")
+            fit_val = point.get("fitness")
+            if not (_is_number(x_val) and _is_number(y_val) and _is_number(fit_val)):
+                continue
+            weight = _fitness_weight_count(float(fit_val))
+            if weight <= 0:
+                continue
+            valid_count += 1
+            sum_x += float(x_val)
+            sum_y += float(y_val)
+            sum_fit += float(fit_val)
+            sum_w += float(weight)
+        signature = (
+            int(len(graph_points)),
+            int(valid_count),
+            round(sum_x, 6),
+            round(sum_y, 6),
+            round(sum_fit, 6),
+            round(sum_w, 3),
+        )
+        if signature == self._hub_fit_cache_key and isinstance(self._hub_fit_cache_report, dict):
+            return self._hub_fit_cache_report
+        report = _fit_hub_models_from_graph_points(graph_points)
+        self._hub_fit_cache_key = signature
+        self._hub_fit_cache_report = report
+        return report
 
     def _trigger_reopen(self) -> None:
         if not callable(self.reopen_callback):
@@ -1823,6 +2339,8 @@ class _HubDashboard:
                         **point_meta,
                     }
                 )
+        fit_report = self._hub_fit_report(graph_points)
+        best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
 
         selected = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
         if selected is not None and str(selected.get("graph_mode", "hub")) != "hub":
@@ -1862,6 +2380,16 @@ class _HubDashboard:
         else:
             line_2 = "Click a dot to inspect point details"
             info_color = (150, 160, 170)
+        if isinstance(best_fit, dict) and _is_number(best_fit.get("r2")):
+            model_name = str(best_fit.get("model", ""))
+            equation = str(best_fit.get("equation", ""))
+            line_3 = (
+                f"Best fit (lowest R^2): {model_name} | R^2={float(best_fit['r2']):.4f} | {equation}"
+            )
+            fit_info_color = (234, 210, 147)
+        else:
+            line_3 = "Best fit (lowest R^2): not enough data"
+            fit_info_color = (165, 165, 165)
 
         header_x = rect.x + 10
         header_w = max(0, rect.width - 20)
@@ -1878,6 +2406,12 @@ class _HubDashboard:
                 info_color,
             )
             self.screen.blit(line_2_surf, (header_x, rect.y + 28))
+            line_3_surf = self.small.render(
+                _fit_text(self.small, line_3, header_w),
+                True,
+                fit_info_color,
+            )
+            self.screen.blit(line_3_surf, (header_x, rect.y + 46))
 
         xs = [float(p["x"]) for p in graph_points if _is_number(p.get("x"))]
         ys = [float(p["y"]) for p in graph_points if _is_number(p.get("y"))]
@@ -1913,7 +2447,7 @@ class _HubDashboard:
             min_y = raw_min_y - y_pad
             max_y = raw_max_y + y_pad
 
-        plot = pg.Rect(rect.x + 46, rect.y + 52, rect.width - 62, rect.height - 76)
+        plot = pg.Rect(rect.x + 46, rect.y + 70, rect.width - 62, rect.height - 94)
         self._graph_plot_rect = plot
         pg.draw.rect(self.screen, (16, 18, 23), plot)
         pg.draw.rect(self.screen, (64, 68, 79), plot, 1)
@@ -1939,6 +2473,24 @@ class _HubDashboard:
             if not _is_number(value):
                 return 0.35
             return max(0.0, min(1.0, (float(value) - fit_min) / fit_denom))
+
+        if isinstance(best_fit, dict):
+            y_span = max(1e-9, max_y - min_y)
+            sample = []
+            for idx in range(160):
+                x_val = min_x + ((max_x - min_x) * float(idx) / 159.0)
+                y_val = _eval_hub_model(best_fit, x_val)
+                if not _is_number(y_val):
+                    continue
+                y_float = float(y_val)
+                if y_float < (min_y - (2.0 * y_span)) or y_float > (max_y + (2.0 * y_span)):
+                    continue
+                sample.append((x_val, y_float))
+            if len(sample) >= 2:
+                for idx in range(1, len(sample)):
+                    p0 = _to_px(sample[idx - 1][0], sample[idx - 1][1])
+                    p1 = _to_px(sample[idx][0], sample[idx][1])
+                    pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
 
         selected_found = False
         for point in graph_points:
@@ -2382,6 +2934,7 @@ class _HubDashboard:
             f"Graph-ready rows: {state.get('graph_ready_rows', 0)} / {len(rows)}",
             f"Summary file: {state.get('summary_path', '')}",
             f"Fit file: {state.get('fit_path', '')}",
+            f"Hub stats file: {state.get('hub_stats_path', '')}",
             "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Close Hub(X) FPS(F)",
             "Graph: selecting a row shows that master graph; click dots to inspect",
         ]
@@ -2615,7 +3168,9 @@ def main() -> None:
     hub_meta_path = hub_dir / "hub_meta.json"
     hub_summary_path = hub_dir / "hub_summary.csv"
     fit_csv_path = hub_dir / "hub_fit_equations.csv"
+    hub_stats_path = hub_dir / "hub_stats.csv"
     all_points_csv_path = hub_dir / "hub_all_points.csv"
+    weighted_all_points_csv_path = hub_dir / "hub_all_points_weighted_by_fitness.csv"
     settings_snapshot = load_settings()
     try:
         master_cursor = int(settings_snapshot.get("num_tries_master", 0))
@@ -2952,6 +3507,8 @@ def main() -> None:
             if _is_number(row.get("apex_evolution_rate")) and _is_number(row.get("apex_fitness")):
                 ready_rows += 1
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
+        _write_hub_all_points_weighted_csv(weighted_all_points_csv_path, step_rows)
+        _write_hub_stats_csv(hub_stats_path, step_rows)
         rows_with_master = [
             row for row in step_rows if isinstance(row, dict) and row.get("master_run_num") is not None
         ]
@@ -3069,6 +3626,7 @@ def main() -> None:
         "last_master": "--",
         "summary_path": str(hub_summary_path),
         "fit_path": str(fit_csv_path),
+        "hub_stats_path": str(hub_stats_path),
         "graph_ready_rows": 0,
     }
     if continuing:
@@ -3376,6 +3934,8 @@ def main() -> None:
             }
         )
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
+        _write_hub_all_points_weighted_csv(weighted_all_points_csv_path, step_rows)
+        _write_hub_stats_csv(hub_stats_path, step_rows)
 
         species_measure = (
             float(total_species)
@@ -3456,7 +4016,9 @@ def main() -> None:
         print(f"Hub complete: {hub_dir}")
     print(f"Summary: {hub_summary_path}")
     print(f"Equations: {fit_csv_path}")
+    print(f"Hub stats: {hub_stats_path}")
     print(f"All datapoints: {all_points_csv_path}")
+    print(f"Weighted datapoints: {weighted_all_points_csv_path}")
 
 
 if __name__ == "__main__":
