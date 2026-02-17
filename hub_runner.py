@@ -48,8 +48,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--screen-hold-seconds",
         type=float,
-        default=0.0,
-        help="Keep the dashboard open for N seconds after completion (0 = do not hold).",
+        default=-1.0,
+        help=(
+            "Keep the dashboard open after completion "
+            "(-1 = until manually closed, 0 = do not hold, >0 = hold for N seconds)."
+        ),
     )
     return parser.parse_args()
 
@@ -1519,13 +1522,13 @@ class _HubDashboard:
                 picked = self._pick_graph_dot(mx, my)
                 if isinstance(picked, dict):
                     self._selected_graph_point = picked
-                    by_x_idx = self._row_index_from_graph_x(picked)
-                    if isinstance(by_x_idx, int) and 0 <= by_x_idx < len(self._rows_cache):
-                        self.selected_row_index = int(by_x_idx)
+                    row_idx = picked.get("row_index")
+                    if isinstance(row_idx, int) and 0 <= row_idx < len(self._rows_cache):
+                        self.selected_row_index = int(row_idx)
                     else:
-                        row_idx = picked.get("row_index")
-                        if isinstance(row_idx, int) and 0 <= row_idx < len(self._rows_cache):
-                            self.selected_row_index = int(row_idx)
+                        by_x_idx = self._row_index_from_graph_x(picked)
+                        if isinstance(by_x_idx, int) and 0 <= by_x_idx < len(self._rows_cache):
+                            self.selected_row_index = int(by_x_idx)
                         else:
                             step_idx = picked.get("step_index")
                             if isinstance(step_idx, int) and 0 <= step_idx < len(self._rows_cache):
@@ -1576,15 +1579,128 @@ class _HubDashboard:
         self._graph_dots = []
         pg.draw.rect(self.screen, (22, 24, 29), rect)
         pg.draw.rect(self.screen, (70, 74, 86), rect, 1)
+        selected_row = self._selected_row()
+        graph_mode = "hub"
+        graph_points = []
+        selected_master = None
+
+        if isinstance(selected_row, dict):
+            raw_points = selected_row.get("points")
+            if isinstance(raw_points, list):
+                for src_idx, point in enumerate(raw_points, start=1):
+                    if not isinstance(point, (tuple, list)) or len(point) < 2:
+                        continue
+                    evo_val = point[0]
+                    fit_val = point[1]
+                    if not (_is_number(evo_val) and _is_number(fit_val)):
+                        continue
+                    graph_points.append(
+                        {
+                            "graph_mode": "master",
+                            "x": float(evo_val),
+                            "y": float(fit_val),
+                            "evo": float(evo_val),
+                            "fitness": float(fit_val),
+                            "actual": True,
+                            "row_index": int(self.selected_row_index),
+                            "step_index": (
+                                int(selected_row.get("step_index"))
+                                if isinstance(selected_row.get("step_index"), int)
+                                else selected_row.get("step_index")
+                            ),
+                            "source_row_index": int(src_idx),
+                            "status": selected_row.get("status"),
+                            "master_run_num": selected_row.get("master_run_num"),
+                            "planned_master_run_num": selected_row.get("planned_master_run_num"),
+                            "max_species": selected_row.get("max_species"),
+                            "total_species": selected_row.get("total_species"),
+                            "max_frames": selected_row.get("max_frames"),
+                            "duration_s": selected_row.get("duration_s"),
+                        }
+                    )
+                if graph_points:
+                    graph_mode = "master"
+                    selected_master = selected_row
+                else:
+                    graph_points = []
+
+        if graph_mode == "hub":
+            for row in rows:
+                env_rate = row.get("env_rate")
+                points = row.get("points")
+                if (not _is_number(env_rate)) or (not isinstance(points, list)):
+                    continue
+                point_meta = {
+                    "graph_mode": "hub",
+                    "row_index": (
+                        int(row.get("step_index"))
+                        if isinstance(row.get("step_index"), int)
+                        else row.get("step_index")
+                    ),
+                    "step_index": (
+                        int(row.get("step_index"))
+                        if isinstance(row.get("step_index"), int)
+                        else row.get("step_index")
+                    ),
+                    "status": row.get("status"),
+                    "master_run_num": row.get("master_run_num"),
+                    "planned_master_run_num": row.get("planned_master_run_num"),
+                    "max_species": row.get("max_species"),
+                    "total_species": row.get("total_species"),
+                    "max_frames": row.get("max_frames"),
+                    "duration_s": row.get("duration_s"),
+                }
+                for src_idx, point in enumerate(points, start=1):
+                    if not isinstance(point, (tuple, list)) or len(point) < 2:
+                        continue
+                    evo_val = point[0]
+                    fit_val = point[1]
+                    if not (_is_number(evo_val) and _is_number(fit_val)):
+                        continue
+                    graph_points.append(
+                        {
+                            "x": float(env_rate),
+                            "y": float(evo_val),
+                            "evo": float(evo_val),
+                            "fitness": float(fit_val),
+                            "actual": True,
+                            "source_row_index": int(src_idx),
+                            **point_meta,
+                        }
+                    )
+
         selected = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
-        if selected is not None:
+        if selected is not None and str(selected.get("graph_mode", "hub")) != graph_mode:
+            selected = None
+            self._selected_graph_point = None
+        if selected is not None and str(selected.get("graph_mode", "hub")) == "master":
+            x_val = selected.get("x")
+            y_val = selected.get("y")
+            x_text = f"{float(x_val):.4f}" if _is_number(x_val) else "--"
+            y_text = f"{float(y_val):.4f}" if _is_number(y_val) else "--"
+            line_1 = f"evo rate: {x_text}, fitness: {y_text}"
+            header_color = (200, 220, 255)
+        elif selected is not None:
             rate_val = selected.get("x")
             evo_val = selected.get("evo")
             fit_val = selected.get("fitness")
             x_text = f"{float(rate_val):.4f}" if _is_number(rate_val) else "--"
             y_text = f"{float(evo_val):.4f}" if _is_number(evo_val) else "--"
             size_text = f"{float(fit_val):.3f}" if _is_number(fit_val) else "--"
-            dot_header = f"x: {x_text}, y: {y_text}, size: {size_text}"
+            line_1 = f"x: {x_text}, y: {y_text}, size: {size_text}"
+            header_color = (200, 220, 255)
+        else:
+            if graph_mode == "master":
+                master_val = selected_master.get("master_run_num") if isinstance(selected_master, dict) else None
+                env_val = selected_master.get("env_rate") if isinstance(selected_master, dict) else None
+                master_txt = f"master_{master_val}" if master_val is not None else "selected row"
+                env_txt = f"{float(env_val):.2f}" if _is_number(env_val) else "--"
+                line_1 = f"{master_txt} graph (env {env_txt}): evo speed vs fitness"
+            else:
+                line_1 = "Hub graph: env change rate vs evo speed"
+            header_color = (160, 170, 180)
+
+        if selected is not None:
             step_idx = selected.get("step_index")
             step_label = str(int(step_idx) + 1) if isinstance(step_idx, int) else "--"
             source_row_idx = selected.get("source_row_index")
@@ -1597,87 +1713,47 @@ class _HubDashboard:
             master_label = f"master_{master_val}" if master_val is not None else "--"
             status_val = selected.get("status") or "--"
             point_kind = "actual" if bool(selected.get("actual")) else "projected"
-            dot_info = (
+            line_2 = (
                 f"point: step {step_label} | {master_label} | {status_val} | {point_kind} "
                 f"| source row {source_row_label}"
             )
-            header_color = (200, 220, 255)
             info_color = (175, 195, 220)
         else:
-            dot_header = "x: --, y: --, size: -- (click dot)"
-            dot_info = "point: --"
-            header_color = (160, 170, 180)
+            line_2 = "Click a dot to inspect point details"
             info_color = (150, 160, 170)
+
         header_x = rect.x + 10
         header_w = max(0, rect.width - 20)
         if header_w >= 20:
-            header_text = self.small.render(
-                _fit_text(self.small, dot_header, header_w),
+            line_1_surf = self.small.render(
+                _fit_text(self.small, line_1, header_w),
                 True,
                 header_color,
             )
-            self.screen.blit(header_text, (header_x, rect.y + 10))
-            info_text = self.small.render(
-                _fit_text(self.small, dot_info, header_w),
+            self.screen.blit(line_1_surf, (header_x, rect.y + 10))
+            line_2_surf = self.small.render(
+                _fit_text(self.small, line_2, header_w),
                 True,
                 info_color,
             )
-            self.screen.blit(info_text, (header_x, rect.y + 28))
-        graph_points = []
-        for row in rows:
-            env_rate = row.get("env_rate")
-            points = row.get("points")
-            if (not _is_number(env_rate)) or (not isinstance(points, list)):
-                continue
-            point_meta = {
-                "row_index": (
-                    int(row.get("step_index"))
-                    if isinstance(row.get("step_index"), int)
-                    else row.get("step_index")
-                ),
-                "step_index": (
-                    int(row.get("step_index"))
-                    if isinstance(row.get("step_index"), int)
-                    else row.get("step_index")
-                ),
-                "status": row.get("status"),
-                "master_run_num": row.get("master_run_num"),
-                "planned_master_run_num": row.get("planned_master_run_num"),
-                "max_species": row.get("max_species"),
-                "duration_s": row.get("duration_s"),
-            }
-            for src_idx, point in enumerate(points, start=1):
-                if not isinstance(point, (tuple, list)) or len(point) < 2:
-                    continue
-                evo_val = point[0]
-                fit_val = point[1]
-                if not (_is_number(evo_val) and _is_number(fit_val)):
-                    continue
-                graph_points.append(
-                    {
-                        "x": float(env_rate),
-                        "evo": float(evo_val),
-                        "fitness": float(fit_val),
-                        "actual": True,
-                        "source_row_index": int(src_idx),
-                        **point_meta,
-                    }
-                )
+            self.screen.blit(line_2_surf, (header_x, rect.y + 28))
 
-        xs = [p["x"] for p in graph_points if _is_number(p.get("x"))]
-        ys = [p["evo"] for p in graph_points if _is_number(p.get("evo"))]
+        xs = [float(p["x"]) for p in graph_points if _is_number(p.get("x"))]
+        ys = [float(p["y"]) for p in graph_points if _is_number(p.get("y"))]
         if not ys or not xs:
+            msg_text = (
+                "Selected row has no master graph points yet."
+                if graph_mode == "master"
+                else "Need started/completed master points to draw graph."
+            )
             msg = self.small.render(
-                _fit_text(
-                    self.small,
-                    "Need started/completed master points to draw graph.",
-                    rect.width - 24,
-                ),
+                _fit_text(self.small, msg_text, rect.width - 24),
                 True,
                 (170, 170, 170),
             )
             self.screen.blit(msg, (rect.x + 12, rect.y + 50))
             return
+
         raw_min_x = min(xs)
         raw_max_x = max(xs)
         raw_min_y = min(ys)
@@ -1714,11 +1790,38 @@ class _HubDashboard:
                 return f"{value:.2f}"
             return f"{value:.3f}"
 
-        fits = [
-            float(p["fitness"])
-            for p in graph_points
-            if _is_number(p.get("fitness"))
-        ]
+        if graph_mode == "master" and isinstance(selected_master, dict):
+            fit = selected_master.get("fit")
+            if isinstance(fit, dict):
+                apex_x = fit.get("apex_x")
+                apex_y = fit.get("apex_y")
+                sigma_left = fit.get("sigma_left")
+                sigma_right = fit.get("sigma_right")
+                if (
+                    _is_number(apex_x)
+                    and _is_number(apex_y)
+                    and _is_number(sigma_left)
+                    and _is_number(sigma_right)
+                ):
+                    curve = []
+                    for i in range(140):
+                        x_val = min_x + ((max_x - min_x) * float(i) / 139.0)
+                        y_val = _predict_piecewise_gaussian(
+                            float(x_val),
+                            float(apex_x),
+                            float(apex_y),
+                            float(sigma_left),
+                            float(sigma_right),
+                        )
+                        if _is_number(y_val):
+                            curve.append((float(x_val), float(y_val)))
+                    if len(curve) >= 2:
+                        for idx in range(1, len(curve)):
+                            p0 = _to_px(curve[idx - 1][0], curve[idx - 1][1])
+                            p1 = _to_px(curve[idx][0], curve[idx][1])
+                            pg.draw.line(self.screen, (255, 210, 110), p0, p1, 2)
+
+        fits = [float(p["fitness"]) for p in graph_points if _is_number(p.get("fitness"))]
         fit_min = min(fits) if fits else 0.0
         fit_max = max(fits) if fits else 1.0
         fit_denom = max(1e-9, fit_max - fit_min)
@@ -1730,35 +1833,36 @@ class _HubDashboard:
 
         selected_found = False
         for point in graph_points:
-            px, py = _to_px(float(point["x"]), float(point["evo"]))
+            px, py = _to_px(float(point["x"]), float(point["y"]))
             n = _fit_norm(point.get("fitness"))
-            radius = 0 + int(round(4 * n))
+            radius = max(1, int(round(4 * n)))
             is_selected = False
             selected = self._selected_graph_point
             if isinstance(selected, dict):
+                sel_mode = str(selected.get("graph_mode", "hub"))
+                cur_mode = str(point.get("graph_mode", "hub"))
                 sel_step = selected.get("step_index")
                 cur_step = point.get("step_index")
                 sel_src = selected.get("source_row_index")
                 cur_src = point.get("source_row_index")
                 if (
-                    isinstance(sel_step, int)
+                    sel_mode == cur_mode
+                    and isinstance(sel_step, int)
                     and isinstance(cur_step, int)
                     and isinstance(sel_src, int)
                     and isinstance(cur_src, int)
                 ):
                     is_selected = (int(sel_step) == int(cur_step)) and (int(sel_src) == int(cur_src))
-                elif isinstance(sel_step, int) and isinstance(cur_step, int):
+                elif sel_mode == cur_mode and isinstance(sel_step, int) and isinstance(cur_step, int):
                     is_selected = int(sel_step) == int(cur_step)
                 else:
                     try:
-                        # Graph x-axis is env change rate.
                         is_selected = (
                             abs(float(selected.get("x")) - float(point.get("x"))) <= 1e-9
-                            and abs(float(selected.get("evo")) - float(point.get("evo"))) <= 1e-9
+                            and abs(float(selected.get("y")) - float(point.get("y"))) <= 1e-9
                         )
                     except Exception:
                         is_selected = False
-            # Fitness-based color ramp: low fitness -> cool blue, high fitness -> warm yellow.
             color = (
                 35 + int(220 * n),
                 125 + int(110 * n),
@@ -1797,8 +1901,12 @@ class _HubDashboard:
         x2 = self.small.render(_axis_fmt(raw_max_x, x_span), True, (150, 150, 150))
         self.screen.blit(x1, (plot.x, plot.bottom + 4))
         self.screen.blit(x2, (plot.right - x2.get_width(), plot.bottom + 4))
-        x_label = self.small.render("env change rate", True, (155, 155, 155))
-        y_label = self.small.render("evo speed", True, (155, 155, 155))
+        if graph_mode == "master":
+            x_label = self.small.render("evo speed", True, (155, 155, 155))
+            y_label = self.small.render("fitness", True, (155, 155, 155))
+        else:
+            x_label = self.small.render("env change rate", True, (155, 155, 155))
+            y_label = self.small.render("evo speed", True, (155, 155, 155))
         self.screen.blit(x_label, (plot.x + 4, plot.bottom + 22))
         self.screen.blit(y_label, (plot.x - 42, plot.y + 8))
 
@@ -2097,7 +2205,7 @@ class _HubDashboard:
             f"Summary file: {state.get('summary_path', '')}",
             f"Fit file: {state.get('fit_path', '')}",
             "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Close Hub(X) FPS(F)",
-            "Graph: click a dot to inspect values",
+            "Graph: selecting a row shows that master graph; click dots to inspect",
         ]
         dot = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
         if dot is not None:
@@ -2108,12 +2216,20 @@ class _HubDashboard:
                 if isinstance(step_idx, int)
                 else "--"
             )
+            dot_mode = str(dot.get("graph_mode", "hub"))
             rate_val = dot.get("x")
             x_text = f"{float(rate_val):.4f}" if _is_number(rate_val) else "--"
             dot_lines = [
                 f"Dot: step {step_label} ({dot_type})",
-                f"dot rate: {x_text}",
+                (
+                    f"dot evo speed: {x_text}"
+                    if dot_mode == "master"
+                    else f"dot env rate: {x_text}"
+                ),
             ]
+            dot_y = dot.get("y")
+            if _is_number(dot_y):
+                dot_lines.append(f"dot y: {float(dot_y):.4f}")
             master_val = dot.get("master_run_num")
             if master_val is not None:
                 dot_lines.append(f"dot master: master_{master_val}")
@@ -3134,12 +3250,21 @@ def main() -> None:
             _refresh_reopened_processes()
             dashboard.update(dash_state, force=True)
 
-    if dashboard.enabled and float(args.screen_hold_seconds) > 0.0:
-        hold_until = time.time() + max(0.0, float(args.screen_hold_seconds))
-        while dashboard.enabled and time.time() < hold_until:
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
-            time.sleep(0.1)
+    # When a hub finishes all steps, keep the dashboard open by default
+    # so users can inspect the final graph and reopen masters if needed.
+    hold_seconds = float(args.screen_hold_seconds)
+    if dashboard.enabled and (not abort_requested) and str(hub_meta.get("status", "")) == "completed":
+        if hold_seconds < 0.0:
+            while dashboard.enabled:
+                _refresh_reopened_processes()
+                dashboard.update(dash_state, force=True)
+                time.sleep(0.1)
+        elif hold_seconds > 0.0:
+            hold_until = time.time() + hold_seconds
+            while dashboard.enabled and time.time() < hold_until:
+                _refresh_reopened_processes()
+                dashboard.update(dash_state, force=True)
+                time.sleep(0.1)
 
     if abort_requested:
         print(f"Hub aborted by user: {hub_dir}")
