@@ -817,6 +817,20 @@ def _parse_master_run_from_dir(path: Path):
         return None
 
 
+def _is_hub_master_dir(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        probe = Path(path).resolve()
+    except Exception:
+        probe = Path(path)
+    for candidate in [probe, *probe.parents]:
+        name = str(candidate.name)
+        if name.startswith("hub_"):
+            return True
+    return False
+
+
 def _resolve_continue_master(
     results_dir: Path,
     continue_master_run,
@@ -2836,6 +2850,7 @@ def _draw_arithmetic_chart(
     selected_point=None,
     selected_idx=None,
     label_font=None,
+    draw_best_fit: bool = True,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
@@ -2881,43 +2896,44 @@ def _draw_arithmetic_chart(
 
     max_label = font.render(f"max {raw_max_y:.2f}", True, (160, 160, 160))
     min_label = font.render(f"min {raw_min_y:.2f}", True, (160, 160, 160))
-    gaussian_fit = _fit_stitched_gaussian_equation(points_sorted)
-    if gaussian_fit is not None:
-        curve_points = []
-        for i in range(120):
-            x_val = min_x + ((max_x - min_x) * float(i) / 119.0)
-            y_val = _predict_piecewise_gaussian(
-                float(x_val),
-                float(gaussian_fit["apex_x"]),
-                float(gaussian_fit["apex_y"]),
-                float(gaussian_fit["sigma_left"]),
-                float(gaussian_fit["sigma_right"]),
-            )
-            if _is_number(y_val):
-                px, py = _scale_point(float(x_val), float(y_val))
-                curve_points.append((px + plot_left, py + plot_top))
-        if len(curve_points) >= 2:
-            pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
+    if draw_best_fit:
+        gaussian_fit = _fit_stitched_gaussian_equation(points_sorted)
+        if gaussian_fit is not None:
+            curve_points = []
+            for i in range(120):
+                x_val = min_x + ((max_x - min_x) * float(i) / 119.0)
+                y_val = _predict_piecewise_gaussian(
+                    float(x_val),
+                    float(gaussian_fit["apex_x"]),
+                    float(gaussian_fit["apex_y"]),
+                    float(gaussian_fit["sigma_left"]),
+                    float(gaussian_fit["sigma_right"]),
+                )
+                if _is_number(y_val):
+                    px, py = _scale_point(float(x_val), float(y_val))
+                    curve_points.append((px + plot_left, py + plot_top))
+            if len(curve_points) >= 2:
+                pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
 
-        eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
-        params_text = (
-            f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
-            f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
-            f"R^2={float(gaussian_fit['r2']):.3f}"
-        )
-        eq_font = _equation_font(font)
-        left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
-        max_w = max(48, rect.right - 6 - left_reserved)
-        eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
-        params_text = _fit_text_to_width(eq_font, params_text, max_w)
-        eq = eq_font.render(eq_text, True, (170, 170, 170))
-        params = eq_font.render(params_text, True, (170, 170, 170))
-        eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
-        eq_y = rect.y + 2
-        params_x = max(left_reserved, rect.right - params.get_width() - 6)
-        params_y = eq_y + eq.get_height() + 1
-        surface.blit(eq, (eq_x, eq_y))
-        surface.blit(params, (params_x, params_y))
+            eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
+            params_text = (
+                f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
+                f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
+                f"R^2={float(gaussian_fit['r2']):.3f}"
+            )
+            eq_font = _equation_font(font)
+            left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
+            max_w = max(48, rect.right - 6 - left_reserved)
+            eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
+            params_text = _fit_text_to_width(eq_font, params_text, max_w)
+            eq = eq_font.render(eq_text, True, (170, 170, 170))
+            params = eq_font.render(params_text, True, (170, 170, 170))
+            eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
+            eq_y = rect.y + 2
+            params_x = max(left_reserved, rect.right - params.get_width() - 6)
+            params_y = eq_y + eq.get_height() + 1
+            surface.blit(eq, (eq_x, eq_y))
+            surface.blit(params, (params_x, params_y))
 
     if selected_point and selected_point.get("scope") == "sim":
         if selected_idx is None or selected_point.get("sim_index") == selected_idx:
@@ -4127,7 +4143,7 @@ def _view_arithmetic_snapshots(
 
         if not frames:
             msg = small_font.render(
-                "No snapshots yet (wait for 100000 frames).",
+                "No snapshots yet (wait for 10000 frames).",
                 True,
                 (180, 180, 180),
             )
@@ -4484,6 +4500,8 @@ def main() -> None:
         master_dir = results_dir / master_label
         master_dir.mkdir(parents=True, exist_ok=True)
         master_run_nums = run_nums
+
+    opened_from_hub = _is_hub_master_dir(master_dir)
 
     _save_master_meta(
         master_dir,
@@ -5596,6 +5614,7 @@ def main() -> None:
                     selected_point=selected_mean_point,
                     selected_idx=idx,
                     label_font=label_font,
+                    draw_best_fit=(not opened_from_hub),
                 )
 
                 y += panel_h

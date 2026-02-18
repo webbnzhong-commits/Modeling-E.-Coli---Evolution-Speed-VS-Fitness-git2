@@ -245,13 +245,25 @@
       },
       "point_count": 224,
       "stopped_threshold_not_reached": true
+    },
+    {
+      "step_index": 1,
+      "env_rate": 0.51,
+      "env_dir": "results/hub_22/env_0p51",
+      "planned_master_run_num": 387,
+      "returncode": 0,
+      "finished_at": 1771368568.61076,
+      "status": "aborted"
     }
   ],
-  "status": "stopped_threshold_not_reached",
+  "status": "aborted_by_user",
   "stopped_step": 0,
   "plots": [
     "hub_apex_scatter.png",
     "hub_stitched_fits.png",
     "hub_ratio_curve.png"
-  ]
+  ],
+  "resumed_at": 1771368559.8539588,
+  "resume_count": 1,
+  "aborted_at": 1771368568.610775
 }

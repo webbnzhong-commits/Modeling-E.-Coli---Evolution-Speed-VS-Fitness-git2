@@ -469,7 +469,7 @@ avgSpecies = []
 run_start_time = time.perf_counter()
 run_start_wall = time.time()
 META_WRITE_INTERVAL = 1000
-SNAPSHOT_INTERVAL = 100000
+SNAPSHOT_INTERVAL = 10000
 SNAPSHOT_DIR_NAME = "snapshots"
 existing_meta = _load_existing_run_meta(RUN_META_PATH)
 if not existing_meta and MASTER_RUN_META_PATH is not None:

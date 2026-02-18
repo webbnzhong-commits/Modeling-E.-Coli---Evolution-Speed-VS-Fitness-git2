@@ -313,6 +313,55 @@ def _select_hub_run_ui(results_root: Path):
                     "label": f"Continue hub_{int(row['hub_idx'])} ({done}/{total}) [{status}]",
                 }
             )
+        preview_cache: dict[str, list[tuple[float, float, float]]] = {}
+
+        def _preview_points_for_hub(hub_dir: Path) -> list[tuple[float, float, float]]:
+            key = str(hub_dir)
+            cached = preview_cache.get(key)
+            if cached is not None:
+                return cached
+
+            points: list[tuple[float, float, float]] = []
+            all_points_path = hub_dir / "hub_all_points.csv"
+            if all_points_path.exists():
+                try:
+                    with open(all_points_path, newline="") as handle:
+                        reader = csv.DictReader(handle)
+                        for row in reader:
+                            if not isinstance(row, dict):
+                                continue
+                            env_val = row.get("enviormentChangeRate")
+                            evo_val = row.get("evo rate")
+                            fit_val = row.get("fitness")
+                            if (not _is_number(env_val)) or (not _is_number(evo_val)):
+                                continue
+                            fitness = float(fit_val) if _is_number(fit_val) else 1.0
+                            points.append((float(env_val), float(evo_val), float(fitness)))
+                except Exception:
+                    points = []
+
+            if not points:
+                summary_path = hub_dir / "hub_summary.csv"
+                if summary_path.exists():
+                    try:
+                        with open(summary_path, newline="") as handle:
+                            reader = csv.DictReader(handle)
+                            for row in reader:
+                                if not isinstance(row, dict):
+                                    continue
+                                env_val = row.get("enviorment change rate")
+                                evo_val = row.get("apex evolution rate")
+                                fit_val = row.get("fitness")
+                                if (not _is_number(env_val)) or (not _is_number(evo_val)):
+                                    continue
+                                fitness = float(fit_val) if _is_number(fit_val) else 1.0
+                                points.append((float(env_val), float(evo_val), float(fitness)))
+                    except Exception:
+                        points = []
+
+            points.sort(key=lambda item: (item[0], item[1], item[2]))
+            preview_cache[key] = points
+            return points
 
         selected = 0
         scroll = 0
@@ -426,6 +475,105 @@ def _select_hub_run_ui(results_root: Path):
                 line_txt = tiny.render(str(line), True, (205, 205, 205))
                 screen.blit(line_txt, (detail_x + 8, yy))
                 yy += line_h
+
+            preview_title = tiny.render("Hub graph preview", True, (188, 205, 228))
+            screen.blit(preview_title, (detail_x + 8, yy + 4))
+            preview_rect = pygame.Rect(
+                detail_x + 8,
+                yy + 22,
+                detail_w - 16,
+                max(90, list_bottom - (yy + 22) - 8),
+            )
+            pygame.draw.rect(screen, (16, 18, 24), preview_rect)
+            pygame.draw.rect(screen, (66, 70, 82), preview_rect, 1)
+
+            if current.get("mode") == "continue":
+                hub_dir = current.get("hub_dir")
+                points = _preview_points_for_hub(hub_dir) if isinstance(hub_dir, Path) else []
+                if points:
+                    xs = [p[0] for p in points]
+                    ys = [p[1] for p in points]
+                    fits = [p[2] for p in points]
+                    raw_min_x = min(xs)
+                    raw_max_x = max(xs)
+                    raw_min_y = min(ys)
+                    raw_max_y = max(ys)
+                    min_x = raw_min_x
+                    max_x = raw_max_x
+                    min_y = raw_min_y
+                    max_y = raw_max_y
+                    if raw_max_x <= raw_min_x:
+                        min_x = raw_min_x - 0.05
+                        max_x = raw_max_x + 0.05
+                    else:
+                        x_pad = (raw_max_x - raw_min_x) * 0.04
+                        min_x -= x_pad
+                        max_x += x_pad
+                    if raw_max_y <= raw_min_y:
+                        min_y = raw_min_y - 0.05
+                        max_y = raw_max_y + 0.05
+                    else:
+                        y_pad = (raw_max_y - raw_min_y) * 0.04
+                        min_y -= y_pad
+                        max_y += y_pad
+                    fit_min = min(fits) if fits else 0.0
+                    fit_max = max(fits) if fits else 1.0
+                    fit_denom = max(1e-9, fit_max - fit_min)
+
+                    plot = pygame.Rect(
+                        preview_rect.x + 34,
+                        preview_rect.y + 8,
+                        preview_rect.width - 42,
+                        preview_rect.height - 16,
+                    )
+                    pygame.draw.rect(screen, (12, 14, 19), plot)
+                    pygame.draw.rect(screen, (56, 60, 70), plot, 1)
+
+                    def _to_px(xv: float, yv: float) -> tuple[int, int]:
+                        px = plot.x + int(((xv - min_x) / (max_x - min_x)) * plot.width)
+                        py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
+                        return px, py
+
+                    model = _linear_fit(xs, ys)
+                    if model is not None:
+                        sample = []
+                        for i in range(100):
+                            xv = min_x + ((max_x - min_x) * float(i) / 99.0)
+                            yv = (float(model[0]) * xv) + float(model[1])
+                            sample.append((xv, yv))
+                        for i in range(1, len(sample)):
+                            pygame.draw.line(
+                                screen,
+                                (242, 188, 96),
+                                _to_px(sample[i - 1][0], sample[i - 1][1]),
+                                _to_px(sample[i][0], sample[i][1]),
+                                2,
+                            )
+
+                    for env_val, evo_val, fitness in points:
+                        n = max(0.0, min(1.0, (float(fitness) - fit_min) / fit_denom))
+                        radius = 1 + int(round(3 * n))
+                        color = (
+                            40 + int(210 * n),
+                            128 + int(95 * n),
+                            236 - int(166 * n),
+                        )
+                        pygame.draw.circle(screen, color, _to_px(float(env_val), float(evo_val)), radius)
+
+                    max_y_txt = tiny.render(f"{raw_max_y:.3f}", True, (145, 145, 145))
+                    min_y_txt = tiny.render(f"{raw_min_y:.3f}", True, (145, 145, 145))
+                    min_x_txt = tiny.render(f"{raw_min_x:.3f}", True, (145, 145, 145))
+                    max_x_txt = tiny.render(f"{raw_max_x:.3f}", True, (145, 145, 145))
+                    screen.blit(max_y_txt, (plot.x - 32, plot.y - 2))
+                    screen.blit(min_y_txt, (plot.x - 32, plot.bottom - 12))
+                    screen.blit(min_x_txt, (plot.x, plot.bottom + 2))
+                    screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom + 2))
+                else:
+                    no_data_txt = tiny.render("No hub points available yet.", True, (165, 165, 165))
+                    screen.blit(no_data_txt, (preview_rect.x + 8, preview_rect.y + 8))
+            else:
+                new_mode_txt = tiny.render("Preview appears when a hub is selected.", True, (165, 165, 165))
+                screen.blit(new_mode_txt, (preview_rect.x + 8, preview_rect.y + 8))
 
             btn_label = "Choose New Hub" if current.get("mode") == "new" else "Continue Selected Hub"
             pygame.draw.rect(screen, (42, 42, 46), choose_rect)
@@ -1838,6 +1986,8 @@ class _HubDashboard:
         self.capped_fps = 1
         self.uncapped_fps = 120
         self.draw_fps = self.capped_fps
+        self._click_uncap_duration_s = 3.0
+        self._click_uncap_until = 0.0
         self.update_callback = update_callback
         self.reopen_callback = reopen_callback
         self.close_callback = close_callback
@@ -1883,6 +2033,7 @@ class _HubDashboard:
 
     def _apply_fps_mode(self, new_mode: int) -> None:
         self.fps_mode = int(new_mode) % 3
+        self._click_uncap_until = 0.0
         if self.fps_mode == _FPS_MODE_CAPPED:
             self._refresh_s = 0.1
             self.draw_fps = self.capped_fps
@@ -1893,10 +2044,27 @@ class _HubDashboard:
             self._refresh_s = 0.0
             self.draw_fps = 0
 
+    def _click_uncap_active(self, now_ts: float | None = None) -> bool:
+        if self.fps_mode != _FPS_MODE_CAPPED:
+            return False
+        if now_ts is None:
+            now_ts = time.time()
+        return float(now_ts) < float(self._click_uncap_until)
+
+    def _arm_click_uncap(self) -> None:
+        if self.fps_mode != _FPS_MODE_CAPPED:
+            return
+        self._click_uncap_until = max(
+            float(self._click_uncap_until),
+            float(time.time()) + float(self._click_uncap_duration_s),
+        )
+
     def poll_sleep_seconds(self) -> float:
         if self.fps_mode == _FPS_MODE_FULL_THROTTLE:
             return 0.0
         if self.fps_mode == _FPS_MODE_UNCAPPED:
+            return 0.02
+        if self._click_uncap_active():
             return 0.02
         return 0.12
 
@@ -2061,6 +2229,7 @@ class _HubDashboard:
                     self.scroll_target += 2.0
             elif event.type == self.pg.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                self._arm_click_uncap()
                 picked = self._pick_graph_dot(mx, my)
                 if isinstance(picked, dict):
                     self._selected_graph_point = picked
@@ -2342,72 +2511,56 @@ class _HubDashboard:
         if selected is not None and str(selected.get("graph_mode", "hub")) != "hub":
             selected = None
             self._selected_graph_point = None
-        if selected is not None:
-            rate_val = selected.get("x")
-            evo_val = selected.get("evo")
-            fit_val = selected.get("fitness")
-            x_text = f"{float(rate_val):.4f}" if _is_number(rate_val) else "--"
-            y_text = f"{float(evo_val):.4f}" if _is_number(evo_val) else "--"
-            size_text = f"{float(fit_val):.3f}" if _is_number(fit_val) else "--"
-            line_1 = f"x: {x_text}, y: {y_text}, size: {size_text}"
-            header_color = (200, 220, 255)
-        else:
-            line_1 = "Hub graph: env change rate vs evo speed"
-            header_color = (160, 170, 180)
 
-        if selected is not None:
-            step_idx = selected.get("step_index")
-            step_label = str(int(step_idx) + 1) if isinstance(step_idx, int) else "--"
-            source_row_idx = selected.get("source_row_index")
-            source_row_label = (
-                str(int(source_row_idx))
-                if isinstance(source_row_idx, int)
-                else "--"
-            )
-            master_val = selected.get("master_run_num")
-            master_label = f"master_{master_val}" if master_val is not None else "--"
-            status_val = selected.get("status") or "--"
-            point_kind = "actual" if bool(selected.get("actual")) else "projected"
-            line_2 = (
-                f"point: step {step_label} | {master_label} | {status_val} | {point_kind} "
-                f"| source row {source_row_label}"
-            )
-            info_color = (175, 195, 220)
-        else:
-            line_2 = "Click a dot to inspect point details"
-            info_color = (150, 160, 170)
-        if isinstance(best_fit, dict) and _is_number(best_fit.get("r2")):
-            model_name = str(best_fit.get("model", ""))
-            equation = str(best_fit.get("equation", ""))
-            line_3 = (
-                f"Best fit (lowest R^2): {model_name} | R^2={float(best_fit['r2']):.4f} | {equation}"
-            )
-            fit_info_color = (234, 210, 147)
-        else:
-            line_3 = "Best fit (lowest R^2): not enough data"
-            fit_info_color = (165, 165, 165)
-
+        fit_font = pg.font.SysFont("Consolas", 12)
+        fit_line_h = max(10, int(fit_font.get_linesize()))
+        fit_line_gap = 2
         header_x = rect.x + 10
         header_w = max(0, rect.width - 20)
+
+        def _wrap_fit_line(text: str, max_w: int) -> list[str]:
+            raw = str(text).strip()
+            if (not raw) or max_w <= 8:
+                return [raw]
+            lines = []
+            remaining = raw
+            while remaining:
+                if fit_font.size(remaining)[0] <= max_w:
+                    lines.append(remaining)
+                    break
+                cut = len(remaining)
+                while cut > 1 and fit_font.size(remaining[:cut])[0] > max_w:
+                    cut -= 1
+                split = remaining.rfind(" ", 0, cut)
+                if split <= 0:
+                    split = cut
+                chunk = remaining[:split].rstrip()
+                if chunk:
+                    lines.append(chunk)
+                remaining = remaining[split:].lstrip()
+            return lines if lines else [raw]
+
+        header_lines = []
+        if isinstance(best_fit, dict) and _is_number(best_fit.get("r2")):
+            equation = str(best_fit.get("equation", ""))
+            header_lines.extend(_wrap_fit_line(f"Equation: {equation}", header_w))
+            header_lines.extend(_wrap_fit_line(f"R^2: {float(best_fit['r2']):.4f}", header_w))
+            fit_info_color = (234, 210, 147)
+        else:
+            header_lines.extend(_wrap_fit_line("Equation: not enough data", header_w))
+            header_lines.extend(_wrap_fit_line("R^2: --", header_w))
+            fit_info_color = (165, 165, 165)
+
+        header_top = rect.y + 10
         if header_w >= 20:
-            line_1_surf = self.small.render(
-                _fit_text(self.small, line_1, header_w),
-                True,
-                header_color,
-            )
-            self.screen.blit(line_1_surf, (header_x, rect.y + 10))
-            line_2_surf = self.small.render(
-                _fit_text(self.small, line_2, header_w),
-                True,
-                info_color,
-            )
-            self.screen.blit(line_2_surf, (header_x, rect.y + 28))
-            line_3_surf = self.small.render(
-                _fit_text(self.small, line_3, header_w),
-                True,
-                fit_info_color,
-            )
-            self.screen.blit(line_3_surf, (header_x, rect.y + 46))
+            yy = header_top
+            for line in header_lines:
+                line_surf = fit_font.render(str(line), True, fit_info_color)
+                self.screen.blit(line_surf, (header_x, yy))
+                yy += fit_line_h + fit_line_gap
+            header_bottom = yy
+        else:
+            header_bottom = header_top
 
         xs = [float(p["x"]) for p in graph_points if _is_number(p.get("x"))]
         ys = [float(p["y"]) for p in graph_points if _is_number(p.get("y"))]
@@ -2421,7 +2574,7 @@ class _HubDashboard:
                 True,
                 (170, 170, 170),
             )
-            self.screen.blit(msg, (rect.x + 12, rect.y + 50))
+            self.screen.blit(msg, (rect.x + 12, int(header_bottom) + 8))
             return
 
         raw_min_x = min(xs)
@@ -2443,7 +2596,13 @@ class _HubDashboard:
             min_y = raw_min_y - y_pad
             max_y = raw_max_y + y_pad
 
-        plot = pg.Rect(rect.x + 46, rect.y + 70, rect.width - 62, rect.height - 94)
+        plot_top = int(header_bottom) + 8
+        plot = pg.Rect(
+            rect.x + 46,
+            plot_top,
+            rect.width - 62,
+            rect.height - ((plot_top - rect.y) + 24),
+        )
         self._graph_plot_rect = plot
         pg.draw.rect(self.screen, (16, 18, 23), plot)
         pg.draw.rect(self.screen, (64, 68, 79), plot, 1)
@@ -2586,7 +2745,8 @@ class _HubDashboard:
             self._rows_cache = list(state.get("rows", []))
             force = True
         now = time.time()
-        if (not force) and ((now - self._last_draw) < self._refresh_s):
+        refresh_interval = 0.0 if self._click_uncap_active(now) else float(self._refresh_s)
+        if (not force) and ((now - self._last_draw) < refresh_interval):
             return
         self._last_draw = now
         pg = self.pg
@@ -2607,6 +2767,8 @@ class _HubDashboard:
             _FPS_MODE_UNCAPPED: f"UNCAPPED({self.uncapped_fps})",
             _FPS_MODE_FULL_THROTTLE: "FULL",
         }.get(self.fps_mode, "CAPPED")
+        if self._click_uncap_active(now):
+            fps_mode_label = f"{fps_mode_label}+CLICK({int(self._click_uncap_duration_s)}s)"
         self._shutdown_button_rect = pg.Rect(self.window_w - 188, 96, 168, 30)
         header_left = 20
         header_max_w = max(160, self._shutdown_button_rect.x - header_left - 12)
@@ -3072,7 +3234,8 @@ class _HubDashboard:
         )
 
         pg.display.flip()
-        self.clock.tick(self.draw_fps)
+        draw_fps = self.uncapped_fps if self._click_uncap_active(time.time()) else self.draw_fps
+        self.clock.tick(draw_fps)
 
 
 def main() -> None:
