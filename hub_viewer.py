@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
 import hub_runner as hr
+from settings_manager import load_settings
 
 
 _SIM_COLORS = [
@@ -95,7 +100,9 @@ def _resolve_hub_dir(args: argparse.Namespace, results_root: Path) -> tuple[int 
 
     if args.hub_index is not None:
         idx = max(0, int(args.hub_index))
-        path = results_root / f"hub_{idx}"
+        path = hr._hub_container_dir(results_root) / f"hub_{idx}"
+        if (not path.is_dir()) and (results_root / f"hub_{idx}").is_dir():
+            path = results_root / f"hub_{idx}"
         if not path.is_dir():
             raise SystemExit(f"Hub directory not found: {path}")
         return idx, path
@@ -305,6 +312,111 @@ def _compute_hub_graph_points(rows: list[dict]) -> list[dict]:
     return graph_points
 
 
+def _write_hub_fit_equations_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "enviorment change rate",
+                "master run",
+                "apex x",
+                "apex y",
+                "sigma left",
+                "sigma right",
+                "r2",
+                "equation",
+            ]
+        )
+        ordered_rows = sorted(
+            [row for row in rows if isinstance(row, dict)],
+            key=lambda row: (_safe_int(row.get("step_index")) if _safe_int(row.get("step_index")) is not None else 10**9),
+        )
+        for row in ordered_rows:
+            fit = row.get("fit")
+            if not isinstance(fit, dict):
+                continue
+            env_rate = row.get("env_rate")
+            if not hr._is_number(env_rate):
+                continue
+            master_run_num = _safe_int(row.get("master_run_num"))
+            writer.writerow(
+                [
+                    float(env_rate),
+                    (master_run_num if master_run_num is not None else ""),
+                    (fit.get("apex_x") if hr._is_number(fit.get("apex_x")) else ""),
+                    (fit.get("apex_y") if hr._is_number(fit.get("apex_y")) else ""),
+                    (fit.get("sigma_left") if hr._is_number(fit.get("sigma_left")) else ""),
+                    (fit.get("sigma_right") if hr._is_number(fit.get("sigma_right")) else ""),
+                    (fit.get("r2") if hr._is_number(fit.get("r2")) else ""),
+                    str(fit.get("equation", "")),
+                ]
+            )
+
+
+def _sync_hub_meta_steps_from_rows(hub_meta: dict, rows: list[dict]) -> bool:
+    if not isinstance(hub_meta, dict):
+        return False
+    steps = hub_meta.get("steps")
+    if not isinstance(steps, list):
+        return False
+
+    step_by_idx = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_idx = _safe_int(step.get("step_index"))
+        if step_idx is None:
+            continue
+        step_by_idx[int(step_idx)] = step
+
+    changed = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        step_idx = _safe_int(row.get("step_index"))
+        if step_idx is None:
+            continue
+        step = step_by_idx.get(int(step_idx))
+        if not isinstance(step, dict):
+            continue
+
+        fit_val = row.get("fit") if isinstance(row.get("fit"), dict) else None
+        updates = {
+            "fit": fit_val,
+            "master_run_num": _safe_int(row.get("master_run_num")),
+            "master_dir": (
+                str(row.get("master_dir"))
+                if isinstance(row.get("master_dir"), (str, Path)) and str(row.get("master_dir")).strip()
+                else None
+            ),
+            "run_nums": (list(row.get("run_nums")) if isinstance(row.get("run_nums"), list) else []),
+            "max_species": (_safe_float(row.get("max_species"))),
+            "total_species": (_safe_float(row.get("total_species"))),
+            "max_frames": (_safe_float(row.get("max_frames"))),
+            "apex_evolution_rate": (_safe_float(row.get("apex_evolution_rate"))),
+            "apex_fitness": (_safe_float(row.get("apex_fitness"))),
+            "duration_s": (_safe_float(row.get("duration_s"))),
+            "point_count": (
+                int(row.get("point_count"))
+                if isinstance(row.get("point_count"), int)
+                else (
+                    len(row.get("points"))
+                    if isinstance(row.get("points"), list)
+                    else 0
+                )
+            ),
+        }
+        for key, value in updates.items():
+            if step.get(key) != value:
+                step[key] = value
+                changed = True
+
+    if changed:
+        hub_meta["updated_at"] = float(time.time())
+    return changed
+
+
 def _timeline_fit(points: list[tuple[float, float]]) -> dict | None:
     if len(points) < 2:
         return None
@@ -471,17 +583,40 @@ class HubViewer:
         self.table_scroll = 0.0
         self.table_row_h = 24
         self.timeline_cache = {}
-        self.graph_modes = ["normal", "timeline_hub", "spectrum", "range", "range_hub"]
+        self.graph_modes = [
+            "normal",
+            "hub_3d",
+            "hub_3d_evo_fit_env",
+            "timeline_hub",
+            "spectrum",
+            "range",
+            "range_hub",
+            "range_hub_3d_fit",
+            "master_fit_lines_3d",
+        ]
         self.graph_mode_index = 0
         self._back_button_rect = None
         self._next_button_rect = None
+        self._export_button_rect = None
+        self._settings_button_rect = None
+        self._hub_graph_rect = None
+        self._graph3d_dragging = False
+        self._graph3d_last_mouse = None
+        self._graph3d_yaw = -0.9
+        self._graph3d_pitch = 0.45
+        self._graph3d_zoom = 1.0
+        self._graph3d_zoom_min = 0.45
+        self._graph3d_zoom_max = 3.0
         self._range_slider_rect = None
         self._range_slider_dragging = False
+        self._env_range_slider_rect = None
+        self._env_range_drag_handle = None
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
         self._timeline_next_button_rect = None
         self._timeline_slider_rect = None
         self._timeline_slider_dragging = False
+        self._equation_copy_hits = []
         self.timeline_progress = 0.0
         self.timeline_playing = False
         self.timeline_frame_count = 101
@@ -489,6 +624,13 @@ class HubViewer:
         self.range_top_n = 80
         self.range_top_n_min = 1
         self.range_top_n_max = 1
+        self.env_global_min = 0.0
+        self.env_global_max = 1.0
+        # Start unset so first reload defaults to the full discovered env range.
+        self.env_view_min = None
+        self.env_view_max = None
+        self.export_status = ""
+        self._export_status_ok = True
         self.last_reload = 0.0
         self.running = True
 
@@ -521,6 +663,38 @@ class HubViewer:
             self.range_top_n_min,
             min(int(self.range_top_n), int(self.range_top_n_max)),
         )
+        env_values = [
+            float(row.get("env_rate"))
+            for row in self.rows
+            if isinstance(row, dict) and hr._is_number(row.get("env_rate"))
+        ]
+        if env_values:
+            self.env_global_min = min(env_values)
+            self.env_global_max = max(env_values)
+        else:
+            self.env_global_min = 0.0
+            self.env_global_max = 1.0
+        if self.env_global_max <= self.env_global_min:
+            self.env_view_min = float(self.env_global_min)
+            self.env_view_max = float(self.env_global_max)
+        else:
+            if not (hr._is_number(self.env_view_min) and hr._is_number(self.env_view_max)):
+                self.env_view_min = float(self.env_global_min)
+                self.env_view_max = float(self.env_global_max)
+            else:
+                low = max(
+                    float(self.env_global_min),
+                    min(float(self.env_view_min), float(self.env_view_max)),
+                )
+                high = min(
+                    float(self.env_global_max),
+                    max(float(self.env_view_min), float(self.env_view_max)),
+                )
+                if high < low:
+                    low = float(self.env_global_min)
+                    high = float(self.env_global_max)
+                self.env_view_min = float(low)
+                self.env_view_max = float(high)
         self.hub_best_fit = (
             self.hub_fit_report.get("best_model") if isinstance(self.hub_fit_report, dict) else None
         )
@@ -535,6 +709,48 @@ class HubViewer:
         self.timeline_playing = False
         self.last_reload = time.time()
 
+    def _refresh_all_master_fit_lines(self) -> None:
+        self.reload_from_disk()
+        fit_count = len(
+            [row for row in self.rows if isinstance(row, dict) and isinstance(row.get("fit"), dict)]
+        )
+        total_rows = len(self.rows)
+        issues = []
+
+        try:
+            _write_hub_fit_equations_csv(self.hub_dir / "hub_fit_equations.csv", self.rows)
+        except Exception as exc:
+            issues.append(f"hub_fit_equations.csv ({exc})")
+
+        try:
+            hr._write_hub_all_points_csv(self.hub_dir / "hub_all_points.csv", self.rows)
+        except Exception as exc:
+            issues.append(f"hub_all_points.csv ({exc})")
+
+        try:
+            hr._write_hub_stats_csv(self.hub_dir / "hub_stats.csv", self.rows)
+        except Exception as exc:
+            issues.append(f"hub_stats.csv ({exc})")
+
+        try:
+            latest_meta = _load_hub_meta(self.hub_dir)
+            if _sync_hub_meta_steps_from_rows(latest_meta, self.rows):
+                (self.hub_dir / "hub_meta.json").write_text(json.dumps(latest_meta, indent=2))
+            self.hub_meta = latest_meta
+        except Exception as exc:
+            issues.append(f"hub_meta.json ({exc})")
+
+        if issues:
+            self._set_export_status(
+                False,
+                f"Updated fits in memory ({fit_count}/{total_rows}); disk update issues: {'; '.join(issues)}",
+            )
+        else:
+            self._set_export_status(
+                True,
+                f"Updated all master best-fit lines ({fit_count}/{total_rows}) and rewrote hub fit files",
+            )
+
     def _selected_row(self) -> dict | None:
         if not self.rows:
             return None
@@ -543,6 +759,102 @@ class HubViewer:
         idx = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
         self.selected_row_index = idx
         return self.rows[idx]
+
+    def _table_visible_rows(self) -> int:
+        rect = self._table_rect
+        if rect is None:
+            return max(1, int((self.window_h - 140) // max(1, int(self.table_row_h))))
+        table_top = rect.y + 30
+        table_bottom = rect.bottom - 28
+        rows_h = max(0, table_bottom - table_top)
+        return max(1, rows_h // max(1, int(self.table_row_h)))
+
+    def _ensure_selected_visible(self) -> None:
+        if self.selected_row_index is None:
+            return
+        total = len(self.rows)
+        if total <= 0:
+            return
+        idx = max(0, min(int(self.selected_row_index), total - 1))
+        self.selected_row_index = idx
+        visible = self._table_visible_rows()
+        max_scroll = max(0, total - visible)
+        start_idx = int(max(0, min(max_scroll, int(self.table_scroll))))
+        if idx < start_idx:
+            self.table_scroll = float(idx)
+        elif idx >= (start_idx + visible):
+            self.table_scroll = float(idx - visible + 1)
+        self.table_scroll = max(0.0, min(float(max_scroll), float(self.table_scroll)))
+
+    def _move_selected_row(self, delta: int) -> None:
+        total = len(self.rows)
+        if total <= 0:
+            self.selected_row_index = None
+            return
+        delta_i = int(delta)
+        if self.selected_row_index is None:
+            idx = 0 if delta_i >= 0 else (total - 1)
+        else:
+            current = int(self.selected_row_index)
+            if delta_i == 0:
+                idx = max(0, min(current, total - 1))
+            else:
+                idx = (current + delta_i) % total
+        self.selected_row_index = idx
+        self._ensure_selected_visible()
+
+    def _env_rate_in_view(self, env_rate) -> bool:
+        if not hr._is_number(env_rate):
+            return False
+        low = min(float(self.env_view_min), float(self.env_view_max))
+        high = max(float(self.env_view_min), float(self.env_view_max))
+        val = float(env_rate)
+        return (low - 1e-9) <= val <= (high + 1e-9)
+
+    def _env_slider_ratio_for_value(self, value: float) -> float:
+        if self.env_global_max <= self.env_global_min:
+            return 0.0
+        ratio = (float(value) - float(self.env_global_min)) / max(
+            1e-9,
+            float(self.env_global_max) - float(self.env_global_min),
+        )
+        return max(0.0, min(1.0, ratio))
+
+    def _env_slider_value_from_mouse(self, mx: int) -> float:
+        if self._env_range_slider_rect is None:
+            return float(self.env_view_min)
+        ratio = (float(mx) - float(self._env_range_slider_rect.x)) / max(
+            1.0,
+            float(self._env_range_slider_rect.width),
+        )
+        ratio = max(0.0, min(1.0, ratio))
+        return float(self.env_global_min) + (
+            ratio * (float(self.env_global_max) - float(self.env_global_min))
+        )
+
+    def _env_slider_handle_x(self, which: str) -> int:
+        if self._env_range_slider_rect is None:
+            return 0
+        value = float(self.env_view_min) if which == "min" else float(self.env_view_max)
+        ratio = self._env_slider_ratio_for_value(value)
+        return self._env_range_slider_rect.x + int(ratio * self._env_range_slider_rect.width)
+
+    def _set_env_slider_from_mouse(self, mx: int, handle: str) -> None:
+        if self._env_range_slider_rect is None:
+            return
+        if self.env_global_max <= self.env_global_min:
+            self.env_view_min = float(self.env_global_min)
+            self.env_view_max = float(self.env_global_max)
+            return
+        value = self._env_slider_value_from_mouse(mx)
+        low = min(float(self.env_view_min), float(self.env_view_max))
+        high = max(float(self.env_view_min), float(self.env_view_max))
+        if handle == "min":
+            low = min(value, high)
+        else:
+            high = max(value, low)
+        self.env_view_min = max(float(self.env_global_min), min(float(self.env_global_max), float(low)))
+        self.env_view_max = max(float(self.env_global_min), min(float(self.env_global_max), float(high)))
 
     def _active_graph_mode(self) -> str:
         if not self.graph_modes:
@@ -556,6 +868,15 @@ class HubViewer:
             self.graph_mode_index = 0
             return
         self.graph_mode_index = (int(self.graph_mode_index) + int(delta)) % len(self.graph_modes)
+        self._graph3d_dragging = False
+        self._graph3d_last_mouse = None
+
+    def _adjust_graph3d_zoom(self, steps: float) -> None:
+        if not hr._is_number(steps):
+            return
+        zoom = float(self._graph3d_zoom) * (1.12 ** float(steps))
+        zoom = max(float(self._graph3d_zoom_min), min(float(self._graph3d_zoom_max), zoom))
+        self._graph3d_zoom = float(zoom)
 
     def _timeline_cache_key_for_row(self, row: dict | None):
         if not isinstance(row, dict):
@@ -820,6 +1141,410 @@ class HubViewer:
             self.timeline_progress = 1.0
             self.timeline_playing = False
 
+    def _next_export_path(self, base_dir: Path, base_name: str) -> Path:
+        base = base_dir / base_name
+        if not base.exists():
+            return base
+        stem = base.stem
+        suffix = base.suffix
+        for idx in range(1, 1000):
+            candidate = base_dir / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                return candidate
+        return base
+
+    def _export_root_dir(self) -> Path:
+        export_dir = self.hub_dir / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        return export_dir
+
+    def _set_export_status(self, ok: bool, message: str) -> None:
+        self.export_status = str(message)
+        self._export_status_ok = bool(ok)
+
+    def _draw_equation_copy_button(self, rect, equation_text: str, y: int, margin: int = 10) -> int:
+        if not str(equation_text).strip():
+            return 0
+        label = "Copy"
+        btn_w = max(40, int(self.tiny.size(label)[0]) + 10)
+        btn_h = max(14, int(self.tiny.get_linesize()) + 2)
+        btn_rect = self.pg.Rect(
+            int(rect.right - margin - btn_w),
+            int(y),
+            int(btn_w),
+            int(btn_h),
+        )
+        self.pg.draw.rect(self.screen, (52, 58, 76), btn_rect)
+        self.pg.draw.rect(self.screen, (150, 156, 174), btn_rect, 1)
+        txt = self.tiny.render(label, True, (232, 236, 245))
+        self.screen.blit(
+            txt,
+            (
+                btn_rect.x + (btn_rect.width - txt.get_width()) // 2,
+                btn_rect.y + (btn_rect.height - txt.get_height()) // 2,
+            ),
+        )
+        self._equation_copy_hits.append((btn_rect.copy(), str(equation_text)))
+        return int(btn_rect.width + 8)
+
+    def _handle_equation_copy_click(self, mx: int, my: int) -> bool:
+        for item in reversed(self._equation_copy_hits):
+            if (not isinstance(item, tuple)) or len(item) != 2:
+                continue
+            rect, eq_text = item
+            if not isinstance(rect, self.pg.Rect):
+                continue
+            if not rect.collidepoint(mx, my):
+                continue
+            ok = hr._copy_to_clipboard(str(eq_text))
+            if ok:
+                self._set_export_status(True, "Equation copied to clipboard")
+            else:
+                self._set_export_status(False, "Failed to copy equation to clipboard")
+            return True
+        return False
+
+    def _is_3d_mode(self, mode: str) -> bool:
+        return str(mode) in ("hub_3d", "hub_3d_evo_fit_env", "range_hub_3d_fit", "master_fit_lines_3d")
+
+    def _graph3d_export_payload(self, mode: str) -> dict | None:
+        m = str(mode)
+        if m == "hub_3d":
+            return {
+                "axis_keys": ("x", "y", "fitness"),
+                "points": list(self.graph_points),
+            }
+        if m == "hub_3d_evo_fit_env":
+            return {
+                "axis_keys": ("y", "fitness", "x"),
+                "points": list(self.graph_points),
+            }
+        if m == "range_hub_3d_fit":
+            graph_points, _, _ = self._range_hub_graph_data()
+            return {
+                "axis_keys": ("x", "y", "fitness"),
+                "points": list(graph_points),
+            }
+        if m == "master_fit_lines_3d":
+            graph_points, _ = self._master_fit_lines_3d_data()
+            return {
+                "axis_keys": ("x", "y", "fitness"),
+                "points": list(graph_points),
+            }
+        return None
+
+    def _triangle_normal(
+        self,
+        a: tuple[float, float, float],
+        b: tuple[float, float, float],
+        c: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        ux = b[0] - a[0]
+        uy = b[1] - a[1]
+        uz = b[2] - a[2]
+        vx = c[0] - a[0]
+        vy = c[1] - a[1]
+        vz = c[2] - a[2]
+        nx = (uy * vz) - (uz * vy)
+        ny = (uz * vx) - (ux * vz)
+        nz = (ux * vy) - (uy * vx)
+        mag = math.sqrt((nx * nx) + (ny * ny) + (nz * nz))
+        if mag <= 1e-12:
+            return (0.0, 0.0, 0.0)
+        return (nx / mag, ny / mag, nz / mag)
+
+    def _surface_triangles_for_stl(
+        self,
+        points: list[dict],
+        axis_keys: tuple[str, str, str],
+        grid_n: int = 38,
+        nearest_k: int = 8,
+    ) -> tuple[list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]], str | None]:
+        key_x, key_y, key_z = axis_keys
+        coords = []
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            x_val = item.get(key_x)
+            y_val = item.get(key_y)
+            z_val = item.get(key_z)
+            if hr._is_number(x_val) and hr._is_number(y_val) and hr._is_number(z_val):
+                coords.append((float(x_val), float(y_val), float(z_val)))
+        if len(coords) < 3:
+            return [], "not enough 3D points"
+
+        # Keep STL generation responsive on large hubs.
+        if len(coords) > 3200:
+            step = max(1, int(len(coords) / 3200))
+            coords = coords[::step]
+
+        xs = [p[0] for p in coords]
+        ys = [p[1] for p in coords]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        if (max_x - min_x) <= 1e-12 or (max_y - min_y) <= 1e-12:
+            return [], "degenerate range"
+
+        n = max(8, int(grid_n))
+        k = max(3, int(nearest_k))
+        eps = 1e-12
+
+        def _interp_z(xg: float, yg: float) -> float:
+            nearest: list[tuple[float, float]] = []
+            for px, py, pz in coords:
+                dx = px - xg
+                dy = py - yg
+                d2 = (dx * dx) + (dy * dy)
+                if d2 <= 1e-14:
+                    return pz
+                if len(nearest) < k:
+                    nearest.append((d2, pz))
+                    nearest.sort(key=lambda t: t[0])
+                    continue
+                if d2 < nearest[-1][0]:
+                    nearest[-1] = (d2, pz)
+                    nearest.sort(key=lambda t: t[0])
+            num = 0.0
+            den = 0.0
+            for d2, z in nearest:
+                w = 1.0 / max(eps, d2)
+                num += (w * z)
+                den += w
+            return num / max(eps, den)
+
+        grid = [[(0.0, 0.0, 0.0) for _ in range(n)] for _ in range(n)]
+        for iy in range(n):
+            y = min_y + ((max_y - min_y) * float(iy) / float(n - 1))
+            for ix in range(n):
+                x = min_x + ((max_x - min_x) * float(ix) / float(n - 1))
+                z = _interp_z(x, y)
+                grid[iy][ix] = (float(x), float(y), float(z))
+
+        triangles = []
+        for iy in range(n - 1):
+            for ix in range(n - 1):
+                v00 = grid[iy][ix]
+                v10 = grid[iy][ix + 1]
+                v01 = grid[iy + 1][ix]
+                v11 = grid[iy + 1][ix + 1]
+                triangles.append((v00, v10, v01))
+                triangles.append((v10, v11, v01))
+        return triangles, None
+
+    def _point_cloud_triangles_for_stl(
+        self,
+        points: list[dict],
+        axis_keys: tuple[str, str, str],
+        max_points: int = 700,
+    ) -> tuple[
+        list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]],
+        str | None,
+    ]:
+        key_x, key_y, key_z = axis_keys
+        coords = []
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            x_val = item.get(key_x)
+            y_val = item.get(key_y)
+            z_val = item.get(key_z)
+            if hr._is_number(x_val) and hr._is_number(y_val) and hr._is_number(z_val):
+                coords.append((float(x_val), float(y_val), float(z_val)))
+        if not coords:
+            return [], "no numeric points"
+        if len(coords) > int(max_points):
+            step = max(1, int(math.ceil(float(len(coords)) / float(max_points))))
+            coords = coords[::step]
+
+        xs = [c[0] for c in coords]
+        ys = [c[1] for c in coords]
+        zs = [c[2] for c in coords]
+        span_x = max(1e-9, max(xs) - min(xs))
+        span_y = max(1e-9, max(ys) - min(ys))
+        span_z = max(1e-9, max(zs) - min(zs))
+        scale = max(span_x, span_y, span_z)
+        half_size = max(1e-9, scale * 0.0045)
+
+        triangles = []
+        for cx, cy, cz in coords:
+            x0 = cx - half_size
+            x1 = cx + half_size
+            y0 = cy - half_size
+            y1 = cy + half_size
+            z0 = cz - half_size
+            z1 = cz + half_size
+            v000 = (x0, y0, z0)
+            v100 = (x1, y0, z0)
+            v110 = (x1, y1, z0)
+            v010 = (x0, y1, z0)
+            v001 = (x0, y0, z1)
+            v101 = (x1, y0, z1)
+            v111 = (x1, y1, z1)
+            v011 = (x0, y1, z1)
+            # Bottom/Top
+            triangles.append((v000, v110, v100))
+            triangles.append((v000, v010, v110))
+            triangles.append((v001, v101, v111))
+            triangles.append((v001, v111, v011))
+            # Front/Back
+            triangles.append((v000, v100, v101))
+            triangles.append((v000, v101, v001))
+            triangles.append((v010, v111, v110))
+            triangles.append((v010, v011, v111))
+            # Left/Right
+            triangles.append((v000, v001, v011))
+            triangles.append((v000, v011, v010))
+            triangles.append((v100, v110, v111))
+            triangles.append((v100, v111, v101))
+        if not triangles:
+            return [], "no triangles"
+        return triangles, None
+
+    def _write_ascii_stl(
+        self,
+        output_path: Path,
+        triangles: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]],
+        solid_name: str,
+    ) -> None:
+        with output_path.open("w", encoding="ascii") as out:
+            out.write(f"solid {solid_name}\n")
+            for a, b, c in triangles:
+                nx, ny, nz = self._triangle_normal(a, b, c)
+                out.write(f"  facet normal {nx:.6e} {ny:.6e} {nz:.6e}\n")
+                out.write("    outer loop\n")
+                out.write(f"      vertex {a[0]:.6e} {a[1]:.6e} {a[2]:.6e}\n")
+                out.write(f"      vertex {b[0]:.6e} {b[1]:.6e} {b[2]:.6e}\n")
+                out.write(f"      vertex {c[0]:.6e} {c[1]:.6e} {c[2]:.6e}\n")
+                out.write("    endloop\n")
+                out.write("  endfacet\n")
+            out.write(f"endsolid {solid_name}\n")
+
+    def _export_graph_stl(self, mode: str) -> tuple[bool, str]:
+        payload = self._graph3d_export_payload(mode)
+        if not isinstance(payload, dict):
+            return False, "unsupported 3D mode"
+        axis_keys = payload.get("axis_keys")
+        source_points = payload.get("points")
+        if not isinstance(axis_keys, tuple) or len(axis_keys) != 3:
+            return False, "invalid axis map"
+        if not isinstance(source_points, list):
+            return False, "invalid graph points"
+
+        points = [item for item in source_points if isinstance(item, dict) and self._env_rate_in_view(item.get("x"))]
+        if len(points) < 1:
+            return False, "not enough points"
+
+        mesh_type = "surface"
+        triangles, err = self._surface_triangles_for_stl(points, axis_keys)
+        if err is not None or (not triangles):
+            triangles, fallback_err = self._point_cloud_triangles_for_stl(points, axis_keys)
+            if fallback_err is not None or (not triangles):
+                if err is not None:
+                    return False, f"{err}; fallback failed ({fallback_err})"
+                return False, f"fallback failed ({fallback_err})"
+            mesh_type = "point-cloud"
+        if not triangles:
+            return False, "no triangles"
+
+        export_dir = self._export_root_dir()
+        output_path = self._next_export_path(export_dir, f"{self.hub_dir.name}_{mode}.stl")
+        try:
+            self._write_ascii_stl(output_path, triangles, solid_name=f"{self.hub_dir.name}_{mode}")
+            return True, f"{output_path.name} ({mesh_type})"
+        except Exception as exc:
+            return False, f"stl export failed ({exc})"
+
+    def _export_graph_png(self, mode: str) -> tuple[bool, str]:
+        export_dir = self._export_root_dir()
+        output_path = self._next_export_path(export_dir, f"{self.hub_dir.name}_{mode}.png")
+        try:
+            self._draw(include_status=False)
+            self.pg.image.save(self.screen, str(output_path))
+            return True, output_path.name
+        except Exception as exc:
+            return False, f"png export failed ({exc})"
+
+    def _export_timeline_mov(self) -> tuple[bool, str]:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return False, "ffmpeg not found"
+
+        export_dir = self._export_root_dir()
+        frame_dir = export_dir / f"{self.hub_dir.name}_timeline_frames_{int(time.time() * 1000)}"
+        frame_dir.mkdir(parents=True, exist_ok=True)
+
+        prev_progress = float(self.timeline_progress)
+        prev_playing = bool(self.timeline_playing)
+        self.timeline_playing = False
+        try:
+            self._draw(include_status=False)
+            frame_total = max(2, int(self.timeline_frame_count))
+            for idx in range(frame_total):
+                if frame_total <= 1:
+                    self.timeline_progress = 0.0
+                else:
+                    self.timeline_progress = float(idx) / float(frame_total - 1)
+                self._draw(include_status=False)
+                frame_path = frame_dir / f"frame_{idx:06d}.png"
+                self.pg.image.save(self.screen, str(frame_path))
+
+            output_path = self._next_export_path(export_dir, f"{self.hub_dir.name}_timeline.mov")
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-framerate",
+                str(max(1, int(round(float(self.timeline_play_frames_per_sec))))),
+                "-i",
+                str(frame_dir / "frame_%06d.png"),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                return False, "ffmpeg export failed"
+            return True, output_path.name
+        except Exception as exc:
+            return False, f"mov export failed ({exc})"
+        finally:
+            self.timeline_progress = prev_progress
+            self.timeline_playing = prev_playing
+            shutil.rmtree(frame_dir, ignore_errors=True)
+            self._draw(include_status=False)
+
+    def _export_active_mode(self) -> None:
+        mode = self._active_graph_mode()
+        if mode == "timeline_hub":
+            ok, msg = self._export_timeline_mov()
+            if ok:
+                self._set_export_status(True, f"Exported .mov: {msg}")
+            else:
+                self._set_export_status(False, f"Export failed (.mov): {msg}")
+            return
+        if self._is_3d_mode(mode):
+            stl_ok, stl_msg = self._export_graph_stl(mode)
+            png_ok, png_msg = self._export_graph_png(mode)
+            if stl_ok and png_ok:
+                self._set_export_status(True, f"Exported 3D files: .stl {stl_msg} | .png {png_msg}")
+            elif stl_ok and (not png_ok):
+                self._set_export_status(False, f"3D export partial: .stl {stl_msg} | .png failed ({png_msg})")
+            elif png_ok and (not stl_ok):
+                self._set_export_status(False, f"3D export partial: .png {png_msg} | .stl failed ({stl_msg})")
+            else:
+                self._set_export_status(False, f"Export failed (3D): .stl {stl_msg} | .png {png_msg}")
+            return
+        ok, msg = self._export_graph_png(mode)
+        if ok:
+            self._set_export_status(True, f"Exported .png: {msg}")
+        else:
+            self._set_export_status(False, f"Export failed (.png): {msg}")
+
     def _draw_table(self, rect) -> None:
         pg = self.pg
         self._table_rect = rect
@@ -907,7 +1632,7 @@ class HubViewer:
             self.table_row_hits.append((row_idx, ry, ry + self.table_row_h))
 
         info = self.tiny.render(
-            f"Rows {min(total, start_idx + 1)}-{min(total, start_idx + visible)} / {total}    U: reload",
+            f"Rows {min(total, start_idx + 1)}-{min(total, start_idx + visible)} / {total}    U: refresh fits",
             True,
             (152, 160, 176),
         )
@@ -929,22 +1654,29 @@ class HubViewer:
         pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
 
         header_x = rect.x + 10
-        header_w = max(60, rect.width - 20)
-        best = self.hub_best_fit if isinstance(self.hub_best_fit, dict) else None
+        copy_reserved = 0
+        graph_points = [
+            point for point in self.graph_points if self._env_rate_in_view(point.get("x"))
+        ]
+        fit_report = hr._fit_hub_models_from_graph_points(graph_points) if graph_points else {}
+        best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
         if best and hr._is_number(best.get("r2")):
             equation = str(best.get("equation", ""))
+            copy_reserved = self._draw_equation_copy_button(rect, equation, rect.y + 8, margin=10)
+            header_w = max(60, rect.width - 20 - copy_reserved)
             line_1 = hr._fit_text(self.tiny, f"Equation: {equation}", header_w)
             line_2 = hr._fit_text(self.tiny, f"R^2: {float(best.get('r2')):.4f}", header_w)
             col = (235, 210, 146)
         else:
+            header_w = max(60, rect.width - 20)
             line_1 = "Equation: not enough data"
             line_2 = "R^2: --"
             col = (170, 170, 170)
         self.screen.blit(self.tiny.render(line_1, True, col), (header_x, rect.y + 8))
         self.screen.blit(self.tiny.render(line_2, True, col), (header_x, rect.y + 24))
 
-        if not self.graph_points:
-            msg = self.small.render("No hub graph points yet.", True, (170, 170, 170))
+        if not graph_points:
+            msg = self.small.render("No hub graph points in selected env range.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 12, rect.y + 50))
             self.hub_dot_hits = []
             return
@@ -956,9 +1688,9 @@ class HubViewer:
         pg.draw.rect(self.screen, (12, 14, 19), plot)
         pg.draw.rect(self.screen, (60, 66, 78), plot, 1)
 
-        xs = [float(p["x"]) for p in self.graph_points if hr._is_number(p.get("x"))]
-        ys = [float(p["y"]) for p in self.graph_points if hr._is_number(p.get("y"))]
-        fits = [float(p["fitness"]) for p in self.graph_points if hr._is_number(p.get("fitness"))]
+        xs = [float(p["x"]) for p in graph_points if hr._is_number(p.get("x"))]
+        ys = [float(p["y"]) for p in graph_points if hr._is_number(p.get("y"))]
+        fits = [float(p["fitness"]) for p in graph_points if hr._is_number(p.get("fitness"))]
         if not xs or not ys:
             return
 
@@ -985,6 +1717,7 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        fit_segments = []
         if best:
             sample = []
             y_span = max(1e-9, max_y - min_y)
@@ -999,11 +1732,11 @@ class HubViewer:
                 sample.append((xv, y_float))
             if len(sample) >= 2:
                 for i in range(1, len(sample)):
-                    pg.draw.line(self.screen, (248, 196, 92), _to_px(sample[i - 1][0], sample[i - 1][1]), _to_px(sample[i][0], sample[i][1]), 2)
+                    fit_segments.append((sample[i - 1], sample[i]))
 
         self.hub_dot_hits = []
         selected_idx = int(self.selected_row_index) if self.selected_row_index is not None else -1
-        for point in self.graph_points:
+        for point in graph_points:
             px, py = _to_px(float(point["x"]), float(point["y"]))
             n = max(0.0, min(1.0, (float(point["fitness"]) - fit_min) / fit_den))
             radius = max(1, int(round(4 * n)))
@@ -1019,6 +1752,8 @@ class HubViewer:
                     "row_index": int(point.get("row_index", -1)),
                 }
             )
+        for start, end in fit_segments:
+            pg.draw.line(self.screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
 
         min_y_txt = self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150))
         max_y_txt = self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150))
@@ -1032,6 +1767,408 @@ class HubViewer:
         self.screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom + 3))
         self.screen.blit(x_lab, (plot.x + 6, plot.bottom + 18))
         self.screen.blit(y_lab, (plot.x - 42, plot.y + 8))
+
+    def _draw_hub_graph_3d(
+        self,
+        rect,
+        axis_keys: tuple[str, str, str] = ("x", "y", "fitness"),
+        axis_labels: tuple[str, str, str] = ("env rate", "evo speed", "fitness"),
+        mapping_text: str = "x=env rate, y=evo speed, z=fitness",
+        source_points: list[dict] | None = None,
+        best_model: dict | None = None,
+        fit_scope_label: str = "Hub fit",
+        draw_best_fit_line: bool = False,
+        draw_bell_curves: bool = False,
+        bell_curve_rows: list[dict] | None = None,
+        draw_points: bool = True,
+        show_hub_equation: bool = True,
+        title_text: str = "Hub 3D",
+    ) -> None:
+        pg = self.pg
+        pg.draw.rect(self.screen, (18, 20, 26), rect)
+        pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
+
+        key_x, key_y, key_z = axis_keys
+        label_x, label_y, label_z = axis_labels
+        header_x = rect.x + 10
+        copy_reserved = 0
+        if isinstance(source_points, list):
+            points_source = source_points
+        else:
+            points_source = self.graph_points
+        graph_points = [
+            point for point in points_source if self._env_rate_in_view(point.get("x"))
+        ]
+        best = best_model
+        if best is None:
+            fit_report = hr._fit_hub_models_from_graph_points(graph_points) if graph_points else {}
+            best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+        fit_axes = (key_x, key_y) == ("x", "y")
+        has_fit_equation = fit_axes and bool(best) and hr._is_number(best.get("r2"))
+        if has_fit_equation:
+            equation = str(best.get("equation", "")).strip()
+            copy_reserved = self._draw_equation_copy_button(rect, equation, rect.y + 8, margin=10)
+        if show_hub_equation and has_fit_equation:
+            header_w = max(60, rect.width - 20 - copy_reserved)
+            fit_line = hr._fit_text(
+                self.tiny,
+                f"{fit_scope_label}: {equation} | R^2: {float(best.get('r2')):.4f}",
+                header_w,
+            )
+            col = (235, 210, 146)
+        else:
+            header_w = max(60, rect.width - 20 - copy_reserved)
+            if show_hub_equation and fit_axes:
+                fit_line = "Equation: not enough data"
+            elif fit_axes:
+                fit_line = "Equation hidden (use Copy button)"
+            else:
+                fit_line = "Remapped 3D view (2D fit disabled)"
+            col = (170, 170, 170)
+
+        def _wrap_line(text: str, max_w: int) -> list[str]:
+            raw = str(text).strip()
+            if (not raw) or max_w <= 8:
+                return [raw]
+            lines = []
+            remaining = raw
+            while remaining:
+                if self.tiny.size(remaining)[0] <= max_w:
+                    lines.append(remaining)
+                    break
+                cut = len(remaining)
+                while cut > 1 and self.tiny.size(remaining[:cut])[0] > max_w:
+                    cut -= 1
+                split = remaining.rfind(" ", 0, cut)
+                if split <= 0:
+                    split = cut
+                chunk = remaining[:split].rstrip()
+                if chunk:
+                    lines.append(chunk)
+                remaining = remaining[split:].lstrip()
+            return lines if lines else [raw]
+
+        header_items = [
+            (str(title_text), (210, 228, 252)),
+            (f"Axes: {mapping_text}", (190, 206, 230)),
+            (str(fit_line), col),
+            ("Drag to rotate | wheel or +/- to zoom", (178, 188, 205)),
+        ]
+        if draw_bell_curves:
+            header_items.insert(3, ("Bell curves: per-master stitched gaussian fits", (168, 226, 196)))
+        header_y = rect.y + 8
+        line_h = max(12, int(self.tiny.get_linesize()))
+        line_gap = 2
+        for text, color in header_items:
+            wrapped = _wrap_line(text, header_w)
+            for line in wrapped:
+                self.screen.blit(self.tiny.render(line, True, color), (header_x, int(header_y)))
+                header_y += line_h + line_gap
+        plot_top = int(header_y) + 6
+
+        if not graph_points:
+            msg = self.small.render("No hub graph points in selected env range.", True, (170, 170, 170))
+            self.screen.blit(msg, (rect.x + 12, plot_top + 2))
+            self.hub_dot_hits = []
+            return
+
+        plot = pg.Rect(rect.x + 30, plot_top, rect.width - 44, rect.height - ((plot_top - rect.y) + 22))
+        if plot.width <= 24 or plot.height <= 24:
+            return
+        pg.draw.rect(self.screen, (12, 14, 19), plot)
+        pg.draw.rect(self.screen, (60, 66, 78), plot, 1)
+
+        xs = [float(p.get(key_x)) for p in graph_points if hr._is_number(p.get(key_x))]
+        ys = [float(p.get(key_y)) for p in graph_points if hr._is_number(p.get(key_y))]
+        zs = [float(p.get(key_z)) for p in graph_points if hr._is_number(p.get(key_z))]
+        if not xs or not ys or not zs:
+            self.hub_dot_hits = []
+            return
+        fit_values = [float(p.get("fitness")) for p in graph_points if hr._is_number(p.get("fitness"))]
+        if not fit_values:
+            fit_values = list(ys)
+
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        min_z = min(zs)
+        max_z = max(zs)
+        den_x = max(1e-9, max_x - min_x)
+        den_y = max(1e-9, max_y - min_y)
+        den_z = max(1e-9, max_z - min_z)
+        fit_min = min(fit_values)
+        fit_max = max(fit_values)
+        fit_den = max(1e-9, fit_max - fit_min)
+
+        def _norm(val: float, low: float, den: float) -> float:
+            return ((float(val) - float(low)) / float(den)) * 2.0 - 1.0
+
+        yaw = float(self._graph3d_yaw)
+        pitch = float(self._graph3d_pitch)
+        cos_y = math.cos(yaw)
+        sin_y = math.sin(yaw)
+        cos_p = math.cos(pitch)
+        sin_p = math.sin(pitch)
+        cam_dist = 3.4
+        zoom = float(self._graph3d_zoom)
+        scale = float(min(plot.width, plot.height)) * 0.40 * zoom
+        center_x = plot.x + (plot.width / 2.0)
+        center_y = plot.y + (plot.height / 2.0)
+
+        def _project_3d(xv: float, yv: float, zv: float):
+            x1 = (xv * cos_y) + (zv * sin_y)
+            z1 = (-xv * sin_y) + (zv * cos_y)
+            y2 = (yv * cos_p) - (z1 * sin_p)
+            z2 = (yv * sin_p) + (z1 * cos_p)
+            denom = cam_dist - z2
+            if denom <= 0.2:
+                return None
+            perspective = cam_dist / denom
+            px = int(round(center_x + (x1 * scale * perspective)))
+            py = int(round(center_y - (y2 * scale * perspective)))
+            return (px, py, z2, perspective)
+
+        fit_line_segments = []
+        if draw_best_fit_line and show_fit and isinstance(best, dict):
+            y_span = max(1e-9, max_y - min_y)
+
+            def _fit_line_z_for_x(x_val: float) -> float | None:
+                weighted = []
+                for gp in graph_points:
+                    if not (hr._is_number(gp.get("x")) and hr._is_number(gp.get(key_z))):
+                        continue
+                    gx = float(gp.get("x"))
+                    gz = float(gp.get(key_z))
+                    dist = abs(gx - float(x_val))
+                    weight = 1.0 / max(1e-6, 0.02 + dist)
+                    weighted.append((weight, gz))
+                if not weighted:
+                    return None
+                weighted.sort(key=lambda t: t[0], reverse=True)
+                top = weighted[: min(12, len(weighted))]
+                den = sum(w for w, _ in top)
+                if den <= 1e-12:
+                    return None
+                return sum((w * z) for w, z in top) / den
+
+            fit_projected = []
+            for idx in range(220):
+                xv = min_x + ((max_x - min_x) * float(idx) / 219.0)
+                yv = hr._eval_hub_model(best, xv)
+                if not hr._is_number(yv):
+                    continue
+                y_float = float(yv)
+                if y_float < (min_y - (2.0 * y_span)) or y_float > (max_y + (2.0 * y_span)):
+                    continue
+                z_float = _fit_line_z_for_x(xv)
+                if not hr._is_number(z_float):
+                    continue
+                nx = _norm(float(xv), min_x, den_x)
+                ny = _norm(y_float, min_y, den_y)
+                nz = _norm(float(z_float), min_z, den_z)
+                pr = _project_3d(nx, ny, nz)
+                if pr is None:
+                    continue
+                fit_projected.append(pr)
+            if len(fit_projected) >= 2:
+                for idx in range(1, len(fit_projected)):
+                    fit_line_segments.append((fit_projected[idx - 1], fit_projected[idx]))
+
+        bell_curve_segments = []
+        if (
+            draw_bell_curves
+            and isinstance(bell_curve_rows, list)
+            and (key_x, key_y, key_z) == ("x", "y", "fitness")
+        ):
+            z_span = max(1e-9, max_z - min_z)
+            for row_fit in bell_curve_rows:
+                if not isinstance(row_fit, dict):
+                    continue
+                env_rate = row_fit.get("env_rate")
+                fit = row_fit.get("fit")
+                if (not hr._is_number(env_rate)) or (not isinstance(fit, dict)):
+                    continue
+                apex_x = fit.get("apex_x")
+                apex_y = fit.get("apex_y")
+                sigma_left = fit.get("sigma_left")
+                sigma_right = fit.get("sigma_right")
+                if not (
+                    hr._is_number(apex_x)
+                    and hr._is_number(apex_y)
+                    and hr._is_number(sigma_left)
+                    and hr._is_number(sigma_right)
+                ):
+                    continue
+                env_float = float(env_rate)
+                projected_curve = []
+                for idx in range(180):
+                    evo_val = min_y + ((max_y - min_y) * float(idx) / 179.0)
+                    fit_val = hr._predict_piecewise_gaussian(
+                        float(evo_val),
+                        float(apex_x),
+                        float(apex_y),
+                        float(sigma_left),
+                        float(sigma_right),
+                    )
+                    if not hr._is_number(fit_val):
+                        continue
+                    fit_float = float(fit_val)
+                    if fit_float < (min_z - (2.0 * z_span)) or fit_float > (max_z + (2.0 * z_span)):
+                        continue
+                    nx = _norm(env_float, min_x, den_x)
+                    ny = _norm(evo_val, min_y, den_y)
+                    nz = _norm(fit_float, min_z, den_z)
+                    pr = _project_3d(nx, ny, nz)
+                    if pr is not None:
+                        projected_curve.append(pr)
+                if len(projected_curve) < 2:
+                    continue
+                curve_color = self._env_color(env_float, min_x, max_x)
+                for idx in range(1, len(projected_curve)):
+                    p0 = projected_curve[idx - 1]
+                    p1 = projected_curve[idx]
+                    depth = (float(p0[2]) + float(p1[2])) * 0.5
+                    bell_curve_segments.append(
+                        {
+                            "p0": p0,
+                            "p1": p1,
+                            "depth": depth,
+                            "color": curve_color,
+                        }
+                    )
+
+        # Floor grid for depth cues.
+        for t in (-0.5, 0.0, 0.5):
+            a = _project_3d(-1.0, -1.0, t)
+            b = _project_3d(1.0, -1.0, t)
+            c = _project_3d(t, -1.0, -1.0)
+            d = _project_3d(t, -1.0, 1.0)
+            if a is not None and b is not None:
+                pg.draw.line(self.screen, (40, 44, 54), (a[0], a[1]), (b[0], b[1]), 1)
+            if c is not None and d is not None:
+                pg.draw.line(self.screen, (40, 44, 54), (c[0], c[1]), (d[0], d[1]), 1)
+
+        axis_origin = _project_3d(-1.0, -1.0, -1.0)
+        axis_x = _project_3d(1.0, -1.0, -1.0)
+        axis_y = _project_3d(-1.0, 1.0, -1.0)
+        axis_z = _project_3d(-1.0, -1.0, 1.0)
+        if axis_origin is not None:
+            if axis_x is not None:
+                pg.draw.line(self.screen, (128, 210, 255), (axis_origin[0], axis_origin[1]), (axis_x[0], axis_x[1]), 2)
+                x_label = self.tiny.render(f"x: {label_x}", True, (128, 210, 255))
+                self.screen.blit(x_label, (axis_x[0] + 5, axis_x[1] - 10))
+            if axis_y is not None:
+                pg.draw.line(self.screen, (168, 235, 176), (axis_origin[0], axis_origin[1]), (axis_y[0], axis_y[1]), 2)
+                y_label = self.tiny.render(f"y: {label_y}", True, (168, 235, 176))
+                self.screen.blit(y_label, (axis_y[0] + 5, axis_y[1] - 10))
+            if axis_z is not None:
+                pg.draw.line(self.screen, (255, 208, 136), (axis_origin[0], axis_origin[1]), (axis_z[0], axis_z[1]), 2)
+                z_label = self.tiny.render(f"z: {label_z}", True, (255, 208, 136))
+                self.screen.blit(z_label, (axis_z[0] + 5, axis_z[1] - 10))
+
+        projected = []
+        if draw_points:
+            selected_idx = int(self.selected_row_index) if self.selected_row_index is not None else -1
+            for item in graph_points:
+                if not (
+                    hr._is_number(item.get(key_x))
+                    and hr._is_number(item.get(key_y))
+                    and hr._is_number(item.get(key_z))
+                ):
+                    continue
+                nx = _norm(float(item.get(key_x)), min_x, den_x)
+                ny = _norm(float(item.get(key_y)), min_y, den_y)
+                nz = _norm(float(item.get(key_z)), min_z, den_z)
+                pr = _project_3d(nx, ny, nz)
+                if pr is None:
+                    continue
+                px, py, depth, perspective = pr
+                if not plot.inflate(40, 40).collidepoint(px, py):
+                    continue
+                if hr._is_number(item.get("fitness")):
+                    fitness_val = float(item.get("fitness"))
+                else:
+                    fitness_val = float(item.get(key_y))
+                fitness_norm = max(0.0, min(1.0, (fitness_val - fit_min) / fit_den))
+                base_radius = 2.0 + (4.0 * fitness_norm)
+                radius = max(1, min(12, int(round(base_radius * max(0.65, min(2.2, perspective))))))
+                color = (35 + int(220 * fitness_norm), 128 + int(95 * fitness_norm), 236 - int(166 * fitness_norm))
+                projected.append(
+                    {
+                        "depth": float(depth),
+                        "px": int(px),
+                        "py": int(py),
+                        "radius": int(radius),
+                        "color": color,
+                        "row_index": int(item.get("row_index", -1)),
+                    }
+                )
+
+        projected.sort(key=lambda d: float(d["depth"]))
+        bell_curve_segments.sort(key=lambda d: float(d["depth"]))
+        for seg in bell_curve_segments:
+            p0 = seg["p0"]
+            p1 = seg["p1"]
+            c = seg["color"]
+            pg.draw.line(
+                self.screen,
+                (int(c[0]), int(c[1]), int(c[2])),
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                2,
+            )
+            pg.draw.line(
+                self.screen,
+                (255, 255, 255),
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                1,
+            )
+        for p0, p1 in fit_line_segments:
+            pg.draw.line(
+                self.screen,
+                (248, 196, 92),
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                3,
+            )
+            pg.draw.line(
+                self.screen,
+                (255, 235, 178),
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                1,
+            )
+        self.hub_dot_hits = []
+        if draw_points:
+            selected_idx = int(self.selected_row_index) if self.selected_row_index is not None else -1
+            for dot in projected:
+                px = int(dot["px"])
+                py = int(dot["py"])
+                radius = int(dot["radius"])
+                if int(dot["row_index"]) == selected_idx:
+                    pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
+                pg.draw.circle(self.screen, dot["color"], (px, py), radius)
+                self.hub_dot_hits.append(
+                    {
+                        "px": px,
+                        "py": py,
+                        "radius": max(6, radius + 4),
+                        "row_index": int(dot["row_index"]),
+                    }
+                )
+
+        range_text = (
+            f"x({label_x}) {min_x:.3f}..{max_x:.3f}   "
+            f"y({label_y}) {min_y:.3f}..{max_y:.3f}   "
+            f"z({label_z}) {min_z:.3f}..{max_z:.3f}   "
+            f"zoom {zoom:.2f}x"
+        )
+        self.screen.blit(
+            self.tiny.render(hr._fit_text(self.tiny, range_text, rect.width - 20), True, (160, 168, 184)),
+            (rect.x + 10, rect.bottom - 16),
+        )
 
     def _draw_selected_scatter(self, rect, row: dict | None) -> None:
         pg = self.pg
@@ -1091,6 +2228,7 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        fit_segments = []
         fit = row.get("fit")
         if isinstance(fit, dict):
             apex_x = fit.get("apex_x")
@@ -1117,7 +2255,7 @@ class HubViewer:
                         curve.append((float(xv), float(yv)))
                 if len(curve) >= 2:
                     for i in range(1, len(curve)):
-                        pg.draw.line(self.screen, (248, 196, 92), _to_px(curve[i - 1][0], curve[i - 1][1]), _to_px(curve[i][0], curve[i][1]), 2)
+                        fit_segments.append((curve[i - 1], curve[i]))
 
         y_min = min(ys)
         y_max = max(ys)
@@ -1127,6 +2265,8 @@ class HubViewer:
             radius = 1 + int(round(3 * n))
             color = (42 + int(210 * n), 128 + int(95 * n), 236 - int(166 * n))
             pg.draw.circle(self.screen, color, _to_px(x_val, y_val), radius)
+        for start, end in fit_segments:
+            pg.draw.line(self.screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
 
         self.screen.blit(self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.y - 2))
         self.screen.blit(self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.bottom - 14))
@@ -1261,7 +2401,12 @@ class HubViewer:
             eq = str(fit.get("equation", ""))
             r2 = fit.get("r2")
             r2_text = f"{float(r2):.4f}" if hr._is_number(r2) else "--"
-            text = hr._fit_text(self.tiny, f"Sim fit: {eq} | R^2={r2_text}", max(40, rect.width - 20))
+            copy_reserved = self._draw_equation_copy_button(rect, eq, rect.y + 10, margin=10)
+            text = hr._fit_text(
+                self.tiny,
+                f"Sim fit: {eq} | R^2={r2_text}",
+                max(40, rect.width - 20 - copy_reserved),
+            )
             self.screen.blit(self.tiny.render(text, True, (235, 210, 146)), (rect.x + 10, rect.y + 10))
 
         if isinstance(master_fit, dict) and hr._is_number(master_fit.get("slope")) and hr._is_number(master_fit.get("intercept")):
@@ -1273,7 +2418,12 @@ class HubViewer:
             eq = str(master_fit.get("equation", ""))
             r2 = master_fit.get("r2")
             r2_text = f"{float(r2):.4f}" if hr._is_number(r2) else "--"
-            text = hr._fit_text(self.tiny, f"Master fit: {eq} | R^2={r2_text}", max(40, rect.width - 20))
+            copy_reserved = self._draw_equation_copy_button(rect, eq, rect.y + 24, margin=10)
+            text = hr._fit_text(
+                self.tiny,
+                f"Master fit: {eq} | R^2={r2_text}",
+                max(40, rect.width - 20 - copy_reserved),
+            )
             self.screen.blit(self.tiny.render(text, True, (168, 246, 232)), (rect.x + 10, rect.y + 24))
 
         self.screen.blit(self.tiny.render("0%", True, (150, 150, 150)), (plot.x - 6, plot.bottom + 2))
@@ -1301,13 +2451,15 @@ class HubViewer:
         env_values = []
         fallback_count = 0
         used_rows = 0
+        candidate_rows = 0
         max_samples = 2
         for row_idx, row in enumerate(self.rows):
             if not isinstance(row, dict):
                 continue
             env_rate = row.get("env_rate")
-            if not hr._is_number(env_rate):
+            if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)):
                 continue
+            candidate_rows += 1
             payload = self._timeline_payload_for_row(row)
             cloud_series = payload.get("cloud_series") if isinstance(payload, dict) else None
             if not isinstance(cloud_series, list) or not cloud_series:
@@ -1355,7 +2507,7 @@ class HubViewer:
         frame_lbl = self.tiny.render(f"frame {frame_idx}/{frame_total}", True, (170, 182, 202))
         self.screen.blit(frame_lbl, (rect.right - frame_lbl.get_width() - 10, rect.y + 10))
 
-        note = f"rows with data: {used_rows}/{len(self.rows)} | points: {len(graph_points)}"
+        note = f"rows with data: {used_rows}/{candidate_rows} | points: {len(graph_points)}"
         if fallback_count > 0:
             note += f" | fallback rows: {fallback_count}"
         self.screen.blit(
@@ -1399,6 +2551,7 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        fit_segments = []
         if isinstance(best, dict):
             sample = []
             y_span = max(1e-9, max_y - min_y)
@@ -1413,13 +2566,7 @@ class HubViewer:
                 sample.append((xv, y_float))
             if len(sample) >= 2:
                 for i in range(1, len(sample)):
-                    pg.draw.line(
-                        self.screen,
-                        (248, 196, 92),
-                        _to_px(sample[i - 1][0], sample[i - 1][1]),
-                        _to_px(sample[i][0], sample[i][1]),
-                        2,
-                    )
+                    fit_segments.append((sample[i - 1], sample[i]))
 
         selected_idx = int(self.selected_row_index) if self.selected_row_index is not None else -1
         for item in graph_points:
@@ -1430,11 +2577,21 @@ class HubViewer:
             if int(item.get("row_index", -1)) == selected_idx:
                 pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
             pg.draw.circle(self.screen, color, (px, py), radius)
+        for start, end in fit_segments:
+            pg.draw.line(
+                self.screen,
+                (248, 196, 92),
+                _to_px(start[0], start[1]),
+                _to_px(end[0], end[1]),
+                2,
+            )
 
         if isinstance(best, dict) and hr._is_number(best.get("r2")):
             equation = str(best.get("equation", ""))
-            line_1 = hr._fit_text(self.tiny, f"Equation: {equation}", max(60, rect.width - 20))
-            line_2 = hr._fit_text(self.tiny, f"R^2: {float(best.get('r2')):.4f}", max(60, rect.width - 20))
+            copy_reserved = self._draw_equation_copy_button(rect, equation, rect.y + 8, margin=10)
+            text_w = max(60, rect.width - 20 - copy_reserved)
+            line_1 = hr._fit_text(self.tiny, f"Equation: {equation}", text_w)
+            line_2 = hr._fit_text(self.tiny, f"R^2: {float(best.get('r2')):.4f}", text_w)
             col = (235, 210, 146)
         else:
             line_1 = "Equation: not enough data"
@@ -1505,7 +2662,7 @@ class HubViewer:
                 continue
             env_rate = row.get("env_rate")
             points = row.get("points")
-            if (not hr._is_number(env_rate)) or (not isinstance(points, list)):
+            if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)) or (not isinstance(points, list)):
                 continue
             numeric_points = []
             for pair in points:
@@ -1583,6 +2740,30 @@ class HubViewer:
             py = plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        curve_segments = []
+
+        for master in masters:
+            env_rate = float(master.get("env_rate", 0.0))
+            env_color = self._env_color(env_rate, env_min, env_max)
+            env_norm = 0.5 if env_max <= env_min else max(0.0, min(1.0, (env_rate - env_min) / (env_max - env_min)))
+            for xv, yv in master.get("points", []):
+                fit_norm = max(0.0, min(1.0, (float(yv) - fit_min) / fit_den))
+                if dual_color:
+                    # Spectrum mode: color encodes environment change rate.
+                    color = env_color
+                else:
+                    color = (
+                        int((0.55 * env_color[0]) + (0.45 * (35 + (220 * fit_norm)))),
+                        int((0.55 * env_color[1]) + (0.45 * (35 + (220 * fit_norm)))),
+                        int((0.55 * env_color[2]) + (0.45 * (215 - (140 * fit_norm)))),
+                    )
+                radius = 2 if constant_radius else (1 + int(round(3 * fit_norm)))
+                pg.draw.circle(
+                    plot_layer,
+                    (color[0], color[1], color[2], alpha),
+                    _to_px(float(xv), float(yv)),
+                    max(1, radius),
+                )
         if overlay_curves:
             for master in masters:
                 fit = master.get("fit")
@@ -1615,36 +2796,15 @@ class HubViewer:
                         curve.append((float(xv), float(yv)))
                 if len(curve) >= 2:
                     for i in range(1, len(curve)):
-                        pg.draw.line(
-                            plot_layer,
-                            (curve_color[0], curve_color[1], curve_color[2], alpha),
-                            _to_px(curve[i - 1][0], curve[i - 1][1]),
-                            _to_px(curve[i][0], curve[i][1]),
-                            2,
-                        )
-
-        for master in masters:
-            env_rate = float(master.get("env_rate", 0.0))
-            env_color = self._env_color(env_rate, env_min, env_max)
-            env_norm = 0.5 if env_max <= env_min else max(0.0, min(1.0, (env_rate - env_min) / (env_max - env_min)))
-            for xv, yv in master.get("points", []):
-                fit_norm = max(0.0, min(1.0, (float(yv) - fit_min) / fit_den))
-                if dual_color:
-                    # Spectrum mode: color encodes environment change rate.
-                    color = env_color
-                else:
-                    color = (
-                        int((0.55 * env_color[0]) + (0.45 * (35 + (220 * fit_norm)))),
-                        int((0.55 * env_color[1]) + (0.45 * (35 + (220 * fit_norm)))),
-                        int((0.55 * env_color[2]) + (0.45 * (215 - (140 * fit_norm)))),
-                    )
-                radius = 2 if constant_radius else (1 + int(round(3 * fit_norm)))
-                pg.draw.circle(
-                    plot_layer,
-                    (color[0], color[1], color[2], alpha),
-                    _to_px(float(xv), float(yv)),
-                    max(1, radius),
-                )
+                        curve_segments.append((curve_color, curve[i - 1], curve[i]))
+        for curve_color, start, end in curve_segments:
+            pg.draw.line(
+                plot_layer,
+                (curve_color[0], curve_color[1], curve_color[2], alpha),
+                _to_px(start[0], start[1]),
+                _to_px(end[0], end[1]),
+                2,
+            )
 
         self.screen.blit(plot_layer, (plot.x, plot.y))
 
@@ -1677,20 +2837,17 @@ class HubViewer:
             overlay_curves=False,
         )
 
-    def _draw_range_hub_graph(self, rect) -> None:
-        pg = self.pg
-        pg.draw.rect(self.screen, (18, 20, 26), rect)
-        pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
-
+    def _range_hub_graph_data(self) -> tuple[list[dict], dict | None, list[dict]]:
         filtered_rows = []
         graph_points = []
+        bell_curve_rows = []
         top_n = max(1, int(self.range_top_n))
         for row_idx, row in enumerate(self.rows):
             if not isinstance(row, dict):
                 continue
             env_rate = row.get("env_rate")
             points = row.get("points")
-            if (not hr._is_number(env_rate)) or (not isinstance(points, list)):
+            if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)) or (not isinstance(points, list)):
                 continue
             numeric_points = []
             for pair in points:
@@ -1704,6 +2861,12 @@ class HubViewer:
             numeric_points = sorted(numeric_points, key=lambda p: p[1], reverse=True)[:top_n]
             numeric_points.sort(key=lambda p: p[0])
             filtered_rows.append({"env_rate": float(env_rate), "points": list(numeric_points)})
+            bell_curve_rows.append(
+                {
+                    "env_rate": float(env_rate),
+                    "fit": row.get("fit"),
+                }
+            )
             for src_idx, (evo_val, fit_val) in enumerate(numeric_points, start=1):
                 graph_points.append(
                     {
@@ -1714,18 +2877,155 @@ class HubViewer:
                         "source_row_index": int(src_idx),
                     }
                 )
-
         fit_report = hr._fit_hub_models_from_rows(filtered_rows) if filtered_rows else {}
         best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+        return graph_points, best, bell_curve_rows
+
+    def _master_fit_lines_3d_data(self) -> tuple[list[dict], list[dict]]:
+        valid_rows = []
+        for row_idx, row in enumerate(self.rows):
+            if not isinstance(row, dict):
+                continue
+            env_rate = row.get("env_rate")
+            fit = row.get("fit")
+            if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)) or (not isinstance(fit, dict)):
+                continue
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+            sigma_left = fit.get("sigma_left")
+            sigma_right = fit.get("sigma_right")
+            if not (
+                hr._is_number(apex_x)
+                and hr._is_number(apex_y)
+                and hr._is_number(sigma_left)
+                and hr._is_number(sigma_right)
+            ):
+                continue
+            valid_rows.append(
+                {
+                    "row_index": int(row_idx),
+                    "env_rate": float(env_rate),
+                    "fit": fit,
+                    "apex_x": float(apex_x),
+                    "apex_y": float(apex_y),
+                    "sigma_left": max(1e-6, float(sigma_left)),
+                    "sigma_right": max(1e-6, float(sigma_right)),
+                }
+            )
+        if not valid_rows:
+            return [], []
+
+        x_candidates = []
+        for item in valid_rows:
+            x_candidates.append(float(item["apex_x"]) - (4.0 * float(item["sigma_left"])))
+            x_candidates.append(float(item["apex_x"]) + (4.0 * float(item["sigma_right"])))
+        min_x = min(x_candidates)
+        max_x = max(x_candidates)
+        if max_x <= min_x:
+            min_x -= 0.05
+            max_x += 0.05
+
+        graph_points = []
+        bell_curve_rows = []
+        for item in valid_rows:
+            env_rate = float(item["env_rate"])
+            fit = item["fit"]
+            bell_curve_rows.append(
+                {
+                    "row_index": int(item["row_index"]),
+                    "env_rate": env_rate,
+                    "fit": fit,
+                }
+            )
+            for idx in range(180):
+                evo_val = min_x + ((max_x - min_x) * float(idx) / 179.0)
+                fit_val = hr._predict_piecewise_gaussian(
+                    float(evo_val),
+                    float(item["apex_x"]),
+                    float(item["apex_y"]),
+                    float(item["sigma_left"]),
+                    float(item["sigma_right"]),
+                )
+                if not hr._is_number(fit_val):
+                    continue
+                graph_points.append(
+                    {
+                        "row_index": int(item["row_index"]),
+                        "x": env_rate,
+                        "y": float(evo_val),
+                        "fitness": float(fit_val),
+                    }
+                )
+        return graph_points, bell_curve_rows
+
+    def _draw_range_hub_graph_3d(self, rect) -> None:
+        graph_points, best, bell_curve_rows = self._range_hub_graph_data()
+        if not graph_points:
+            pg = self.pg
+            pg.draw.rect(self.screen, (18, 20, 26), rect)
+            pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
+            msg = self.small.render("No range hub points yet.", True, (170, 170, 170))
+            self.screen.blit(msg, (rect.x + 12, rect.y + 50))
+            self.hub_dot_hits = []
+            return
+        self._draw_hub_graph_3d(
+            rect,
+            axis_keys=("x", "y", "fitness"),
+            axis_labels=("env rate", "evo speed", "fitness"),
+            mapping_text="x=env rate, y=evo speed, z=fitness (range hub top-N)",
+            source_points=graph_points,
+            best_model=best,
+            fit_scope_label="Best fit (all masters)",
+            draw_best_fit_line=True,
+            draw_bell_curves=True,
+            bell_curve_rows=bell_curve_rows,
+            title_text="Range Hub 3D Fit",
+        )
+
+    def _draw_master_fit_lines_3d(self, rect) -> None:
+        graph_points, bell_curve_rows = self._master_fit_lines_3d_data()
+        if not graph_points:
+            pg = self.pg
+            pg.draw.rect(self.screen, (18, 20, 26), rect)
+            pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
+            msg = self.small.render("No master fits available in selected env range.", True, (170, 170, 170))
+            self.screen.blit(msg, (rect.x + 12, rect.y + 50))
+            self.hub_dot_hits = []
+            return
+        self._draw_hub_graph_3d(
+            rect,
+            axis_keys=("x", "y", "fitness"),
+            axis_labels=("env rate", "evo speed", "fitness"),
+            mapping_text="x=env rate, y=evo speed, z=fitness (master fit lines only)",
+            source_points=graph_points,
+            best_model=self.hub_best_fit if isinstance(self.hub_best_fit, dict) else None,
+            fit_scope_label="Best fit (all masters)",
+            draw_best_fit_line=False,
+            draw_bell_curves=True,
+            bell_curve_rows=bell_curve_rows,
+            draw_points=False,
+            show_hub_equation=False,
+            title_text="Master Fit Lines 3D",
+        )
+
+    def _draw_range_hub_graph(self, rect) -> None:
+        pg = self.pg
+        pg.draw.rect(self.screen, (18, 20, 26), rect)
+        pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
+
+        graph_points, best, _ = self._range_hub_graph_data()
 
         header_x = rect.x + 10
-        header_w = max(60, rect.width - 20)
+        copy_reserved = 0
         if isinstance(best, dict) and hr._is_number(best.get("r2")):
             equation = str(best.get("equation", ""))
+            copy_reserved = self._draw_equation_copy_button(rect, equation, rect.y + 8, margin=10)
+            header_w = max(60, rect.width - 20 - copy_reserved)
             line_1 = hr._fit_text(self.tiny, f"Equation: {equation}", header_w)
             line_2 = hr._fit_text(self.tiny, f"R^2: {float(best.get('r2')):.4f}", header_w)
             col = (235, 210, 146)
         else:
+            header_w = max(60, rect.width - 20)
             line_1 = "Equation: not enough data"
             line_2 = "R^2: --"
             col = (170, 170, 170)
@@ -1774,6 +3074,7 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        fit_segments = []
         if isinstance(best, dict):
             sample = []
             y_span = max(1e-9, max_y - min_y)
@@ -1788,13 +3089,7 @@ class HubViewer:
                 sample.append((xv, y_float))
             if len(sample) >= 2:
                 for i in range(1, len(sample)):
-                    pg.draw.line(
-                        self.screen,
-                        (248, 196, 92),
-                        _to_px(sample[i - 1][0], sample[i - 1][1]),
-                        _to_px(sample[i][0], sample[i][1]),
-                        2,
-                    )
+                    fit_segments.append((sample[i - 1], sample[i]))
 
         self.hub_dot_hits = []
         selected_idx = int(self.selected_row_index) if self.selected_row_index is not None else -1
@@ -1813,6 +3108,14 @@ class HubViewer:
                     "radius": 7,
                     "row_index": int(point.get("row_index", -1)),
                 }
+            )
+        for start, end in fit_segments:
+            pg.draw.line(
+                self.screen,
+                (248, 196, 92),
+                _to_px(start[0], start[1]),
+                _to_px(end[0], end[1]),
+                2,
             )
 
         min_y_txt = self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150))
@@ -1847,10 +3150,17 @@ class HubViewer:
 
         btn_w = 84
         btn_h = 28
-        by = rect.y + (rect.height - btn_h) // 2
+        by = rect.y + 6
         self._back_button_rect = pg.Rect(rect.x + 10, by, btn_w, btn_h)
         self._next_button_rect = pg.Rect(self._back_button_rect.right + 8, by, btn_w, btn_h)
-        for button_rect, label in ((self._back_button_rect, "Back"), (self._next_button_rect, "Next")):
+        self._export_button_rect = pg.Rect(self._next_button_rect.right + 8, by, btn_w, btn_h)
+        self._settings_button_rect = pg.Rect(self._export_button_rect.right + 8, by, btn_w, btn_h)
+        for button_rect, label in (
+            (self._back_button_rect, "Back"),
+            (self._next_button_rect, "Next"),
+            (self._export_button_rect, "Export"),
+            (self._settings_button_rect, "Settings"),
+        ):
             pg.draw.rect(self.screen, (42, 42, 46), button_rect)
             pg.draw.rect(self.screen, (155, 155, 155), button_rect, 1)
             txt = self.small.render(label, True, (230, 230, 230))
@@ -1864,19 +3174,24 @@ class HubViewer:
 
         mode_labels = {
             "normal": "Normal",
+            "hub_3d": "Hub 3D",
+            "hub_3d_evo_fit_env": "Hub 3D (Evo/Fit/Env)",
             "timeline_hub": "Hub Timeline",
             "spectrum": "Spectrum+Curves",
             "range": "Range",
             "range_hub": "Range Hub",
+            "range_hub_3d_fit": "Range Hub 3D Fit",
+            "master_fit_lines_3d": "Master Fit Lines 3D",
         }
         mode_text = f"Mode {self.graph_mode_index + 1}/{len(self.graph_modes)}: {mode_labels.get(mode, mode)}"
-        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._next_button_rect.right + 14, by + 5))
+        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._settings_button_rect.right + 14, by + 5))
 
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
         self._timeline_next_button_rect = None
         self._timeline_slider_rect = None
         self._range_slider_rect = None
+        self._env_range_slider_rect = None
         if mode == "timeline_hub":
             btn_w = 92
             btn_h = 26
@@ -1884,7 +3199,7 @@ class HubViewer:
             slider_w = max(170, min(320, rect.width - 730))
             slider_h = 6
             slider_x = rect.right - slider_w - 16
-            slider_y = rect.centery - (slider_h // 2)
+            slider_y = by + (btn_h // 2) - (slider_h // 2)
             self._timeline_slider_rect = pg.Rect(slider_x, slider_y, slider_w, slider_h)
             pg.draw.rect(self.screen, (92, 92, 98), self._timeline_slider_rect)
             knob_x = self._timeline_slider_rect.x + int(float(self.timeline_progress) * self._timeline_slider_rect.width)
@@ -1927,11 +3242,11 @@ class HubViewer:
                 (190, 200, 218),
             )
             self.screen.blit(timeline_label, (slider_x, slider_y - 18))
-        elif mode in ("range", "range_hub"):
+        elif mode in ("range", "range_hub", "range_hub_3d_fit"):
             slider_x = self._next_button_rect.right + 240
             slider_w = max(120, rect.right - slider_x - 18)
             slider_h = 6
-            slider_y = rect.centery - (slider_h // 2)
+            slider_y = by + (btn_h // 2) - (slider_h // 2)
             self._range_slider_rect = pg.Rect(slider_x, slider_y, slider_w, slider_h)
             pg.draw.rect(self.screen, (92, 92, 98), self._range_slider_rect)
             if self.range_top_n_max <= self.range_top_n_min:
@@ -1949,9 +3264,37 @@ class HubViewer:
             )
             self.screen.blit(slider_label, (slider_x, slider_y - 18))
 
-    def _draw(self) -> None:
+        env_slider_x = self._next_button_rect.right + 200
+        env_slider_w = max(200, rect.right - env_slider_x - 16)
+        env_slider_y = rect.bottom - 16
+        env_slider_h = 6
+        self._env_range_slider_rect = pg.Rect(env_slider_x, env_slider_y, env_slider_w, env_slider_h)
+        pg.draw.rect(self.screen, (92, 92, 98), self._env_range_slider_rect)
+        min_knob_x = self._env_slider_handle_x("min")
+        max_knob_x = self._env_slider_handle_x("max")
+        if max_knob_x < min_knob_x:
+            min_knob_x, max_knob_x = max_knob_x, min_knob_x
+        if max_knob_x > min_knob_x:
+            pg.draw.rect(
+                self.screen,
+                (126, 166, 220),
+                (min_knob_x, self._env_range_slider_rect.y, max(1, max_knob_x - min_knob_x), self._env_range_slider_rect.height),
+            )
+        pg.draw.circle(self.screen, (185, 225, 255), (min_knob_x, self._env_range_slider_rect.centery), 7)
+        pg.draw.circle(self.screen, (236, 214, 164), (max_knob_x, self._env_range_slider_rect.centery), 7)
+        low = min(float(self.env_view_min), float(self.env_view_max))
+        high = max(float(self.env_view_min), float(self.env_view_max))
+        env_label = self.tiny.render(
+            f"Env range shown: {low:.3f} to {high:.3f}",
+            True,
+            (190, 200, 218),
+        )
+        self.screen.blit(env_label, (env_slider_x, env_slider_y - 18))
+
+    def _draw(self, include_status: bool = True) -> None:
         pg = self.pg
         self.screen.fill((10, 12, 16))
+        self._equation_copy_hits = []
 
         margin = 16
         gap = 12
@@ -1967,7 +3310,7 @@ class HubViewer:
 
         lower_y = hub_rect.bottom + gap
         lower_h = max(120, self.window_h - lower_y - margin)
-        controls_h = 42
+        controls_h = 68
         controls_rect = pg.Rect(right_x, lower_y, right_w, controls_h)
         detail_h = max(100, lower_h - controls_h - 8)
         detail_rect = pg.Rect(right_x, controls_rect.bottom + 8, right_w, detail_h)
@@ -1978,15 +3321,34 @@ class HubViewer:
         self.screen.blit(self.font.render(title, True, (226, 226, 226)), (margin, 14))
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
-            "Controls: click row to select, wheel scroll, U reload, S selector, Left/Right or Back/Next to rotate graph modes, timeline has Last/Play/Next + slider, Esc/Q quit"
+            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
         )
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, subtitle, self.window_w - (2 * margin)), True, (168, 176, 191)), (margin, 44))
+        if include_status and self.export_status:
+            status_color = (172, 226, 178) if self._export_status_ok else (255, 164, 164)
+            status_text = hr._fit_text(self.tiny, self.export_status, self.window_w - (2 * margin))
+            self.screen.blit(self.tiny.render(status_text, True, status_color), (margin, 58))
 
         self._draw_table(left_rect)
         selected = self._selected_row()
         mode = self._active_graph_mode()
+        self._hub_graph_rect = hub_rect
         if mode == "timeline_hub":
             self._draw_hub_timeline(hub_rect)
+        elif mode == "hub_3d":
+            self._draw_hub_graph_3d(hub_rect, title_text="Hub 3D")
+        elif mode == "hub_3d_evo_fit_env":
+            self._draw_hub_graph_3d(
+                hub_rect,
+                axis_keys=("y", "fitness", "x"),
+                axis_labels=("evo speed", "fitness", "env rate"),
+                mapping_text="x=evo speed, y=fitness, z=env rate",
+                title_text="Hub 3D (Evo/Fit/Env)",
+            )
+        elif mode == "range_hub_3d_fit":
+            self._draw_range_hub_graph_3d(hub_rect)
+        elif mode == "master_fit_lines_3d":
+            self._draw_master_fit_lines_3d(hub_rect)
         elif mode == "spectrum":
             self._draw_spectrum_graph(hub_rect)
         elif mode == "range_hub":
@@ -2002,6 +3364,8 @@ class HubViewer:
 
     def _handle_click(self, pos: tuple[int, int]) -> None:
         mx, my = pos
+        if self._handle_equation_copy_click(int(mx), int(my)):
+            return
         if self._table_rect is not None and self._table_rect.collidepoint(mx, my):
             for row_idx, y0, y1 in self.table_row_hits:
                 if y0 <= my < y1:
@@ -2015,6 +3379,12 @@ class HubViewer:
             return
         if self._next_button_rect is not None and self._next_button_rect.collidepoint(mx, my):
             self._rotate_graph_mode(1)
+            return
+        if self._export_button_rect is not None and self._export_button_rect.collidepoint(mx, my):
+            self._export_active_mode()
+            return
+        if self._settings_button_rect is not None and self._settings_button_rect.collidepoint(mx, my):
+            self._open_settings_dialog()
             return
         if self._timeline_prev_button_rect is not None and self._timeline_prev_button_rect.collidepoint(mx, my):
             self.timeline_playing = False
@@ -2041,6 +3411,26 @@ class HubViewer:
             self._range_slider_dragging = True
             self._set_range_slider_from_mouse(mx)
             return
+        if self._env_range_slider_rect is not None:
+            hit_rect = self._env_range_slider_rect.inflate(0, 18)
+            if hit_rect.collidepoint(mx, my):
+                min_knob_x = self._env_slider_handle_x("min")
+                max_knob_x = self._env_slider_handle_x("max")
+                center_y = self._env_range_slider_rect.centery
+                if abs(mx - min_knob_x) <= 10 and abs(my - center_y) <= 12:
+                    handle = "min"
+                elif abs(mx - max_knob_x) <= 10 and abs(my - center_y) <= 12:
+                    handle = "max"
+                else:
+                    handle = "min" if abs(mx - min_knob_x) <= abs(mx - max_knob_x) else "max"
+                self._env_range_drag_handle = handle
+                self._set_env_slider_from_mouse(mx, handle)
+                return
+        mode = self._active_graph_mode()
+        if self._is_3d_mode(mode) and self._hub_graph_rect is not None and self._hub_graph_rect.collidepoint(mx, my):
+            self._graph3d_dragging = True
+            self._graph3d_last_mouse = (int(mx), int(my))
+            return
         # Clicked outside selector rows/controls: clear selection.
         self.selected_row_index = None
 
@@ -2057,9 +3447,33 @@ class HubViewer:
         self.hub_dir = hub_dir
         self.hub_idx = hub_idx
         self.selected_row_index = None
+        self.env_view_min = None
+        self.env_view_max = None
         self.reload_from_disk()
 
+    def _open_settings_dialog(self) -> None:
+        try:
+            import master_simulations as ms
+
+            settings = load_settings()
+            updated = ms._edit_settings_ui(settings, master_dir=None, write_global_on_confirm=True)
+            if updated is None:
+                self._set_export_status(False, "Settings not changed")
+            else:
+                self._set_export_status(True, "Settings saved to settings.json")
+        except Exception as exc:
+            self._set_export_status(False, f"Settings dialog failed ({exc})")
+        # Restore hub viewer window after settings UI closes.
+        self.screen = self.pg.display.set_mode((self.window_w, self.window_h))
+        label = f"Hub Viewer - hub_{self.hub_idx}" if self.hub_idx is not None else f"Hub Viewer - {self.hub_dir.name}"
+        self.pg.display.set_caption(label)
+
     def run(self) -> None:
+        plus_keys = {self.pg.K_EQUALS, self.pg.K_KP_PLUS}
+        k_plus = getattr(self.pg, "K_PLUS", None)
+        if k_plus is not None:
+            plus_keys.add(k_plus)
+        minus_keys = {self.pg.K_MINUS, self.pg.K_KP_MINUS}
         while self.running:
             for event in self.pg.event.get():
                 if event.type == self.pg.QUIT:
@@ -2068,17 +3482,19 @@ class HubViewer:
                     if event.key in (self.pg.K_ESCAPE, self.pg.K_q):
                         self.running = False
                     elif event.key == self.pg.K_u:
-                        self.reload_from_disk()
+                        self._refresh_all_master_fit_lines()
                     elif event.key == self.pg.K_s:
                         self._open_selector()
+                    elif event.key == self.pg.K_g:
+                        self._open_settings_dialog()
                     elif event.key == self.pg.K_LEFT:
                         self._rotate_graph_mode(-1)
                     elif event.key == self.pg.K_RIGHT:
                         self._rotate_graph_mode(1)
                     elif event.key == self.pg.K_UP:
-                        self.table_scroll = max(0.0, self.table_scroll - 1.0)
+                        self._move_selected_row(-1)
                     elif event.key == self.pg.K_DOWN:
-                        self.table_scroll += 1.0
+                        self._move_selected_row(1)
                     elif event.key == self.pg.K_PAGEUP:
                         self.table_scroll = max(0.0, self.table_scroll - 12.0)
                     elif event.key == self.pg.K_PAGEDOWN:
@@ -2093,8 +3509,25 @@ class HubViewer:
                             if self.timeline_progress >= 1.0 and (not self.timeline_playing):
                                 self.timeline_progress = 0.0
                             self.timeline_playing = not self.timeline_playing
+                    elif event.key == self.pg.K_e:
+                        self._export_active_mode()
+                    elif event.key in plus_keys:
+                        if self._is_3d_mode(self._active_graph_mode()):
+                            self._adjust_graph3d_zoom(1.0)
+                    elif event.key in minus_keys:
+                        if self._is_3d_mode(self._active_graph_mode()):
+                            self._adjust_graph3d_zoom(-1.0)
                 elif event.type == self.pg.MOUSEWHEEL:
-                    if event.y > 0:
+                    mode = self._active_graph_mode()
+                    mx, my = self.pg.mouse.get_pos()
+                    if (
+                        self._is_3d_mode(mode)
+                        and self._hub_graph_rect is not None
+                        and self._hub_graph_rect.collidepoint(int(mx), int(my))
+                        and event.y != 0
+                    ):
+                        self._adjust_graph3d_zoom(float(event.y))
+                    elif event.y > 0:
                         self.table_scroll = max(0.0, self.table_scroll - 2.0)
                     elif event.y < 0:
                         self.table_scroll += 2.0
@@ -2103,11 +3536,31 @@ class HubViewer:
                 elif event.type == self.pg.MOUSEBUTTONUP and event.button == 1:
                     self._range_slider_dragging = False
                     self._timeline_slider_dragging = False
+                    self._env_range_drag_handle = None
+                    self._graph3d_dragging = False
+                    self._graph3d_last_mouse = None
                 elif event.type == self.pg.MOUSEMOTION:
                     if self._range_slider_dragging:
                         self._set_range_slider_from_mouse(int(event.pos[0]))
                     if self._timeline_slider_dragging:
                         self._set_timeline_slider_from_mouse(int(event.pos[0]))
+                    if isinstance(self._env_range_drag_handle, str):
+                        self._set_env_slider_from_mouse(int(event.pos[0]), self._env_range_drag_handle)
+                    if self._graph3d_dragging:
+                        if self._graph3d_last_mouse is None:
+                            self._graph3d_last_mouse = (int(event.pos[0]), int(event.pos[1]))
+                        else:
+                            last_x, last_y = self._graph3d_last_mouse
+                            dx = int(event.pos[0]) - int(last_x)
+                            dy = int(event.pos[1]) - int(last_y)
+                            self._graph3d_yaw += float(dx) * 0.012
+                            self._graph3d_pitch += float(dy) * 0.010
+                            self._graph3d_pitch = max(-1.25, min(1.25, float(self._graph3d_pitch)))
+                            if self._graph3d_yaw > math.pi:
+                                self._graph3d_yaw -= (2.0 * math.pi)
+                            elif self._graph3d_yaw < -math.pi:
+                                self._graph3d_yaw += (2.0 * math.pi)
+                            self._graph3d_last_mouse = (int(event.pos[0]), int(event.pos[1]))
 
             self._draw()
             dt_s = self.clock.tick(30) / 1000.0

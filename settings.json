@@ -20,9 +20,9 @@
   "reproduction_debuf_min": 0.001,
   "quan": 2.0,
   "immune_system_quan_factor": 0.15,
-  "num_tries": 9370,
-  "num_tries_master": 1295,
-  "num_tries_hub": 31,
+  "num_tries": 10840,
+  "num_tries_master": 59,
+  "num_tries_hub": 32,
   "simulations": {
     "count": 6
   },
@@ -38,7 +38,7 @@
     "max_masters": 241
   },
   "stop_conditions": {
-    "runtime_enabled": true,
+    "runtime_enabled": false,
     "max_runtime_hours": 21.0,
     "frames_enabled": false,
     "max_frames": 0,

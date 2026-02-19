@@ -71,6 +71,45 @@ def _hub_defaults_from_settings() -> dict:
     }
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    payload = str(text) if text is not None else ""
+    if payload == "":
+        return False
+    try:
+        import pyperclip  # pylint: disable=import-outside-toplevel
+
+        pyperclip.copy(payload)
+        return True
+    except Exception:
+        pass
+
+    commands: list[list[str]] = []
+    if sys.platform == "darwin":
+        commands.append(["pbcopy"])
+    if os.name == "nt":
+        commands.append(["clip"])
+    commands.extend(
+        [
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ]
+    )
+    for cmd in commands:
+        try:
+            subprocess.run(
+                cmd,
+                input=payload.encode("utf-8"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _rate_values(start: float, end: float, step: float) -> list[float]:
     if step <= 0:
         return []
@@ -88,6 +127,33 @@ def _rate_values(start: float, end: float, step: float) -> list[float]:
     return out
 
 
+def _hub_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "hub"
+
+
+def _master_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "master"
+
+
+def _normal_sim_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "normal simulatinos"
+
+
+def _hub_search_roots(results_root: Path) -> list[Path]:
+    roots = []
+    seen = set()
+    for candidate in (_hub_container_dir(results_root), Path(results_root)):
+        try:
+            key = str(candidate.resolve())
+        except Exception:
+            key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(candidate)
+    return roots
+
+
 def _allocate_hub_index(results_root: Path) -> int:
     settings = load_settings()
     try:
@@ -95,15 +161,17 @@ def _allocate_hub_index(results_root: Path) -> int:
     except Exception:
         current = 0
     current = max(0, current)
-    default_root = Path("results")
+    hub_target_root = _hub_container_dir(results_root)
+    hub_target_root.mkdir(parents=True, exist_ok=True)
+    default_root = _hub_container_dir(Path("results"))
     try:
-        same_root = default_root.resolve() == results_root.resolve()
+        same_root = default_root.resolve() == hub_target_root.resolve()
     except Exception:
-        same_root = str(default_root) == str(results_root)
+        same_root = str(default_root) == str(hub_target_root)
 
     candidate = current
     while True:
-        in_target = results_root / f"hub_{candidate}"
+        in_target = hub_target_root / f"hub_{candidate}"
         in_default = default_root / f"hub_{candidate}"
         if in_target.exists():
             candidate += 1
@@ -156,57 +224,65 @@ def _collect_existing_master_ids(results_root: Path) -> set[int]:
 
 def _collect_hub_runs(results_root: Path) -> list[dict]:
     hubs = []
+    results_root = Path(results_root)
     if not results_root.exists():
         return hubs
-    for path in sorted(results_root.glob("hub_*")):
-        if not path.is_dir():
+    seen_hub_idxs = set()
+    for search_root in _hub_search_roots(results_root):
+        if not search_root.is_dir():
             continue
-        hub_idx = _parse_hub_id(path)
-        if hub_idx is None:
-            continue
-        meta_path = path / "hub_meta.json"
-        meta = {}
-        if meta_path.exists():
-            try:
-                loaded = json.loads(meta_path.read_text())
-                if isinstance(loaded, dict):
-                    meta = loaded
-            except Exception:
-                meta = {}
-        rates = meta.get("rates")
-        if not isinstance(rates, list):
-            rates = []
-        total_steps = len(rates)
-        steps = meta.get("steps")
-        if not isinstance(steps, list):
-            steps = []
-        ok_indices = set()
-        for step in steps:
-            if not isinstance(step, dict):
+        for path in sorted(search_root.glob("hub_*")):
+            if not path.is_dir():
                 continue
-            if str(step.get("status", "")) != "ok":
+            hub_idx = _parse_hub_id(path)
+            if hub_idx is None:
                 continue
-            try:
-                idx = int(step.get("step_index"))
-            except Exception:
+            if int(hub_idx) in seen_hub_idxs:
                 continue
-            if idx < 0:
-                continue
-            ok_indices.add(idx)
-        completed_steps = len(ok_indices)
-        if total_steps > 0:
-            completed_steps = min(completed_steps, total_steps)
-        hubs.append(
-            {
-                "hub_idx": int(hub_idx),
-                "hub_dir": path,
-                "status": str(meta.get("status", "unknown")),
-                "total_steps": int(total_steps),
-                "completed_steps": int(completed_steps),
-                "created_at": meta.get("created_at"),
-                "meta_path": meta_path,
-            }
-        )
+            seen_hub_idxs.add(int(hub_idx))
+            meta_path = path / "hub_meta.json"
+            meta = {}
+            if meta_path.exists():
+                try:
+                    loaded = json.loads(meta_path.read_text())
+                    if isinstance(loaded, dict):
+                        meta = loaded
+                except Exception:
+                    meta = {}
+            rates = meta.get("rates")
+            if not isinstance(rates, list):
+                rates = []
+            total_steps = len(rates)
+            steps = meta.get("steps")
+            if not isinstance(steps, list):
+                steps = []
+            ok_indices = set()
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                if str(step.get("status", "")) != "ok":
+                    continue
+                try:
+                    idx = int(step.get("step_index"))
+                except Exception:
+                    continue
+                if idx < 0:
+                    continue
+                ok_indices.add(idx)
+            completed_steps = len(ok_indices)
+            if total_steps > 0:
+                completed_steps = min(completed_steps, total_steps)
+            hubs.append(
+                {
+                    "hub_idx": int(hub_idx),
+                    "hub_dir": path,
+                    "status": str(meta.get("status", "unknown")),
+                    "total_steps": int(total_steps),
+                    "completed_steps": int(completed_steps),
+                    "created_at": meta.get("created_at"),
+                    "meta_path": meta_path,
+                }
+            )
     hubs.sort(key=lambda item: int(item["hub_idx"]))
     return hubs
 
@@ -256,6 +332,136 @@ def _write_hub_all_points_csv(path: Path, rows: list[dict]) -> None:
                 writer.writerow([evo, env, fitness])
     except Exception:
         pass
+
+
+def _write_hub_fit_equations_csv(path: Path, rows: list[dict]) -> None:
+    try:
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "enviorment change rate",
+                    "master run",
+                    "apex x",
+                    "apex y",
+                    "sigma left",
+                    "sigma right",
+                    "r2",
+                    "equation",
+                ]
+            )
+            ordered_rows = sorted(
+                [row for row in rows if isinstance(row, dict)],
+                key=lambda row: (
+                    int(row.get("step_index"))
+                    if _is_number(row.get("step_index"))
+                    else 10**9
+                ),
+            )
+            for row in ordered_rows:
+                fit = row.get("fit")
+                env_rate = row.get("env_rate")
+                if (not isinstance(fit, dict)) or (not _is_number(env_rate)):
+                    continue
+                master_run_num = row.get("master_run_num")
+                writer.writerow(
+                    [
+                        float(env_rate),
+                        (int(master_run_num) if _is_number(master_run_num) else ""),
+                        (fit.get("apex_x") if _is_number(fit.get("apex_x")) else ""),
+                        (fit.get("apex_y") if _is_number(fit.get("apex_y")) else ""),
+                        (fit.get("sigma_left") if _is_number(fit.get("sigma_left")) else ""),
+                        (fit.get("sigma_right") if _is_number(fit.get("sigma_right")) else ""),
+                        (fit.get("r2") if _is_number(fit.get("r2")) else ""),
+                        str(fit.get("equation", "")),
+                    ]
+                )
+    except Exception:
+        pass
+
+
+def _sync_hub_meta_steps_from_rows(hub_meta: dict, rows: list[dict]) -> bool:
+    if not isinstance(hub_meta, dict):
+        return False
+    steps = hub_meta.get("steps")
+    if not isinstance(steps, list):
+        return False
+
+    step_by_idx: dict[int, dict] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        raw_idx = step.get("step_index")
+        if not _is_number(raw_idx):
+            continue
+        step_by_idx[int(raw_idx)] = step
+
+    changed = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_idx = row.get("step_index")
+        if not _is_number(raw_idx):
+            continue
+        step = step_by_idx.get(int(raw_idx))
+        if not isinstance(step, dict):
+            continue
+
+        updates = {
+            "fit": (row.get("fit") if isinstance(row.get("fit"), dict) else None),
+            "master_run_num": (
+                int(row.get("master_run_num"))
+                if _is_number(row.get("master_run_num"))
+                else None
+            ),
+            "master_dir": (
+                str(row.get("master_dir"))
+                if isinstance(row.get("master_dir"), str) and str(row.get("master_dir")).strip()
+                else None
+            ),
+            "run_nums": (
+                [int(v) for v in row.get("run_nums", []) if _is_number(v)]
+                if isinstance(row.get("run_nums"), list)
+                else []
+            ),
+            "max_species": (
+                float(row.get("max_species")) if _is_number(row.get("max_species")) else None
+            ),
+            "total_species": (
+                float(row.get("total_species")) if _is_number(row.get("total_species")) else None
+            ),
+            "max_frames": (
+                float(row.get("max_frames")) if _is_number(row.get("max_frames")) else None
+            ),
+            "apex_evolution_rate": (
+                float(row.get("apex_evolution_rate"))
+                if _is_number(row.get("apex_evolution_rate"))
+                else None
+            ),
+            "apex_fitness": (
+                float(row.get("apex_fitness")) if _is_number(row.get("apex_fitness")) else None
+            ),
+            "duration_s": (
+                float(row.get("duration_s")) if _is_number(row.get("duration_s")) else None
+            ),
+            "point_count": (
+                int(row.get("point_count"))
+                if _is_number(row.get("point_count"))
+                else (
+                    len(row.get("points"))
+                    if isinstance(row.get("points"), list)
+                    else 0
+                )
+            ),
+        }
+        for key, value in updates.items():
+            if step.get(key) != value:
+                step[key] = value
+                changed = True
+
+    if changed:
+        hub_meta["updated_at"] = time.time()
+    return changed
 
 
 def _fitness_weight_count(fitness: float) -> int:
@@ -388,6 +594,11 @@ def _select_hub_run_ui(results_root: Path):
         while True:
             selected = max(0, min(selected, len(rows) - 1))
             current = rows[selected]
+
+            def _selected_row():
+                idx = max(0, min(int(selected), len(rows) - 1))
+                return rows[idx]
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return None
@@ -401,7 +612,7 @@ def _select_hub_run_ui(results_root: Path):
                         selected = (selected + 1) % len(rows)
                         _ensure_visible()
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                        return current
+                        return _selected_row()
                 if event.type == pygame.MOUSEWHEEL:
                     if event.y > 0:
                         selected = (selected - 1) % len(rows)
@@ -413,7 +624,7 @@ def _select_hub_run_ui(results_root: Path):
                     if cancel_rect.collidepoint(mx, my):
                         return None
                     if choose_rect.collidepoint(mx, my):
-                        return current
+                        return _selected_row()
                     if left_x <= mx <= left_x + left_w and list_top <= my <= list_bottom:
                         idx = (my - list_top) // line_h + scroll
                         if 0 <= idx < len(rows):
@@ -1031,61 +1242,113 @@ def _predict_piecewise_gaussian(x: float, apex_x: float, apex_y: float, sigma_le
     return apex_y * math.exp(expo)
 
 
-def _fit_side_sigma(apex_x: float, apex_y: float, side_points: list[tuple[float, float]]) -> float | None:
-    if apex_y <= 0:
-        return None
-    num = 0.0
-    den = 0.0
-    for x, y in side_points:
-        if y <= 0 or y >= apex_y:
-            continue
-        d2 = (x - apex_x) ** 2
-        if d2 <= 0:
-            continue
-        try:
-            lr = math.log(y / apex_y)
-        except Exception:
-            continue
-        if not math.isfinite(lr):
-            continue
-        num += d2 * lr
-        den += d2 * d2
-    if den <= 0:
-        return None
-    slope = num / den
-    if slope >= 0:
-        return None
-    sigma_sq = -1.0 / (2.0 * slope)
-    if sigma_sq <= 0 or not math.isfinite(sigma_sq):
-        return None
-    return math.sqrt(sigma_sq)
-
-
 def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
     if len(points) < 3:
         return None
-    apex_x, apex_y = max(points, key=lambda p: p[1])
-    if apex_y <= 0:
+    apex_x, apex_point_y = max(points, key=lambda p: p[1])
+    xs = [float(x) for x, _ in points]
+    ys = [float(y) for _, y in points]
+    x_range = max(xs) - min(xs) if xs else 0.0
+    if (not math.isfinite(x_range)) or x_range <= 0:
+        x_range = 1.0
+
+    sigma_min = max(1e-6, x_range * 1e-4)
+    sigma_max = max(sigma_min * 10.0, x_range * 10.0)
+
+    def _clamp_log_sigma(value: float) -> float:
+        lo = math.log(sigma_min)
+        hi = math.log(sigma_max)
+        if value < lo:
+            return lo
+        if value > hi:
+            return hi
+        return value
+
+    def _solve_amplitude_and_sse(sigma_left: float, sigma_right: float):
+        sigma_left = max(sigma_min, min(sigma_max, float(sigma_left)))
+        sigma_right = max(sigma_min, min(sigma_max, float(sigma_right)))
+        sum_yk = 0.0
+        sum_k2 = 0.0
+        ks: list[tuple[float, float]] = []
+        for x, y in points:
+            d2 = (float(x) - float(apex_x)) ** 2
+            sigma = sigma_left if float(x) <= float(apex_x) else sigma_right
+            k = math.exp(-(d2 / (2.0 * sigma * sigma)))
+            sum_yk += float(y) * k
+            sum_k2 += k * k
+            ks.append((float(y), k))
+        if sum_k2 <= 1e-15:
+            return None
+        amplitude = sum_yk / sum_k2
+        sse = 0.0
+        for y, k in ks:
+            diff = y - (amplitude * k)
+            sse += diff * diff
+        return float(amplitude), float(sse)
+
+    left_d2 = [
+        (float(apex_x) - float(x)) ** 2
+        for x, y in points
+        if float(x) <= float(apex_x) and _is_number(y) and float(y) > 0
+    ]
+    right_d2 = [
+        (float(x) - float(apex_x)) ** 2
+        for x, y in points
+        if float(x) >= float(apex_x) and _is_number(y) and float(y) > 0
+    ]
+
+    def _initial_sigma(d2_values: list[float]) -> float:
+        if not d2_values:
+            return max(0.05, x_range * 0.12)
+        mean_abs = sum(math.sqrt(max(0.0, d2)) for d2 in d2_values) / len(d2_values)
+        return max(sigma_min, min(sigma_max, mean_abs if mean_abs > 0 else x_range * 0.12))
+
+    sigma_left = _initial_sigma(left_d2)
+    sigma_right = _initial_sigma(right_d2)
+    best = _solve_amplitude_and_sse(sigma_left, sigma_right)
+    if best is None:
+        return None
+    best_a, best_sse = best
+    best_log_left = _clamp_log_sigma(math.log(max(sigma_min, sigma_left)))
+    best_log_right = _clamp_log_sigma(math.log(max(sigma_min, sigma_right)))
+
+    step = 1.0
+    for _ in range(20):
+        improved = False
+        for side in ("left", "right"):
+            base_log = best_log_left if side == "left" else best_log_right
+            candidates = [
+                base_log - step,
+                base_log - (step * 0.5),
+                base_log,
+                base_log + (step * 0.5),
+                base_log + step,
+            ]
+            local_best = (best_a, best_sse, best_log_left, best_log_right)
+            for cand in candidates:
+                cand_log = _clamp_log_sigma(cand)
+                log_left = cand_log if side == "left" else best_log_left
+                log_right = best_log_right if side == "left" else cand_log
+                trial = _solve_amplitude_and_sse(math.exp(log_left), math.exp(log_right))
+                if trial is None:
+                    continue
+                a_val, sse_val = trial
+                if sse_val + 1e-12 < local_best[1]:
+                    local_best = (a_val, sse_val, log_left, log_right)
+            if local_best[1] + 1e-12 < best_sse:
+                best_a, best_sse, best_log_left, best_log_right = local_best
+                improved = True
+        if not improved:
+            step *= 0.5
+            if step < 1e-3:
+                break
+
+    sigma_left = max(sigma_min, min(sigma_max, math.exp(best_log_left)))
+    sigma_right = max(sigma_min, min(sigma_max, math.exp(best_log_right)))
+    apex_y = float(best_a)
+    if not math.isfinite(apex_y):
         return None
 
-    left = [(x, y) for (x, y) in points if x <= apex_x]
-    right = [(x, y) for (x, y) in points if x >= apex_x]
-    sigma_left = _fit_side_sigma(apex_x, apex_y, left)
-    sigma_right = _fit_side_sigma(apex_x, apex_y, right)
-
-    # Fallback keeps the fit usable even when one side is sparse.
-    if sigma_left is None and sigma_right is None:
-        sigma_left = 0.05
-        sigma_right = 0.05
-    elif sigma_left is None:
-        sigma_left = sigma_right
-    elif sigma_right is None:
-        sigma_right = sigma_left
-
-    assert sigma_left is not None
-    assert sigma_right is not None
-
-    ys = [y for _, y in points]
     y_mean = sum(ys) / len(ys)
     ss_tot = sum((y - y_mean) ** 2 for y in ys)
     ss_res = 0.0
@@ -1103,6 +1366,7 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
     return {
         "apex_x": float(apex_x),
         "apex_y": float(apex_y),
+        "apex_point_y": float(apex_point_y),
         "sigma_left": float(sigma_left),
         "sigma_right": float(sigma_right),
         "r2": (None if r2 is None else float(r2)),
@@ -1110,17 +1374,46 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
     }
 
 
-def _symlink_if_missing(alias: Path, target: Path) -> None:
+def _cleanup_root_hub_alias_symlinks(results_root: Path) -> int:
+    """Remove legacy top-level aliases that point into hub-owned data."""
     try:
-        target = target.resolve()
+        root_resolved = results_root.resolve()
     except Exception:
-        return
-    if alias.exists() or alias.is_symlink():
-        return
-    try:
-        alias.symlink_to(target, target_is_directory=target.is_dir())
-    except Exception:
-        pass
+        root_resolved = results_root
+    if not results_root.is_dir():
+        return 0
+
+    removed = 0
+    for path in results_root.iterdir():
+        if not path.is_symlink():
+            continue
+        name = path.name
+        if (not name.startswith("master_")) and (not name.isdigit()):
+            continue
+        try:
+            target = path.resolve(strict=True)
+        except Exception:
+            # Broken alias: safe to remove.
+            target = None
+
+        should_remove = False
+        if target is None:
+            should_remove = True
+        else:
+            try:
+                rel = target.relative_to(root_resolved)
+            except Exception:
+                rel = None
+            if rel is not None and len(rel.parts) >= 2 and rel.parts[0].startswith("hub_"):
+                should_remove = True
+        if not should_remove:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except Exception:
+            continue
+    return removed
 
 
 def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
@@ -1970,6 +2263,7 @@ class _HubDashboard:
         update_callback=None,
         reopen_callback=None,
         close_callback=None,
+        viewer_callback=None,
         shutdown_callback=None,
     ) -> None:
         self.enabled = False
@@ -1991,6 +2285,7 @@ class _HubDashboard:
         self.update_callback = update_callback
         self.reopen_callback = reopen_callback
         self.close_callback = close_callback
+        self.viewer_callback = viewer_callback
         self.shutdown_callback = shutdown_callback
         self.selected_row_index = 0
         self._rows_cache = []
@@ -2009,7 +2304,11 @@ class _HubDashboard:
         self._update_button_rect = None
         self._reopen_button_rect = None
         self._close_button_rect = None
+        self._viewer_button_rect = None
         self._shutdown_button_rect = None
+        self._equation_copy_hits = []
+        self._copy_status_text = ""
+        self._copy_status_ts = 0.0
         if not enabled:
             return
         try:
@@ -2080,6 +2379,30 @@ class _HubDashboard:
         idx = max(0, min(int(self.selected_row_index), len(self._rows_cache) - 1))
         self.selected_row_index = idx
         return self._rows_cache[idx]
+
+    def _ensure_selected_visible(self) -> None:
+        total = len(self._rows_cache)
+        if total <= 0:
+            return
+        idx = max(0, min(int(self.selected_row_index), total - 1))
+        self.selected_row_index = idx
+        visible = max(1, int(self._visible_rows))
+        max_scroll = max(0, total - visible)
+        start_idx = int(max(0, min(max_scroll, int(self.scroll_target))))
+        if idx < start_idx:
+            self._set_scroll_target(float(idx), max_scroll)
+        elif idx >= (start_idx + visible):
+            self._set_scroll_target(float(idx - visible + 1), max_scroll)
+
+    def _move_selected_row(self, delta: int) -> None:
+        total = len(self._rows_cache)
+        if total <= 0:
+            self.selected_row_index = 0
+            return
+        idx = max(0, min(int(self.selected_row_index) + int(delta), total - 1))
+        self.selected_row_index = idx
+        self._selected_graph_point = None
+        self._ensure_selected_visible()
 
     def _pick_graph_dot(self, mx: int, my: int):
         best = None
@@ -2183,6 +2506,14 @@ class _HubDashboard:
         except Exception:
             pass
 
+    def _trigger_viewer(self) -> None:
+        if not callable(self.viewer_callback):
+            return
+        try:
+            self.viewer_callback()
+        except Exception:
+            pass
+
     def _trigger_shutdown(self) -> None:
         if callable(self.shutdown_callback):
             try:
@@ -2190,6 +2521,48 @@ class _HubDashboard:
             except Exception:
                 pass
         self.closed = True
+
+    def _draw_equation_copy_button(self, rect: "pygame.Rect", equation_text: str, y: int) -> int:
+        if not str(equation_text).strip():
+            return 0
+        label = "Copy"
+        btn_w = max(40, int(self.small.size(label)[0]) + 10)
+        btn_h = max(14, int(self.small.get_linesize()) - 1)
+        btn_rect = self.pg.Rect(
+            int(rect.right - btn_w - 6),
+            int(y),
+            int(btn_w),
+            int(btn_h),
+        )
+        self.pg.draw.rect(self.screen, (52, 58, 76), btn_rect)
+        self.pg.draw.rect(self.screen, (150, 156, 174), btn_rect, 1)
+        txt = self.small.render(label, True, (232, 236, 245))
+        self.screen.blit(
+            txt,
+            (
+                btn_rect.x + (btn_rect.width - txt.get_width()) // 2,
+                btn_rect.y + (btn_rect.height - txt.get_height()) // 2,
+            ),
+        )
+        self._equation_copy_hits.append((btn_rect.copy(), str(equation_text)))
+        return int(btn_rect.width + 8)
+
+    def _handle_equation_copy_click(self, mx: int, my: int) -> bool:
+        for item in reversed(self._equation_copy_hits):
+            if (not isinstance(item, tuple)) or len(item) != 2:
+                continue
+            rect, eq_text = item
+            if not isinstance(rect, self.pg.Rect):
+                continue
+            if not rect.collidepoint(mx, my):
+                continue
+            if _copy_to_clipboard(str(eq_text)):
+                self._copy_status_text = "Equation copied to clipboard"
+            else:
+                self._copy_status_text = "Failed to copy equation to clipboard"
+            self._copy_status_ts = float(time.time())
+            return True
+        return False
 
     def _pump_events(self) -> None:
         if not self.enabled:
@@ -2208,12 +2581,14 @@ class _HubDashboard:
                     self._trigger_reopen()
                 elif event.key == self.pg.K_c:
                     self._trigger_close()
+                elif event.key == self.pg.K_v:
+                    self._trigger_viewer()
                 elif event.key == self.pg.K_x:
                     self._trigger_shutdown()
                 elif event.key == self.pg.K_UP:
-                    self.scroll_target = max(0.0, self.scroll_target - 1.0)
+                    self._move_selected_row(-1)
                 elif event.key == self.pg.K_DOWN:
-                    self.scroll_target += 1.0
+                    self._move_selected_row(1)
                 elif event.key == self.pg.K_PAGEUP:
                     self.scroll_target = max(0.0, self.scroll_target - 12.0)
                 elif event.key == self.pg.K_PAGEDOWN:
@@ -2230,6 +2605,8 @@ class _HubDashboard:
             elif event.type == self.pg.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 self._arm_click_uncap()
+                if self._handle_equation_copy_click(mx, my):
+                    continue
                 picked = self._pick_graph_dot(mx, my)
                 if isinstance(picked, dict):
                     self._selected_graph_point = picked
@@ -2264,6 +2641,11 @@ class _HubDashboard:
                     and self._close_button_rect.collidepoint(mx, my)
                 ):
                     self._trigger_close()
+                if (
+                    self._viewer_button_rect is not None
+                    and self._viewer_button_rect.collidepoint(mx, my)
+                ):
+                    self._trigger_viewer()
                 if (
                     self._shutdown_button_rect is not None
                     and self._shutdown_button_rect.collidepoint(mx, my)
@@ -2306,6 +2688,7 @@ class _HubDashboard:
         self.screen.blit(title, (rect.x + 6, rect.y + 4))
 
         fit = row.get("fit")
+        equation_text = str(fit.get("equation", "")).strip() if isinstance(fit, dict) else ""
         fit_lines = []
         if isinstance(fit, dict):
             apex_x = fit.get("apex_x")
@@ -2334,6 +2717,8 @@ class _HubDashboard:
         eq_font = pg.font.SysFont("Consolas", eq_font_size)
         line_h = max(8, int(eq_font.get_linesize()))
         fit_base_y = rect.y + 18
+        if equation_text:
+            self._draw_equation_copy_button(rect, equation_text, rect.y + 4)
         if fit_lines:
             fit_w = max(0, rect.width - 12)
             for line_i, line_text in enumerate(fit_lines):
@@ -2397,6 +2782,7 @@ class _HubDashboard:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return (px, py)
 
+        fit_segments = []
         if isinstance(fit, dict):
             apex_x = fit.get("apex_x")
             apex_y = fit.get("apex_y")
@@ -2422,9 +2808,7 @@ class _HubDashboard:
                         sample.append((float(x_val), float(y_val)))
                 if len(sample) >= 2:
                     for idx in range(1, len(sample)):
-                        p0 = _to_px(sample[idx - 1][0], sample[idx - 1][1])
-                        p1 = _to_px(sample[idx][0], sample[idx][1])
-                        pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
+                        fit_segments.append((sample[idx - 1], sample[idx]))
 
         fit_min = min(ys)
         fit_max = max(ys)
@@ -2439,6 +2823,10 @@ class _HubDashboard:
                 236 - int(166 * n),
             )
             pg.draw.circle(self.screen, color, (px, py), radius)
+        for start, end in fit_segments:
+            p0 = _to_px(start[0], start[1])
+            p1 = _to_px(end[0], end[1])
+            pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
 
         min_y_txt = self.small.render(f"{raw_min_y:.3f}", True, (145, 145, 145))
         max_y_txt = self.small.render(f"{raw_max_y:.3f}", True, (145, 145, 145))
@@ -2516,7 +2904,6 @@ class _HubDashboard:
         fit_line_h = max(10, int(fit_font.get_linesize()))
         fit_line_gap = 2
         header_x = rect.x + 10
-        header_w = max(0, rect.width - 20)
 
         def _wrap_fit_line(text: str, max_w: int) -> list[str]:
             raw = str(text).strip()
@@ -2541,12 +2928,16 @@ class _HubDashboard:
             return lines if lines else [raw]
 
         header_lines = []
+        copy_reserved = 0
         if isinstance(best_fit, dict) and _is_number(best_fit.get("r2")):
             equation = str(best_fit.get("equation", ""))
+            copy_reserved = self._draw_equation_copy_button(rect, equation, rect.y + 8)
+            header_w = max(0, rect.width - 20 - copy_reserved)
             header_lines.extend(_wrap_fit_line(f"Equation: {equation}", header_w))
             header_lines.extend(_wrap_fit_line(f"R^2: {float(best_fit['r2']):.4f}", header_w))
             fit_info_color = (234, 210, 147)
         else:
+            header_w = max(0, rect.width - 20)
             header_lines.extend(_wrap_fit_line("Equation: not enough data", header_w))
             header_lines.extend(_wrap_fit_line("R^2: --", header_w))
             fit_info_color = (165, 165, 165)
@@ -2629,6 +3020,7 @@ class _HubDashboard:
                 return 0.35
             return max(0.0, min(1.0, (float(value) - fit_min) / fit_denom))
 
+        fit_segments = []
         if isinstance(best_fit, dict):
             y_span = max(1e-9, max_y - min_y)
             sample = []
@@ -2643,9 +3035,7 @@ class _HubDashboard:
                 sample.append((x_val, y_float))
             if len(sample) >= 2:
                 for idx in range(1, len(sample)):
-                    p0 = _to_px(sample[idx - 1][0], sample[idx - 1][1])
-                    p1 = _to_px(sample[idx][0], sample[idx][1])
-                    pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
+                    fit_segments.append((sample[idx - 1], sample[idx]))
 
         selected_found = False
         for point in graph_points:
@@ -2704,6 +3094,10 @@ class _HubDashboard:
                     "point": point,
                 }
             )
+        for start, end in fit_segments:
+            p0 = _to_px(start[0], start[1])
+            p1 = _to_px(end[0], end[1])
+            pg.draw.line(self.screen, (248, 196, 92), p0, p1, 2)
         if self._selected_graph_point is not None and (not selected_found):
             self._selected_graph_point = None
 
@@ -2751,6 +3145,7 @@ class _HubDashboard:
         self._last_draw = now
         pg = self.pg
         self.screen.fill((12, 13, 17))
+        self._equation_copy_hits = []
 
         rows = self._rows_cache
         pred = _runtime_prediction(rows, float(state.get("start_ts", now)), now)
@@ -3027,7 +3422,7 @@ class _HubDashboard:
         scroll_info = self.small.render(
             _fit_text(
                 self.small,
-                f"rows {rows_first}-{rows_last} / {total_rows} (wheel/up/down/page/home/end)",
+                f"rows {rows_first}-{rows_last} / {total_rows} (up/down select, wheel/page/home/end scroll)",
                 table_rect.width - 20,
             ),
             True,
@@ -3093,9 +3488,11 @@ class _HubDashboard:
             f"Summary file: {state.get('summary_path', '')}",
             f"Fit file: {state.get('fit_path', '')}",
             f"Hub stats file: {state.get('hub_stats_path', '')}",
-            "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Close Hub(X) FPS(F)",
+            "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Viewer(V) Close Hub(X) FPS(F), Copy buttons on equations",
             "Graph: selecting a row shows that master graph; click dots to inspect",
         ]
+        if self._copy_status_text and ((time.time() - float(self._copy_status_ts)) <= 3.0):
+            info_lines.append(self._copy_status_text)
         dot = self._selected_graph_point if isinstance(self._selected_graph_point, dict) else None
         if dot is not None:
             dot_type = "actual" if bool(dot.get("actual")) else "projected"
@@ -3160,7 +3557,7 @@ class _HubDashboard:
             yy += line_h
 
         button_gap = 8
-        button_w = max(56, (info_rect.width - 20 - (2 * button_gap)) // 3)
+        button_w = max(56, (info_rect.width - 20 - (3 * button_gap)) // 4)
         button_y = info_rect.bottom - 42
         button_x0 = info_rect.x + 10
         self._update_button_rect = self.pg.Rect(
@@ -3177,6 +3574,12 @@ class _HubDashboard:
         )
         self._close_button_rect = self.pg.Rect(
             self._reopen_button_rect.right + button_gap,
+            button_y,
+            button_w,
+            30,
+        )
+        self._viewer_button_rect = self.pg.Rect(
+            self._close_button_rect.right + button_gap,
             button_y,
             button_w,
             30,
@@ -3232,6 +3635,23 @@ class _HubDashboard:
                 self._close_button_rect.y + 7,
             ),
         )
+        viewer_bg = (66, 72, 120)
+        viewer_fg = (230, 230, 230)
+        pg.draw.rect(self.screen, viewer_bg, self._viewer_button_rect)
+        pg.draw.rect(self.screen, (150, 150, 150), self._viewer_button_rect, 1)
+        viewer_text = self.small.render(
+            _fit_text(self.small, "Viewer (V)", self._viewer_button_rect.width - 12),
+            True,
+            viewer_fg,
+        )
+        self.screen.blit(
+            viewer_text,
+            (
+                self._viewer_button_rect.x
+                + (self._viewer_button_rect.width - viewer_text.get_width()) // 2,
+                self._viewer_button_rect.y + 7,
+            ),
+        )
 
         pg.display.flip()
         draw_fps = self.uncapped_fps if self._click_uncap_active(time.time()) else self.draw_fps
@@ -3243,6 +3663,16 @@ def main() -> None:
     defaults = _hub_defaults_from_settings()
     results_root = Path(args.results_root)
     results_root.mkdir(parents=True, exist_ok=True)
+    hub_root = _hub_container_dir(results_root)
+    hub_root.mkdir(parents=True, exist_ok=True)
+    _master_container_dir(results_root).mkdir(parents=True, exist_ok=True)
+    _normal_sim_container_dir(results_root).mkdir(parents=True, exist_ok=True)
+    removed_aliases = _cleanup_root_hub_alias_symlinks(results_root)
+    if removed_aliases > 0:
+        print(
+            f"[hub] removed {removed_aliases} legacy root alias symlink(s); "
+            "hub directories are now canonical."
+        )
     selector_choice = None
     should_show_selector = (args.continue_hub is None) and ((not args.no_screen) or args.hub_select)
     if should_show_selector:
@@ -3267,7 +3697,10 @@ def main() -> None:
     existing_hub_meta = {}
     if continuing:
         hub_idx = int(continue_hub_idx)
-        hub_dir = results_root / f"hub_{hub_idx}"
+        hub_dir = hub_root / f"hub_{hub_idx}"
+        legacy_hub_dir = results_root / f"hub_{hub_idx}"
+        if (not hub_dir.is_dir()) and legacy_hub_dir.is_dir():
+            hub_dir = legacy_hub_dir
         if not hub_dir.is_dir():
             raise SystemExit(f"Hub not found: {hub_dir}")
         hub_meta_path = hub_dir / "hub_meta.json"
@@ -3318,7 +3751,7 @@ def main() -> None:
         if max_masters > 0:
             rates = rates[:max_masters]
         hub_idx = _allocate_hub_index(results_root)
-        hub_dir = results_root / f"hub_{hub_idx}"
+        hub_dir = hub_root / f"hub_{hub_idx}"
         hub_dir.mkdir(parents=True, exist_ok=True)
 
     if not rates:
@@ -3457,11 +3890,13 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parent
     master_script = repo_root / "master_simulations.py"
+    hub_viewer_script = repo_root / "hub_viewer.py"
     interpreter = sys.executable
     close_signal_dir = hub_dir / ".hub_control"
     close_signal_dir.mkdir(parents=True, exist_ok=True)
     reopened_master_procs = {}
     reopened_master_close_paths = {}
+    hub_viewer_proc = None
     current_step_proc = None
     current_step_close_path = None
     current_step_close_requested = False
@@ -3574,6 +4009,25 @@ def main() -> None:
             return
         _request_graceful_close(proc, close_path, f"master_{int(master_run)}")
 
+    def _open_hub_viewer() -> None:
+        nonlocal hub_viewer_proc
+        if hub_viewer_proc is not None and hub_viewer_proc.poll() is None:
+            print(f"[hub_{hub_idx}] hub viewer already open (pid={hub_viewer_proc.pid})")
+            return
+        cmd = [
+            interpreter,
+            str(hub_viewer_script),
+            "--results-root",
+            str(results_root),
+            "--hub-dir",
+            str(hub_dir),
+        ]
+        try:
+            hub_viewer_proc = subprocess.Popen(cmd, cwd=str(repo_root), env=os.environ.copy())
+            print(f"[hub_{hub_idx}] opened hub viewer (pid={hub_viewer_proc.pid})")
+        except Exception as exc:
+            print(f"[hub_{hub_idx}] failed to open hub viewer: {exc}")
+
     def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, float | None]:
         if not points:
             return (None, None)
@@ -3667,8 +4121,14 @@ def main() -> None:
             if _is_number(row.get("apex_evolution_rate")) and _is_number(row.get("apex_fitness")):
                 ready_rows += 1
         hub_all_points_weighted_by_fitness = _hub_all_points_weighted_by_fitness(step_rows)
+        _write_hub_fit_equations_csv(fit_csv_path, step_rows)
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
         _write_hub_stats_csv(hub_stats_path, step_rows)
+        if _sync_hub_meta_steps_from_rows(hub_meta, step_rows):
+            try:
+                hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            except Exception:
+                pass
         rows_with_master = [
             row for row in step_rows if isinstance(row, dict) and row.get("master_run_num") is not None
         ]
@@ -3774,6 +4234,7 @@ def main() -> None:
         update_callback=lambda: _manual_update_rows_from_disk(rebuild_master_combined=True),
         reopen_callback=_reopen_master_row,
         close_callback=_close_master_row,
+        viewer_callback=_open_hub_viewer,
         shutdown_callback=_shutdown_hub_run,
     )
     dash_state = {
@@ -4076,13 +4537,6 @@ def main() -> None:
             )
         hub_meta["steps"].append(step_info)
         hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
-
-        # Keep masters/runs discoverable by the existing master_simulations UI.
-        _symlink_if_missing(results_root / master_dir.name, master_dir)
-        for run_num in run_nums:
-            run_dir = env_dir / str(run_num)
-            if run_dir.exists():
-                _symlink_if_missing(results_root / str(run_num), run_dir)
 
         hub_rows.append(
             {

@@ -22,6 +22,27 @@ except Exception:
 from settings_manager import load_settings, save_settings
 from simulatino_parser import parse_run
 
+'''
+to do 2.0 OMG
+
+okay so:
+
+Inside of hub viewer, adda slider with two dots. THese two dots controls the range of enviormental change rate that is shown. The amount master simulations ran will not be affected, only the way we view the simulations.
+
+Instead of having duplicate files inside hub and outside hub, only have it inside hub. 
+OPIONAL — allow master simulation to still be able to affect the masters inside of the hubs.
+
+For all the graphs be able to export as either timeline of png file
+
+
+Add a new graph. Make this one similar to the normal hub graph as in x is enviormental change rate, y is evolution speed, and the z axis is the fitness. This graph is 3d, and when clicking and dragging around will change the viewing angle of the graph allowing us to get a three d model.
+Add a new graph, also 3d, the x is evolution speed, the y is the fitness, and the z is enviormental change rate.
+
+
+
+
+'''
+
 
 
 _SIM_COLORS = [
@@ -59,6 +80,45 @@ def _is_number(value) -> bool:
 
 def _is_bool(value) -> bool:
     return isinstance(value, bool)
+
+
+def _copy_text_to_clipboard(text: str) -> bool:
+    payload = str(text) if text is not None else ""
+    if payload == "":
+        return False
+    try:
+        import pyperclip  # pylint: disable=import-outside-toplevel
+
+        pyperclip.copy(payload)
+        return True
+    except Exception:
+        pass
+
+    commands: list[list[str]] = []
+    if sys.platform == "darwin":
+        commands.append(["pbcopy"])
+    if os.name == "nt":
+        commands.append(["clip"])
+    commands.extend(
+        [
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ]
+    )
+    for cmd in commands:
+        try:
+            subprocess.run(
+                cmd,
+                input=payload.encode("utf-8"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _numeric_step(value: float) -> float:
@@ -804,6 +864,63 @@ def _master_search_root(results_dir: Path) -> Path:
     return root
 
 
+def _hub_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "hub"
+
+
+def _master_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "master"
+
+
+def _normal_sim_container_dir(results_root: Path) -> Path:
+    return Path(results_root) / "normal simulatinos"
+
+
+def _hub_search_roots(results_dir: Path) -> list[Path]:
+    root = _master_search_root(results_dir)
+    roots = []
+    seen = set()
+    for candidate in (_hub_container_dir(root), root):
+        try:
+            key = str(candidate.resolve())
+        except Exception:
+            key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(candidate)
+    return roots
+
+
+def _master_default_run_dir(results_root: Path) -> Path:
+    normal = _normal_sim_container_dir(results_root)
+    legacy = Path(results_root)
+    if normal.is_dir():
+        return normal
+    return legacy
+
+
+def _run_root_for_master_dir(master_dir: Path, results_root: Path) -> Path:
+    if _is_hub_master_dir(master_dir):
+        return master_dir.parent
+    return _master_default_run_dir(results_root)
+
+
+def _is_hub_env_dir(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        probe = Path(path).resolve()
+    except Exception:
+        probe = Path(path)
+    if not str(probe.name).startswith("env_"):
+        return False
+    for candidate in [probe.parent, *probe.parents]:
+        if str(candidate.name).startswith("hub_"):
+            return True
+    return False
+
+
 def _parse_master_run_from_dir(path: Path):
     try:
         name = Path(path).name
@@ -858,61 +975,75 @@ def _resolve_continue_master(
             # Directory identity is authoritative when both id+path are provided.
             run_num = int(parsed)
         if run_num is not None:
-            return run_num, dir_path, dir_path.parent
+            root = _master_search_root(dir_path)
+            return run_num, dir_path, _run_root_for_master_dir(dir_path, root)
 
     if run_num is None:
-        return None, None, results_dir
+        return None, None, _master_default_run_dir(_master_search_root(results_dir))
 
     # Prefer masters in the current results scope before global search.
     direct_local = results_dir / f"master_{run_num}"
     if direct_local.is_dir():
-        return run_num, direct_local, direct_local.parent
+        root = _master_search_root(results_dir)
+        return run_num, direct_local, _run_root_for_master_dir(direct_local, root)
 
     for path in sorted(results_dir.rglob(f"master_{run_num}")):
         if path.is_dir():
-            return run_num, path, path.parent
+            root = _master_search_root(results_dir)
+            return run_num, path, _run_root_for_master_dir(path, root)
 
     search_root = _master_search_root(results_dir)
-    direct_root = search_root / f"master_{run_num}"
-    if direct_root.is_dir():
-        return run_num, direct_root, direct_root.parent
+    direct_candidates = [
+        _master_container_dir(search_root) / f"master_{run_num}",
+        search_root / f"master_{run_num}",
+    ]
+    for direct_root in direct_candidates:
+        if direct_root.is_dir():
+            return run_num, direct_root, _run_root_for_master_dir(direct_root, search_root)
 
     for path in sorted(search_root.rglob(f"master_{run_num}")):
         if path.is_dir():
-            return run_num, path, path.parent
+            return run_num, path, _run_root_for_master_dir(path, search_root)
 
-    return run_num, None, results_dir
+    return run_num, None, _master_default_run_dir(search_root)
 
 
 def _collect_hub_env_dirs(results_dir: Path):
     entries = []
-    for hub_dir in sorted(results_dir.glob("hub_*")):
-        if not hub_dir.is_dir():
+    seen_hubs = set()
+    for search_root in _hub_search_roots(results_dir):
+        if not search_root.is_dir():
             continue
-        hub_idx = _parse_hub_index(hub_dir)
-        if hub_idx is None:
-            continue
-        for env_dir in sorted(hub_dir.iterdir()):
-            if not env_dir.is_dir():
+        for hub_dir in sorted(search_root.glob("hub_*")):
+            if not hub_dir.is_dir():
                 continue
-            if not env_dir.name.startswith("env_"):
+            hub_idx = _parse_hub_index(hub_dir)
+            if hub_idx is None:
                 continue
-            master_count = 0
-            for master_path in env_dir.glob("master_*"):
-                if master_path.is_dir():
-                    master_count += 1
-            if master_count <= 0:
+            if int(hub_idx) in seen_hubs:
                 continue
-            env_rate = _parse_env_rate_from_dir(env_dir)
-            entries.append(
-                {
-                    "hub_idx": int(hub_idx),
-                    "hub_dir": hub_dir,
-                    "env_dir": env_dir,
-                    "env_rate": env_rate,
-                    "master_count": int(master_count),
-                }
-            )
+            seen_hubs.add(int(hub_idx))
+            for env_dir in sorted(hub_dir.iterdir()):
+                if not env_dir.is_dir():
+                    continue
+                if not env_dir.name.startswith("env_"):
+                    continue
+                master_count = 0
+                for master_path in env_dir.glob("master_*"):
+                    if master_path.is_dir():
+                        master_count += 1
+                if master_count <= 0:
+                    continue
+                env_rate = _parse_env_rate_from_dir(env_dir)
+                entries.append(
+                    {
+                        "hub_idx": int(hub_idx),
+                        "hub_dir": hub_dir,
+                        "env_dir": env_dir,
+                        "env_rate": env_rate,
+                        "master_count": int(master_count),
+                    }
+                )
     entries.sort(
         key=lambda e: (
             int(e["hub_idx"]),
@@ -925,35 +1056,42 @@ def _collect_hub_env_dirs(results_dir: Path):
 
 def _collect_hub_dirs(results_dir: Path):
     hubs = []
-    for hub_dir in sorted(results_dir.glob("hub_*")):
-        if not hub_dir.is_dir():
+    seen_hubs = set()
+    for search_root in _hub_search_roots(results_dir):
+        if not search_root.is_dir():
             continue
-        hub_idx = _parse_hub_index(hub_dir)
-        if hub_idx is None:
-            continue
-        env_count = 0
-        master_count = 0
-        for env_dir in sorted(hub_dir.iterdir()):
-            if not env_dir.is_dir() or not env_dir.name.startswith("env_"):
+        for hub_dir in sorted(search_root.glob("hub_*")):
+            if not hub_dir.is_dir():
                 continue
-            local_masters = 0
-            for master_path in env_dir.glob("master_*"):
-                if master_path.is_dir():
-                    local_masters += 1
-            if local_masters <= 0:
+            hub_idx = _parse_hub_index(hub_dir)
+            if hub_idx is None:
                 continue
-            env_count += 1
-            master_count += int(local_masters)
-        if env_count <= 0:
-            continue
-        hubs.append(
-            {
-                "hub_idx": int(hub_idx),
-                "hub_dir": hub_dir,
-                "env_count": int(env_count),
-                "master_count": int(master_count),
-            }
-        )
+            if int(hub_idx) in seen_hubs:
+                continue
+            seen_hubs.add(int(hub_idx))
+            env_count = 0
+            master_count = 0
+            for env_dir in sorted(hub_dir.iterdir()):
+                if not env_dir.is_dir() or not env_dir.name.startswith("env_"):
+                    continue
+                local_masters = 0
+                for master_path in env_dir.glob("master_*"):
+                    if master_path.is_dir():
+                        local_masters += 1
+                if local_masters <= 0:
+                    continue
+                env_count += 1
+                master_count += int(local_masters)
+            if env_count <= 0:
+                continue
+            hubs.append(
+                {
+                    "hub_idx": int(hub_idx),
+                    "hub_dir": hub_dir,
+                    "env_count": int(env_count),
+                    "master_count": int(master_count),
+                }
+            )
     hubs.sort(key=lambda e: int(e["hub_idx"]))
     return hubs
 
@@ -1296,7 +1434,17 @@ def _select_master_run_ui(
     if include_nested:
         candidates = sorted(results_dir.rglob("master_*"))
     else:
-        candidates = sorted(results_dir.glob("master_*"))
+        roots = [_master_container_dir(results_dir), Path(results_dir)]
+        candidates = []
+        seen = set()
+        for root in roots:
+            for path in sorted(root.glob("master_*")) if root.is_dir() else []:
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(path)
+        candidates.sort()
     for path in candidates:
         if not path.is_dir():
             continue
@@ -1319,6 +1467,10 @@ def _select_master_run_ui(
 
     selected = 0
     scroll = 0
+    top_selected = 0
+    top_scroll = 0
+    per_hub_state: dict[int, tuple[int, int]] = {}
+    current_hub_idx = None
     editing_message = False
     message_text = ""
     message_value = ""
@@ -1347,17 +1499,200 @@ def _select_master_run_ui(
     delete_no_rect = pygame.Rect(0, 0, 0, 0)
     exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
 
+    hub_masters: dict[int, list[tuple[int, Path]]] = {}
+    standalone_masters: list[tuple[int, Path]] = []
+    top_entries: list[dict] = []
+
+    def _hub_idx_for_path(master_path: Path):
+        if not include_nested:
+            return None
+        chain = [master_path.parent, *master_path.parents]
+        for probe in chain:
+            idx = _parse_hub_index(probe)
+            if idx is not None:
+                return int(idx)
+        return None
+
+    def _rebuild_entries() -> None:
+        nonlocal hub_masters, standalone_masters, top_entries
+        hub_masters = {}
+        standalone_masters = []
+        for run_num, master_path in masters:
+            hub_idx = _hub_idx_for_path(master_path)
+            if include_nested and hub_idx is not None:
+                hub_masters.setdefault(int(hub_idx), []).append((int(run_num), master_path))
+            else:
+                standalone_masters.append((int(run_num), master_path))
+        for vals in hub_masters.values():
+            vals.sort(key=lambda item: (item[0], str(item[1])))
+        standalone_masters.sort(key=lambda item: (item[0], str(item[1])))
+
+        entries = []
+        if include_nested:
+            for hub_idx in sorted(hub_masters.keys()):
+                entries.append(
+                    {
+                        "kind": "hub",
+                        "hub_idx": int(hub_idx),
+                        "count": int(len(hub_masters.get(int(hub_idx), []))),
+                    }
+                )
+        for run_num, master_path in standalone_masters:
+            entries.append(
+                {
+                    "kind": "master",
+                    "run_num": int(run_num),
+                    "path": master_path,
+                    "hub_idx": None,
+                }
+            )
+        top_entries = entries
+
+    def _current_entries():
+        if include_nested and current_hub_idx is not None:
+            entries = []
+            for run_num, master_path in hub_masters.get(int(current_hub_idx), []):
+                entries.append(
+                    {
+                        "kind": "master",
+                        "run_num": int(run_num),
+                        "path": master_path,
+                        "hub_idx": int(current_hub_idx),
+                    }
+                )
+            return entries
+        return top_entries
+
     def _ensure_visible():
-        nonlocal scroll
+        nonlocal scroll, selected
+        entries = _current_entries()
+        count = len(entries)
+        if count <= 0:
+            selected = 0
+            scroll = 0
+            return
+        selected = max(0, min(selected, count - 1))
         if selected < scroll:
             scroll = selected
         elif selected >= scroll + visible_count:
             scroll = selected - visible_count + 1
-        scroll = max(0, min(scroll, max(0, len(masters) - visible_count)))
+        scroll = max(0, min(scroll, max(0, count - visible_count)))
 
+    def _selected_entry():
+        entries = _current_entries()
+        if not entries:
+            return None
+        idx = max(0, min(selected, len(entries) - 1))
+        return entries[idx]
+
+    def _selected_master():
+        entry = _selected_entry()
+        if not isinstance(entry, dict):
+            return None
+        if str(entry.get("kind")) != "master":
+            return None
+        run_num = entry.get("run_num")
+        path = entry.get("path")
+        if not isinstance(path, Path):
+            return None
+        if not isinstance(run_num, int):
+            return None
+        return run_num, path
+
+    def _load_settings_snapshot(path: Path):
+        settings_snapshot = None
+        settings_path = _master_settings_path(path)
+        if settings_path.exists():
+            try:
+                settings_snapshot = json.loads(settings_path.read_text())
+            except Exception:
+                settings_snapshot = None
+        if settings_snapshot is None:
+            meta = _load_master_meta(path)
+            settings_snapshot = meta.get("settings") if isinstance(meta, dict) else None
+        return settings_snapshot
+
+    def _open_hub(hub_idx: int) -> None:
+        nonlocal current_hub_idx, selected, scroll, top_selected, top_scroll
+        nonlocal editing_message, confirm_delete, delete_target
+        if int(hub_idx) not in hub_masters:
+            return
+        top_selected = selected
+        top_scroll = scroll
+        current_hub_idx = int(hub_idx)
+        state = per_hub_state.get(int(hub_idx))
+        if isinstance(state, tuple) and len(state) == 2:
+            selected = int(state[0])
+            scroll = int(state[1])
+        else:
+            selected = 0
+            scroll = 0
+        editing_message = False
+        confirm_delete = False
+        delete_target = None
+        _ensure_visible()
+
+    def _go_back_from_hub() -> bool:
+        nonlocal current_hub_idx, selected, scroll
+        nonlocal editing_message, confirm_delete, delete_target
+        if current_hub_idx is None:
+            return False
+        per_hub_state[int(current_hub_idx)] = (int(selected), int(scroll))
+        current_hub_idx = None
+        selected = int(top_selected)
+        scroll = int(top_scroll)
+        editing_message = False
+        confirm_delete = False
+        delete_target = None
+        _ensure_visible()
+        return True
+
+    def _delete_master(path: Path) -> bool:
+        nonlocal masters, selected, scroll, top_selected, top_scroll, current_hub_idx
+        nonlocal editing_message, confirm_delete, delete_target
+        try:
+            shutil.rmtree(path)
+        except Exception:
+            pass
+        masters = [m for m in masters if m[1] != path]
+        if not masters:
+            return False
+        _rebuild_entries()
+        if include_nested and current_hub_idx is not None:
+            if int(current_hub_idx) not in hub_masters:
+                current_hub_idx = None
+                selected = int(top_selected)
+                scroll = int(top_scroll)
+        editing_message = False
+        confirm_delete = False
+        delete_target = None
+        _ensure_visible()
+        return True
+
+    _rebuild_entries()
+    if not _current_entries():
+        return None, None, None
     _ensure_visible()
 
     while True:
+        entries = _current_entries()
+        if not entries:
+            if include_nested and current_hub_idx is not None and _go_back_from_hub():
+                entries = _current_entries()
+            if not entries:
+                return None, None, None
+        _ensure_visible()
+        entry = _selected_entry()
+        selected_master = _selected_master()
+        selected_is_master = selected_master is not None
+        selected_is_hub = isinstance(entry, dict) and str(entry.get("kind")) == "hub"
+        if editing_message and (not selected_is_master):
+            editing_message = False
+            message_text = ""
+        if confirm_delete and (not selected_is_master):
+            confirm_delete = False
+            delete_target = None
+
         detail_line_count = 5
         preview_rect = pygame.Rect(
             detail_x + 10,
@@ -1377,9 +1712,11 @@ def _select_master_run_ui(
             if event.type == pygame.KEYDOWN:
                 if editing_message:
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                        run_num, path = masters[selected]
-                        message_value = message_text.strip() or "debug run"
-                        _write_master_message(path, message_value)
+                        chosen = _selected_master()
+                        if chosen is not None:
+                            _, path = chosen
+                            message_value = message_text.strip() or "debug run"
+                            _write_master_message(path, message_value)
                         editing_message = False
                     elif event.key == pygame.K_ESCAPE:
                         editing_message = False
@@ -1392,43 +1729,47 @@ def _select_master_run_ui(
                             message_text += ch
                 else:
                     if event.key == pygame.K_ESCAPE:
-                        return None, None, None
-                    if event.key == pygame.K_UP:
-                        selected = (selected - 1) % len(masters)
+                        if not _go_back_from_hub():
+                            return None, None, None
+                    elif event.key == pygame.K_BACKSPACE:
+                        _go_back_from_hub()
+                    elif event.key == pygame.K_UP:
+                        selected = (selected - 1) % len(entries)
                         editing_message = False
                         _ensure_visible()
                     elif event.key == pygame.K_DOWN:
-                        selected = (selected + 1) % len(masters)
+                        selected = (selected + 1) % len(entries)
                         editing_message = False
                         _ensure_visible()
                     elif event.key == pygame.K_m:
-                        run_num, path = masters[selected]
-                        message_value = _read_master_message(path)
-                        message_text = message_value
-                        editing_message = True
+                        chosen = _selected_master()
+                        if chosen is not None:
+                            _, path = chosen
+                            message_value = _read_master_message(path)
+                            message_text = message_value
+                            editing_message = True
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                        run_num, path = masters[selected]
-                        settings_snapshot = None
-                        settings_path = _master_settings_path(path)
-                        if settings_path.exists():
-                            try:
-                                settings_snapshot = json.loads(settings_path.read_text())
-                            except Exception:
-                                settings_snapshot = None
-                        if settings_snapshot is None:
-                            meta = _load_master_meta(path)
-                            settings_snapshot = (
-                                meta.get("settings") if isinstance(meta, dict) else None
-                            )
-                        return run_num, settings_snapshot, path
+                        live_entry = _selected_entry()
+                        live_is_hub = isinstance(live_entry, dict) and str(live_entry.get("kind")) == "hub"
+                        if live_is_hub and include_nested:
+                            hub_idx = live_entry.get("hub_idx") if isinstance(live_entry, dict) else None
+                            if isinstance(hub_idx, int):
+                                _open_hub(hub_idx)
+                        else:
+                            chosen = _selected_master()
+                            if chosen is not None:
+                                run_num, path = chosen
+                                return run_num, _load_settings_snapshot(path), path
                     elif event.key == pygame.K_DELETE:
-                        confirm_delete = True
-                        delete_target = masters[selected]
+                        chosen = _selected_master()
+                        if chosen is not None:
+                            confirm_delete = True
+                            delete_target = chosen
             if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:
-                    selected = (selected - 1) % len(masters)
+                    selected = (selected - 1) % len(entries)
                 elif event.y < 0:
-                    selected = (selected + 1) % len(masters)
+                    selected = (selected + 1) % len(entries)
                 editing_message = False
                 _ensure_visible()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -1438,58 +1779,57 @@ def _select_master_run_ui(
                 if confirm_delete:
                     if delete_yes_rect.collidepoint(mx, my):
                         if delete_target is None:
-                            delete_target = masters[selected]
-                        run_num, path = delete_target
-                        try:
-                            shutil.rmtree(path)
-                        except Exception:
-                            pass
-                        masters = [m for m in masters if m[1] != path]
-                        if not masters:
-                            return None, None, None
-                        selected = max(0, min(selected, len(masters) - 1))
-                        confirm_delete = False
-                        delete_target = None
-                        editing_message = False
-                        _ensure_visible()
+                            delete_target = _selected_master()
+                        if delete_target is not None:
+                            _, path = delete_target
+                            if not _delete_master(path):
+                                return None, None, None
                         continue
                     if delete_no_rect.collidepoint(mx, my):
                         confirm_delete = False
                         delete_target = None
                         continue
-                if message_rect.collidepoint(mx, my):
-                    run_num, path = masters[selected]
-                    message_value = _read_master_message(path)
-                    message_text = message_value
-                    editing_message = True
+                if selected_is_master and message_rect.collidepoint(mx, my):
+                    chosen = _selected_master()
+                    if chosen is not None:
+                        _, path = chosen
+                        message_value = _read_master_message(path)
+                        message_text = message_value
+                        editing_message = True
                     continue
                 if list_top <= my <= list_bottom:
                     idx = (my - list_top) // line_h + scroll
-                    if 0 <= idx < len(masters):
+                    if 0 <= idx < len(entries):
                         selected = int(idx)
                         editing_message = False
                         _ensure_visible()
-                if choose_rect.collidepoint(mx, my):
-                    run_num, path = masters[selected]
-                    settings_snapshot = None
-                    settings_path = _master_settings_path(path)
-                    if settings_path.exists():
-                        try:
-                            settings_snapshot = json.loads(settings_path.read_text())
-                        except Exception:
-                            settings_snapshot = None
-                    if settings_snapshot is None:
-                        meta = _load_master_meta(path)
-                        settings_snapshot = (
-                            meta.get("settings") if isinstance(meta, dict) else None
+                        entry = _selected_entry()
+                        selected_master = _selected_master()
+                        selected_is_master = selected_master is not None
+                        selected_is_hub = (
+                            isinstance(entry, dict) and str(entry.get("kind")) == "hub"
                         )
-                    return run_num, settings_snapshot, path
-                if delete_rect.collidepoint(mx, my):
+                if choose_rect.collidepoint(mx, my):
+                    live_entry = _selected_entry()
+                    live_is_hub = isinstance(live_entry, dict) and str(live_entry.get("kind")) == "hub"
+                    if live_is_hub and include_nested:
+                        hub_idx = live_entry.get("hub_idx") if isinstance(live_entry, dict) else None
+                        if isinstance(hub_idx, int):
+                            _open_hub(hub_idx)
+                    else:
+                        chosen = _selected_master()
+                        if chosen is not None:
+                            run_num, path = chosen
+                            return run_num, _load_settings_snapshot(path), path
+                if delete_rect.collidepoint(mx, my) and selected_is_master:
                     confirm_delete = True
-                    delete_target = masters[selected]
+                    delete_target = selected_master
 
         screen.fill((18, 18, 18))
-        title = font.render(title_text, True, (230, 230, 230))
+        title_label = title_text
+        if include_nested and current_hub_idx is not None:
+            title_label = f"{title_text} / hub_{int(current_hub_idx)}"
+        title = font.render(title_label, True, (230, 230, 230))
         screen.blit(title, (20, 20))
         pygame.draw.rect(screen, (60, 60, 60), exit_rect)
         pygame.draw.rect(screen, (160, 160, 160), exit_rect, 1)
@@ -1501,24 +1841,37 @@ def _select_master_run_ui(
                 exit_rect.y + 4,
             ),
         )
-        hint_text = "Enter: select  Esc: cancel  M: edit message  Del: delete"
+
         if editing_message:
             hint_text = "Editing message: Enter=save  Esc=cancel"
+        elif include_nested and current_hub_idx is not None:
+            hint_text = "Enter: select master  Esc/Backspace: back  M: edit message  Del: delete"
+        elif include_nested:
+            hint_text = "Enter: open hub/select master  Esc: cancel  Del: delete selected master"
+        else:
+            hint_text = "Enter: select  Esc: cancel  M: edit message  Del: delete"
         hint = small_font.render(hint_text, True, (180, 180, 180))
         screen.blit(hint, (20, screen_h - 50))
 
-        for idx in range(scroll, min(len(masters), scroll + visible_count)):
-            run_num, path = masters[idx]
+        for idx in range(scroll, min(len(entries), scroll + visible_count)):
+            item = entries[idx]
             y = list_top + (idx - scroll) * line_h
-            label = f"master_{run_num}"
-            if include_nested:
-                try:
-                    rel_parent = path.parent.relative_to(results_dir)
-                    if str(rel_parent) != ".":
-                        label = f"{label} | {rel_parent}"
-                except Exception:
-                    label = f"{label} | {path.parent}"
+            if str(item.get("kind")) == "hub":
+                label = f"hub_{int(item.get('hub_idx', 0))} ({int(item.get('count', 0))} masters)"
+            else:
+                run_num = int(item.get("run_num"))
+                path = item.get("path")
+                label = f"master_{run_num}"
+                if include_nested and current_hub_idx is None and isinstance(path, Path):
+                    try:
+                        rel_parent = path.parent.relative_to(results_dir)
+                        if str(rel_parent) != ".":
+                            label = f"{label} | {rel_parent}"
+                    except Exception:
+                        label = f"{label} | {path.parent}"
             color = (0, 200, 255) if idx == selected else (220, 220, 220)
+            if str(item.get("kind")) == "hub" and idx != selected:
+                color = (170, 220, 170)
             if idx == selected:
                 pygame.draw.rect(
                     screen, (35, 35, 35), (list_left - 4, y - 2, list_width, line_h)
@@ -1526,103 +1879,128 @@ def _select_master_run_ui(
             text = small_font.render(label, True, color)
             screen.blit(text, (list_left, y))
 
-        # Detail panel for selected master
-        sel_run, sel_path = masters[selected]
         pygame.draw.rect(screen, (30, 30, 30), (detail_x, detail_y, detail_w, detail_h))
         pygame.draw.rect(screen, (80, 80, 80), (detail_x, detail_y, detail_w, detail_h), 1)
 
-        master_label = f"master_{sel_run}"
-        meta = _load_master_meta(sel_path)
-        run_nums = []
-        if isinstance(meta, dict):
-            raw_runs = meta.get("run_nums", [])
-            if isinstance(raw_runs, list):
-                for val in raw_runs:
-                    try:
-                        run_nums.append(int(val))
-                    except Exception:
-                        continue
-        run_nums.sort()
+        if selected_is_hub and include_nested and isinstance(entry, dict):
+            hub_idx = int(entry.get("hub_idx", 0))
+            hub_list = hub_masters.get(hub_idx, [])
+            detail_lines = [
+                f"hub_{hub_idx}",
+                f"Masters: {len(hub_list)}",
+                "Press Enter/Choose to open this hub.",
+                "Then pick a specific master run.",
+            ]
+            text_y = detail_y + 10
+            for line in detail_lines:
+                text = small_font.render(line, True, (220, 220, 220))
+                screen.blit(text, (detail_x + 10, text_y))
+                text_y += line_h
 
-        elapsed_vals = []
-        species_vals = []
-        for run_num in run_nums:
-            meta_path = sel_path.parent / str(run_num) / "run_meta.json"
-            run_meta = _load_run_meta(meta_path)
-            if isinstance(run_meta, dict):
-                elapsed = run_meta.get("elapsed_seconds")
-                species = run_meta.get("amnt_of_species")
-                if isinstance(elapsed, (int, float)):
-                    elapsed_vals.append(float(elapsed))
-                if isinstance(species, (int, float)):
-                    species_vals.append(float(species))
+            pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
+            preview_lines = []
+            for run_num, _ in hub_list[:8]:
+                preview_lines.append(f"master_{int(run_num)}")
+            if len(hub_list) > 8:
+                preview_lines.append("...")
+            py = preview_rect.y + 6
+            for line in preview_lines:
+                text = small_font.render(line, True, (170, 200, 170))
+                screen.blit(text, (preview_rect.x + 6, py))
+                py += line_h
+        elif selected_is_master and selected_master is not None:
+            sel_run, sel_path = selected_master
+            master_label = f"master_{sel_run}"
+            meta = _load_master_meta(sel_path)
+            run_nums = []
+            if isinstance(meta, dict):
+                raw_runs = meta.get("run_nums", [])
+                if isinstance(raw_runs, list):
+                    for val in raw_runs:
+                        try:
+                            run_nums.append(int(val))
+                        except Exception:
+                            continue
+            run_nums.sort()
 
-        max_elapsed = max(elapsed_vals) if elapsed_vals else 0.0
-        _maybe_autoupdate_master_message(sel_path, max_elapsed)
-        if not editing_message:
-            message_value = _read_master_message(sel_path)
-        message_display = message_text if editing_message else message_value
+            elapsed_vals = []
+            species_vals = []
+            for run_num in run_nums:
+                meta_path = sel_path.parent / str(run_num) / "run_meta.json"
+                run_meta = _load_run_meta(meta_path)
+                if isinstance(run_meta, dict):
+                    elapsed = run_meta.get("elapsed_seconds")
+                    species = run_meta.get("amnt_of_species")
+                    if isinstance(elapsed, (int, float)):
+                        elapsed_vals.append(float(elapsed))
+                    if isinstance(species, (int, float)):
+                        species_vals.append(float(species))
 
-        mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
-        mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
+            max_elapsed = max(elapsed_vals) if elapsed_vals else 0.0
+            _maybe_autoupdate_master_message(sel_path, max_elapsed)
+            if not editing_message:
+                message_value = _read_master_message(sel_path)
+            message_display = message_text if editing_message else message_value
 
-        title_label = master_label
-        if len(run_nums) == 0:
-            title_label = f"{master_label} (new)"
-        detail_lines = [
-            title_label,
-            f"Runs: {len(run_nums)}",
-            f"Runtime mean: {_format_duration(mean_elapsed)}",
-            f"Species mean: {mean_species:.1f}",
-        ]
-        text_y = detail_y + 10
-        for line in detail_lines:
-            text = small_font.render(line, True, (220, 220, 220))
-            screen.blit(text, (detail_x + 10, text_y))
-            text_y += line_h
-        _draw_text_with_caret(
-            screen,
-            small_font,
-            f"Message: {message_display}",
-            (detail_x + 10, text_y),
-            (255, 220, 160) if editing_message else (220, 220, 220),
-            show_caret=editing_message,
-            max_caret_x=detail_x + detail_w - 12,
-        )
+            mean_elapsed = (sum(elapsed_vals) / len(elapsed_vals)) if elapsed_vals else 0.0
+            mean_species = (sum(species_vals) / len(species_vals)) if species_vals else 0.0
 
-        # Arithmetic mean preview
-        pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
-        mean_path = sel_path / f"combinedArithmeticMeanSimulatino{master_label}_Log.csv"
-        if not mean_path.exists():
-            mean_path = sel_path / f"parsedArithmeticMeanSimulatino{master_label}_Log.csv"
-        mean_points = _load_mean_points(mean_path, "arithmetic mean length lived")
-        if not mean_points:
-            msg = small_font.render("No arithmetic data", True, (160, 160, 160))
-            screen.blit(msg, (preview_rect.x + 6, preview_rect.y + 6))
-        else:
-            points_sorted = sorted(mean_points, key=lambda p: p[0])
-            xs = [p[0] for p in points_sorted]
-            ys = [p[1] for p in points_sorted]
-            min_x, max_x = min(xs), max(xs)
-            min_y, max_y = min(ys), max(ys)
-            if max_x == min_x:
-                max_x = min_x + 1.0
-            if max_y == min_y:
-                max_y = min_y + 1.0
-            x_pad = (max_x - min_x) * 0.05
-            y_pad = (max_y - min_y) * 0.05
-            min_x -= x_pad
-            max_x += x_pad
-            min_y -= y_pad
-            max_y += y_pad
-            for x, y in points_sorted:
-                px = preview_rect.x + int(((x - min_x) / (max_x - min_x)) * preview_rect.width)
-                py = preview_rect.y + preview_rect.height - int(
-                    ((y - min_y) / (max_y - min_y)) * preview_rect.height
-                )
-                pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+            title_now = master_label
+            if len(run_nums) == 0:
+                title_now = f"{master_label} (new)"
+            detail_lines = [
+                title_now,
+                f"Runs: {len(run_nums)}",
+                f"Runtime mean: {_format_duration(mean_elapsed)}",
+                f"Species mean: {mean_species:.1f}",
+            ]
+            text_y = detail_y + 10
+            for line in detail_lines:
+                text = small_font.render(line, True, (220, 220, 220))
+                screen.blit(text, (detail_x + 10, text_y))
+                text_y += line_h
+            _draw_text_with_caret(
+                screen,
+                small_font,
+                f"Message: {message_display}",
+                (detail_x + 10, text_y),
+                (255, 220, 160) if editing_message else (220, 220, 220),
+                show_caret=editing_message,
+                max_caret_x=detail_x + detail_w - 12,
+            )
 
-        if confirm_delete:
+            pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
+            mean_path = sel_path / f"combinedArithmeticMeanSimulatino{master_label}_Log.csv"
+            if not mean_path.exists():
+                mean_path = sel_path / f"parsedArithmeticMeanSimulatino{master_label}_Log.csv"
+            mean_points = _load_mean_points(mean_path, "arithmetic mean length lived")
+            if not mean_points:
+                msg = small_font.render("No arithmetic data", True, (160, 160, 160))
+                screen.blit(msg, (preview_rect.x + 6, preview_rect.y + 6))
+            else:
+                points_sorted = sorted(mean_points, key=lambda p: p[0])
+                xs = [p[0] for p in points_sorted]
+                ys = [p[1] for p in points_sorted]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                if max_x == min_x:
+                    max_x = min_x + 1.0
+                if max_y == min_y:
+                    max_y = min_y + 1.0
+                x_pad = (max_x - min_x) * 0.05
+                y_pad = (max_y - min_y) * 0.05
+                min_x -= x_pad
+                max_x += x_pad
+                min_y -= y_pad
+                max_y += y_pad
+                for x, y in points_sorted:
+                    px = preview_rect.x + int(((x - min_x) / (max_x - min_x)) * preview_rect.width)
+                    py = preview_rect.y + preview_rect.height - int(
+                        ((y - min_y) / (max_y - min_y)) * preview_rect.height
+                    )
+                    pygame.draw.circle(screen, (0, 200, 255), (px, py), 2)
+
+        if confirm_delete and selected_is_master:
             pygame.draw.rect(screen, (80, 40, 40), delete_yes_rect)
             pygame.draw.rect(screen, (200, 200, 200), delete_yes_rect, 1)
             yes_text = small_font.render("Yes", True, (230, 230, 230))
@@ -1648,7 +2026,8 @@ def _select_master_run_ui(
         else:
             pygame.draw.rect(screen, (40, 40, 40), choose_rect)
             pygame.draw.rect(screen, (180, 180, 180), choose_rect, 1)
-            choose_text = small_font.render("Choose", True, (230, 230, 230))
+            choose_label = "Open" if selected_is_hub else "Choose"
+            choose_text = small_font.render(choose_label, True, (230, 230, 230))
             screen.blit(
                 choose_text,
                 (
@@ -1656,9 +2035,14 @@ def _select_master_run_ui(
                     choose_rect.y + 6,
                 ),
             )
-            pygame.draw.rect(screen, (70, 40, 40), delete_rect)
-            pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
-            del_text = small_font.render("Delete", True, (230, 230, 230))
+            if selected_is_master:
+                pygame.draw.rect(screen, (70, 40, 40), delete_rect)
+                pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
+                del_text = small_font.render("Delete", True, (230, 230, 230))
+            else:
+                pygame.draw.rect(screen, (45, 45, 45), delete_rect)
+                pygame.draw.rect(screen, (110, 110, 110), delete_rect, 1)
+                del_text = small_font.render("Delete", True, (140, 140, 140))
             screen.blit(
                 del_text,
                 (
@@ -1790,7 +2174,10 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                         else:
                             target_master_dir = continue_master_dir
                             if target_master_dir is None:
-                                target_master_dir = results_dir / f"master_{continue_master_run}"
+                                target_master_dir = (
+                                    _master_container_dir(_master_search_root(results_dir))
+                                    / f"master_{continue_master_run}"
+                                )
                             _write_master_message(
                                 target_master_dir,
                                 message_value,
@@ -1923,7 +2310,8 @@ def _edit_startup_ui(settings: dict, results_dir: Path):
                         )
                         if continue_master_dir is None:
                             continue_master_dir = (
-                                continue_results_dir / f"master_{continue_master_run}"
+                                _master_container_dir(_master_search_root(results_dir))
+                                / f"master_{continue_master_run}"
                             )
                         message_value = _read_master_message(continue_master_dir)
                         message_text = message_value
@@ -2286,6 +2674,55 @@ def _path_in_use(path: Path) -> bool:
         return False
 
 
+def _collect_existing_run_ids(results_context: Path) -> set[int]:
+    used: set[int] = set()
+    root = _master_search_root(results_context)
+
+    for base in (_normal_sim_container_dir(root), root):
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                run_num = int(entry.name)
+            except Exception:
+                continue
+            used.add(int(run_num))
+
+    for hub_root in _hub_search_roots(root):
+        if not hub_root.is_dir():
+            continue
+        for hub_dir in hub_root.glob("hub_*"):
+            if not hub_dir.is_dir():
+                continue
+            for env_dir in hub_dir.glob("env_*"):
+                if not env_dir.is_dir():
+                    continue
+                for entry in env_dir.iterdir():
+                    if not entry.is_dir():
+                        continue
+                    try:
+                        run_num = int(entry.name)
+                    except Exception:
+                        continue
+                    used.add(int(run_num))
+    return used
+
+
+def _collect_existing_master_run_ids(results_context: Path) -> set[int]:
+    used: set[int] = set()
+    root = _master_search_root(results_context)
+    for path in root.rglob("master_*"):
+        if not path.is_dir():
+            continue
+        parsed = _parse_master_run_from_dir(path)
+        if parsed is None:
+            continue
+        used.add(int(parsed))
+    return used
+
+
 def _allocate_run_numbers(count: int, results_dir: Path | None = None) -> list[int]:
     if results_dir is None:
         results_dir = Path("results")
@@ -2295,14 +2732,13 @@ def _allocate_run_numbers(count: int, results_dir: Path | None = None) -> list[i
         current = int(settings.get("num_tries", 0))
     except Exception:
         current = 0
-    root_results = Path("results")
+    used = _collect_existing_run_ids(results_dir)
     run_nums = []
     candidate = max(0, current)
     while len(run_nums) < count:
-        if (not _path_in_use(root_results / str(candidate))) and (
-            not _path_in_use(results_dir / str(candidate))
-        ):
+        if candidate not in used:
             run_nums.append(candidate)
+            used.add(int(candidate))
         candidate += 1
     settings["num_tries"] = candidate
     save_settings(settings)
@@ -2317,14 +2753,12 @@ def _allocate_master_run_number(
         current = int(settings.get("num_tries_master", 0))
     except Exception:
         current = 0
-    root_results = Path("results")
+    used = _collect_existing_master_run_ids(results_dir)
     if forced_num is not None:
         new_val = int(forced_num)
         if new_val < 0:
             raise ValueError("master run id must be >= 0")
-        if _path_in_use(root_results / f"master_{new_val}") or _path_in_use(
-            results_dir / f"master_{new_val}"
-        ):
+        if new_val in used:
             raise FileExistsError(
                 f"master_{new_val} already exists in results paths; refusing overlap"
             )
@@ -2333,9 +2767,7 @@ def _allocate_master_run_number(
         return new_val
 
     new_val = max(0, current)
-    while _path_in_use(root_results / f"master_{new_val}") or _path_in_use(
-        results_dir / f"master_{new_val}"
-    ):
+    while new_val in used:
         new_val += 1
     settings["num_tries_master"] = new_val + 1
     save_settings(settings)
@@ -2851,6 +3283,7 @@ def _draw_arithmetic_chart(
     selected_idx=None,
     label_font=None,
     draw_best_fit: bool = True,
+    equation_copy_targets=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     if not points:
@@ -2914,26 +3347,44 @@ def _draw_arithmetic_chart(
                     curve_points.append((px + plot_left, py + plot_top))
             if len(curve_points) >= 2:
                 pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
+                join_x, join_y = _scale_point(
+                    float(gaussian_fit["apex_x"]),
+                    float(gaussian_fit["apex_y"]),
+                )
+                _draw_curve_join_marker(
+                    surface,
+                    (join_x + plot_left, join_y + plot_top),
+                    color=(248, 196, 92),
+                    radius=4,
+                    alpha=128,
+                )
 
-            eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
+            equation_text = str(gaussian_fit.get("equation", ""))
             params_text = (
-                f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
-                f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
-                f"R^2={float(gaussian_fit['r2']):.3f}"
+                f"R^2={float(gaussian_fit['r2']):.3f} | A={float(gaussian_fit['apex_y']):.4g}, "
+                f"mu={float(gaussian_fit['apex_x']):.4g}, sL={float(gaussian_fit['sigma_left']):.4g}, "
+                f"sR={float(gaussian_fit['sigma_right']):.4g}"
             )
             eq_font = _equation_font(font)
+            right_reserved = _draw_equation_copy_button(
+                surface,
+                eq_font,
+                rect,
+                equation_text,
+                equation_copy_targets,
+                y_offset=2,
+            )
             left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
-            max_w = max(48, rect.right - 6 - left_reserved)
-            eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
-            params_text = _fit_text_to_width(eq_font, params_text, max_w)
-            eq = eq_font.render(eq_text, True, (170, 170, 170))
-            params = eq_font.render(params_text, True, (170, 170, 170))
-            eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
+            max_text_right = rect.right - 6 - right_reserved
+            max_w = max(48, max_text_right - left_reserved)
+            info_lines = _wrap_text_to_width(eq_font, f"Equation: {equation_text}", max_w)
+            info_lines.extend(_wrap_text_to_width(eq_font, params_text, max_w))
             eq_y = rect.y + 2
-            params_x = max(left_reserved, rect.right - params.get_width() - 6)
-            params_y = eq_y + eq.get_height() + 1
-            surface.blit(eq, (eq_x, eq_y))
-            surface.blit(params, (params_x, params_y))
+            for line in info_lines:
+                rendered = eq_font.render(line, True, (170, 170, 170))
+                line_x = max(left_reserved, max_text_right - rendered.get_width())
+                surface.blit(rendered, (line_x, eq_y))
+                eq_y += rendered.get_height() + 1
 
     if selected_point and selected_point.get("scope") == "sim":
         if selected_idx is None or selected_point.get("sim_index") == selected_idx:
@@ -3032,6 +3483,7 @@ def _draw_multi_arithmetic_chart(
     selected_point=None,
     highlight_sim=None,
     label_font=None,
+    equation_copy_targets=None,
 ) -> None:
     pygame.draw.rect(surface, (80, 80, 80), rect, 1)
     all_points = [pt for points in series for pt in points]
@@ -3106,26 +3558,44 @@ def _draw_multi_arithmetic_chart(
                 curve_points.append((px + plot_left, py + plot_top))
         if len(curve_points) >= 2:
             pygame.draw.lines(surface, (248, 196, 92), False, curve_points, 2)
+            join_x, join_y = _scale_point(
+                float(gaussian_fit["apex_x"]),
+                float(gaussian_fit["apex_y"]),
+            )
+            _draw_curve_join_marker(
+                surface,
+                (join_x + plot_left, join_y + plot_top),
+                color=(248, 196, 92),
+                radius=4,
+                alpha=128,
+            )
 
-        eq_text = "Normal: y=A*exp(-((x-mu)^2)/(2*s^2)); s=sL(x<=mu), sR(x>mu)"
+        equation_text = str(gaussian_fit.get("equation", ""))
         params_text = (
-            f"A={float(gaussian_fit['apex_y']):.4g}, mu={float(gaussian_fit['apex_x']):.4g}, "
-            f"sL={float(gaussian_fit['sigma_left']):.4g}, sR={float(gaussian_fit['sigma_right']):.4g}, "
-            f"R^2={float(gaussian_fit['r2']):.3f}"
+            f"R^2={float(gaussian_fit['r2']):.3f} | A={float(gaussian_fit['apex_y']):.4g}, "
+            f"mu={float(gaussian_fit['apex_x']):.4g}, sL={float(gaussian_fit['sigma_left']):.4g}, "
+            f"sR={float(gaussian_fit['sigma_right']):.4g}"
         )
         eq_font = _equation_font(font)
+        right_reserved = _draw_equation_copy_button(
+            surface,
+            eq_font,
+            rect,
+            equation_text,
+            equation_copy_targets,
+            y_offset=2,
+        )
         left_reserved = plot_left + max(max_label.get_width(), min_label.get_width()) + 12
-        max_w = max(48, rect.right - 6 - left_reserved)
-        eq_text = _fit_text_to_width(eq_font, eq_text, max_w)
-        params_text = _fit_text_to_width(eq_font, params_text, max_w)
-        eq = eq_font.render(eq_text, True, (170, 170, 170))
-        params = eq_font.render(params_text, True, (170, 170, 170))
-        eq_x = max(left_reserved, rect.right - eq.get_width() - 6)
+        max_text_right = rect.right - 6 - right_reserved
+        max_w = max(48, max_text_right - left_reserved)
+        info_lines = _wrap_text_to_width(eq_font, f"Equation: {equation_text}", max_w)
+        info_lines.extend(_wrap_text_to_width(eq_font, params_text, max_w))
         eq_y = rect.y + 2
-        params_x = max(left_reserved, rect.right - params.get_width() - 6)
-        params_y = eq_y + eq.get_height() + 1
-        surface.blit(eq, (eq_x, eq_y))
-        surface.blit(params, (params_x, params_y))
+        for line in info_lines:
+            rendered = eq_font.render(line, True, (170, 170, 170))
+            line_x = max(left_reserved, max_text_right - rendered.get_width())
+            surface.blit(rendered, (line_x, eq_y))
+            eq_y += rendered.get_height() + 1
 
     if selected_point and selected_point.get("scope") == "global":
         x = selected_point.get("x")
@@ -3153,13 +3623,20 @@ def _draw_multi_arithmetic_chart(
 
 
 def _predict_piecewise_gaussian(
-    x: float, apex_x: float, apex_y: float, sigma_left: float, sigma_right: float
+    x: float,
+    apex_x: float,
+    apex_y: float,
+    sigma_left: float,
+    sigma_right: float,
+    power: float = 2.0,
 ) -> float:
     if apex_y <= 0:
         return 0.0
     sigma = sigma_left if x <= apex_x else sigma_right
     sigma = max(1e-9, sigma)
-    expo = -((x - apex_x) ** 2) / (2.0 * sigma * sigma)
+    use_power = max(1e-6, float(power))
+    distance = abs(float(x) - float(apex_x))
+    expo = -((distance**use_power) / (2.0 * (sigma**use_power)))
     return apex_y * math.exp(expo)
 
 
@@ -3201,67 +3678,263 @@ def _fit_text_to_width(font, text: str, max_width: int) -> str:
     return raw[:lo] + ellipsis
 
 
-def _fit_side_sigma(apex_x: float, apex_y: float, side_points: list[tuple[float, float]]) -> float | None:
-    if apex_y <= 0:
-        return None
-    num = 0.0
-    den = 0.0
-    for x, y in side_points:
-        if y <= 0 or y >= apex_y:
+def _draw_equation_copy_button(
+    surface,
+    font,
+    chart_rect: pygame.Rect,
+    equation_text: str,
+    equation_copy_targets: list | None,
+    y_offset: int = 2,
+) -> int:
+    if (not isinstance(equation_copy_targets, list)) or (not str(equation_text).strip()):
+        return 0
+    label = "Copy"
+    btn_w = max(38, int(font.size(label)[0]) + 10)
+    btn_h = max(14, int(font.get_linesize()) + 2)
+    btn_rect = pygame.Rect(
+        int(chart_rect.right - btn_w - 6),
+        int(chart_rect.y + y_offset),
+        int(btn_w),
+        int(btn_h),
+    )
+    pygame.draw.rect(surface, (52, 58, 76), btn_rect)
+    pygame.draw.rect(surface, (150, 156, 174), btn_rect, 1)
+    txt = font.render(label, True, (232, 236, 245))
+    surface.blit(
+        txt,
+        (
+            btn_rect.x + (btn_rect.width - txt.get_width()) // 2,
+            btn_rect.y + (btn_rect.height - txt.get_height()) // 2,
+        ),
+    )
+    equation_copy_targets.append(
+        {
+            "rect": btn_rect.copy(),
+            "text": str(equation_text),
+        }
+    )
+    return int(btn_rect.width + 8)
+
+
+def _draw_curve_join_marker(
+    surface,
+    center: tuple[int, int],
+    color: tuple[int, int, int] = (248, 196, 92),
+    radius: int = 4,
+    alpha: int = 128,
+) -> None:
+    r = max(2, int(radius))
+    a = max(0, min(255, int(alpha)))
+    marker = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+    pygame.draw.circle(marker, (color[0], color[1], color[2], a), (r + 1, r + 1), r)
+    pygame.draw.circle(
+        marker,
+        (255, 255, 255, min(220, max(80, a + 40))),
+        (r + 1, r + 1),
+        max(1, r - 1),
+        1,
+    )
+    surface.blit(marker, (int(center[0] - r - 1), int(center[1] - r - 1)))
+
+
+def _wrap_text_to_width(font, text: str, max_width: int) -> list[str]:
+    raw = str(text) if text is not None else ""
+    if max_width <= 0:
+        return []
+    if raw == "":
+        return [""]
+
+    lines: list[str] = []
+    paragraphs = raw.splitlines() or [raw]
+    for paragraph in paragraphs:
+        if paragraph == "":
+            lines.append("")
             continue
-        d2 = (x - apex_x) ** 2
-        if d2 <= 0:
-            continue
-        try:
-            lr = math.log(y / apex_y)
-        except Exception:
-            continue
-        if not math.isfinite(lr):
-            continue
-        num += d2 * lr
-        den += d2 * d2
-    if den <= 0:
-        return None
-    slope = num / den
-    if slope >= 0:
-        return None
-    sigma_sq = -1.0 / (2.0 * slope)
-    if sigma_sq <= 0 or not math.isfinite(sigma_sq):
-        return None
-    return math.sqrt(sigma_sq)
+        start = 0
+        n = len(paragraph)
+        while start < n:
+            lo = start + 1
+            hi = n
+            best = start + 1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                segment = paragraph[start:mid]
+                if font.size(segment)[0] <= max_width:
+                    best = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+
+            end = best
+            if end < n:
+                split_at = paragraph.rfind(" ", start, end)
+                if split_at > start:
+                    end = split_at
+
+            line = paragraph[start:end].rstrip()
+            if line == "":
+                line = paragraph[start:best]
+                end = best
+            lines.append(line)
+            start = end
+            while start < n and paragraph[start] == " ":
+                start += 1
+    return lines
 
 
 def _fit_stitched_gaussian_equation(points: list[tuple[float, float]]) -> dict | None:
     if len(points) < 3:
         return None
-    apex_x, apex_y = max(points, key=lambda p: p[1])
-    if apex_y <= 0:
-        return None
-
-    left = [(x, y) for (x, y) in points if x <= apex_x]
-    right = [(x, y) for (x, y) in points if x >= apex_x]
-    sigma_left = _fit_side_sigma(apex_x, apex_y, left)
-    sigma_right = _fit_side_sigma(apex_x, apex_y, right)
-    if sigma_left is None and sigma_right is None:
-        sigma_left = 0.05
-        sigma_right = 0.05
-    elif sigma_left is None:
-        sigma_left = sigma_right
-    elif sigma_right is None:
-        sigma_right = sigma_left
-
-    assert sigma_left is not None
-    assert sigma_right is not None
-    if sigma_left <= 0 or sigma_right <= 0:
-        return None
-
+    apex_x, apex_point_y = max(points, key=lambda p: p[1])
+    xs = [float(x) for x, _ in points]
     ys = [float(y) for _, y in points]
+    x_range = max(xs) - min(xs) if xs else 0.0
+    if not math.isfinite(x_range) or x_range <= 0:
+        x_range = 1.0
+
+    sigma_min = max(1e-6, x_range * 1e-4)
+    sigma_max = max(sigma_min * 10.0, x_range * 10.0)
+    power_min = 0.5
+    power_max = 8.0
+
+    def _clamp_log_sigma(value: float) -> float:
+        lo = math.log(sigma_min)
+        hi = math.log(sigma_max)
+        if value < lo:
+            return lo
+        if value > hi:
+            return hi
+        return value
+
+    def _clamp_log_power(value: float) -> float:
+        lo = math.log(power_min)
+        hi = math.log(power_max)
+        if value < lo:
+            return lo
+        if value > hi:
+            return hi
+        return value
+
+    def _solve_amplitude_and_sse(sigma_left: float, sigma_right: float, power: float):
+        sigma_left = max(sigma_min, min(sigma_max, float(sigma_left)))
+        sigma_right = max(sigma_min, min(sigma_max, float(sigma_right)))
+        power = max(power_min, min(power_max, float(power)))
+        sum_yk = 0.0
+        sum_k2 = 0.0
+        ks: list[tuple[float, float]] = []
+        for x, y in points:
+            distance = abs(float(x) - float(apex_x))
+            sigma = sigma_left if float(x) <= float(apex_x) else sigma_right
+            expo = -((distance**power) / (2.0 * (sigma**power)))
+            k = math.exp(expo)
+            sum_yk += float(y) * k
+            sum_k2 += k * k
+            ks.append((float(y), k))
+        if sum_k2 <= 1e-15:
+            return None
+        amplitude = sum_yk / sum_k2
+        sse = 0.0
+        for y, k in ks:
+            diff = y - (amplitude * k)
+            sse += diff * diff
+        return float(amplitude), float(sse)
+
+    left_dist = [
+        abs(float(apex_x) - float(x))
+        for x, y in points
+        if float(x) <= float(apex_x) and _is_number(y) and float(y) > 0
+    ]
+    right_dist = [
+        abs(float(x) - float(apex_x))
+        for x, y in points
+        if float(x) >= float(apex_x) and _is_number(y) and float(y) > 0
+    ]
+
+    def _initial_sigma(dist_values: list[float]) -> float:
+        if not dist_values:
+            return max(0.05, x_range * 0.12)
+        mean_abs = sum(max(0.0, d) for d in dist_values) / len(dist_values)
+        return max(sigma_min, min(sigma_max, mean_abs if mean_abs > 0 else x_range * 0.12))
+
+    sigma_left = _initial_sigma(left_dist)
+    sigma_right = _initial_sigma(right_dist)
+    shape_power = 2.0
+    best = _solve_amplitude_and_sse(sigma_left, sigma_right, shape_power)
+    if best is None:
+        return None
+    best_a, best_sse = best
+    best_log_left = _clamp_log_sigma(math.log(max(sigma_min, sigma_left)))
+    best_log_right = _clamp_log_sigma(math.log(max(sigma_min, sigma_right)))
+    best_log_power = _clamp_log_power(math.log(shape_power))
+
+    # Coordinate search in log-parameter space; optimize by minimum residual error.
+    step = 1.0
+    for _ in range(24):
+        improved = False
+        for side in ("left", "right", "power"):
+            if side == "left":
+                base_log = best_log_left
+            elif side == "right":
+                base_log = best_log_right
+            else:
+                base_log = best_log_power
+            candidates = [
+                base_log - step,
+                base_log - (step * 0.5),
+                base_log,
+                base_log + (step * 0.5),
+                base_log + step,
+            ]
+            local_best = (best_a, best_sse, best_log_left, best_log_right, best_log_power)
+            for cand in candidates:
+                if side == "left":
+                    log_left = _clamp_log_sigma(cand)
+                    log_right = best_log_right
+                    log_power = best_log_power
+                elif side == "right":
+                    log_left = best_log_left
+                    log_right = _clamp_log_sigma(cand)
+                    log_power = best_log_power
+                else:
+                    log_left = best_log_left
+                    log_right = best_log_right
+                    log_power = _clamp_log_power(cand)
+                trial = _solve_amplitude_and_sse(
+                    math.exp(log_left),
+                    math.exp(log_right),
+                    math.exp(log_power),
+                )
+                if trial is None:
+                    continue
+                a_val, sse_val = trial
+                if sse_val + 1e-12 < local_best[1]:
+                    local_best = (a_val, sse_val, log_left, log_right, log_power)
+            if local_best[1] + 1e-12 < best_sse:
+                best_a, best_sse, best_log_left, best_log_right, best_log_power = local_best
+                improved = True
+        if not improved:
+            step *= 0.5
+            if step < 1e-3:
+                break
+
+    sigma_left = max(sigma_min, min(sigma_max, math.exp(best_log_left)))
+    sigma_right = max(sigma_min, min(sigma_max, math.exp(best_log_right)))
+    shape_power = max(power_min, min(power_max, math.exp(best_log_power)))
+    apex_y = float(best_a)
+    if not math.isfinite(apex_y):
+        return None
+
     y_mean = sum(ys) / len(ys)
     ss_tot = sum((y - y_mean) ** 2 for y in ys)
     ss_res = 0.0
     for x, y in points:
         pred = _predict_piecewise_gaussian(
-            float(x), float(apex_x), float(apex_y), float(sigma_left), float(sigma_right)
+            float(x),
+            float(apex_x),
+            float(apex_y),
+            float(sigma_left),
+            float(sigma_right),
+            float(shape_power),
         )
         ss_res += (float(y) - pred) ** 2
     if ss_tot > 0:
@@ -3271,12 +3944,16 @@ def _fit_stitched_gaussian_equation(points: list[tuple[float, float]]) -> dict |
     return {
         "apex_x": float(apex_x),
         "apex_y": float(apex_y),
+        "apex_point_y": float(apex_point_y),
         "sigma_left": float(sigma_left),
         "sigma_right": float(sigma_right),
+        "power": float(shape_power),
         "r2": float(r2),
         "equation": (
-            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_left:.6g}^2)) for x<={apex_x:.6g}; "
-            f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_right:.6g}^2)) for x>{apex_x:.6g}"
+            f"y={apex_y:.6g}*exp(-(|x-{apex_x:.6g}|^{shape_power:.6g})/(2*{sigma_left:.6g}^{shape_power:.6g})) "
+            f"for x<={apex_x:.6g}; "
+            f"y={apex_y:.6g}*exp(-(|x-{apex_x:.6g}|^{shape_power:.6g})/(2*{sigma_right:.6g}^{shape_power:.6g})) "
+            f"for x>{apex_x:.6g}"
         ),
     }
 
@@ -4328,8 +5005,19 @@ def _pick_fps_point(
 
 def main() -> None:
     args = _parse_args()
-    results_dir = Path(args.results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    results_arg_dir = Path(args.results_dir)
+    results_arg_dir.mkdir(parents=True, exist_ok=True)
+    results_root = _master_search_root(results_arg_dir)
+    if _is_hub_env_dir(results_arg_dir):
+        results_dir = results_arg_dir
+    else:
+        results_root.mkdir(parents=True, exist_ok=True)
+        results_dir = _normal_sim_container_dir(results_root)
+        results_dir.mkdir(parents=True, exist_ok=True)
+    master_storage_root = (
+        results_dir if _is_hub_env_dir(results_dir) else _master_container_dir(results_root)
+    )
+    master_storage_root.mkdir(parents=True, exist_ok=True)
     forced_continue_run = (
         int(args.continue_master_run)
         if args.continue_master_run is not None
@@ -4494,10 +5182,10 @@ def main() -> None:
     else:
         run_nums = _allocate_run_numbers(count, results_dir)
         master_run_num = _allocate_master_run_number(
-            results_dir, forced_num=args.master_run_num
+            results_root, forced_num=args.master_run_num
         )
         master_label = f"master_{master_run_num}"
-        master_dir = results_dir / master_label
+        master_dir = master_storage_root / master_label
         master_dir.mkdir(parents=True, exist_ok=True)
         master_run_nums = run_nums
 
@@ -4601,6 +5289,9 @@ def main() -> None:
     mean_kind = "Arithmetic"
     selected_mean_point = None
     selected_fps_point = None
+    equation_copy_targets = []
+    copy_status_text = ""
+    copy_status_ts = 0.0
     full_throttle_active = False
     saved_draw_modes = None
     saved_mode_values = None
@@ -5099,6 +5790,26 @@ def main() -> None:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 _bump_uncap()
                 mx, my = event.pos
+                copied_equation = False
+                if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
+                    for target in reversed(equation_copy_targets):
+                        if not isinstance(target, dict):
+                            continue
+                        rect = target.get("rect")
+                        if not isinstance(rect, pygame.Rect):
+                            continue
+                        if not rect.collidepoint(mx, my):
+                            continue
+                        eq_text = str(target.get("text", ""))
+                        if _copy_text_to_clipboard(eq_text):
+                            copy_status_text = "Equation copied to clipboard"
+                        else:
+                            copy_status_text = "Failed to copy equation to clipboard"
+                        copy_status_ts = time.time()
+                        copied_equation = True
+                        break
+                if copied_equation:
+                    continue
                 if exit_top_rect.collidepoint(mx, my):
                     if confirm_quit:
                         running = False
@@ -5261,6 +5972,7 @@ def main() -> None:
         
         if master_fps_mode != _FPS_MODE_FULL_THROTTLE:
             screen.fill((20, 20, 20))
+            equation_copy_targets = []
             title = font.render("Simulation Master", True, (240, 240, 240))
             if selected_row == 0:
                 status_text = f"Selected: MASTER (0) | master_{master_run_num}"
@@ -5290,6 +6002,9 @@ def main() -> None:
                 True,
                 (200, 200, 200),
             )
+            copy_hint = None
+            if copy_status_text and ((time.time() - float(copy_status_ts)) <= 3.0):
+                copy_hint = small_font.render(copy_status_text, True, (170, 220, 180))
 
             screen.blit(title, (20, header_top + y_offset))
             screen.blit(status, (20, header_top + 30 + y_offset))
@@ -5297,6 +6012,8 @@ def main() -> None:
             screen.blit(hint2, (20, header_top + 80 + y_offset))
             screen.blit(hint3, (20, header_top + 100 + y_offset))
             screen.blit(hint4, (20, header_top + 120 + y_offset))
+            if copy_hint is not None:
+                screen.blit(copy_hint, (20, header_top + 140 + y_offset))
             pygame.draw.rect(screen, (60, 60, 60), exit_top_rect)
             pygame.draw.rect(screen, (160, 160, 160), exit_top_rect, 1)
             exit_text = small_font.render("Exit", True, (230, 230, 230))
@@ -5500,6 +6217,7 @@ def main() -> None:
                     else (selected_row - 1 if selected_row > 0 else None)
                 ),
                 label_font=label_font,
+                equation_copy_targets=equation_copy_targets,
             )
 
             if confirm_quit:
@@ -5615,6 +6333,7 @@ def main() -> None:
                     selected_idx=idx,
                     label_font=label_font,
                     draw_best_fit=(not opened_from_hub),
+                    equation_copy_targets=equation_copy_targets,
                 )
 
                 y += panel_h
