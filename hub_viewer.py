@@ -1930,7 +1930,7 @@ class HubViewer:
             return (px, py, z2, perspective)
 
         fit_line_segments = []
-        if draw_best_fit_line and show_fit and isinstance(best, dict):
+        if draw_best_fit_line and isinstance(best, dict):
             y_span = max(1e-9, max_y - min_y)
 
             def _fit_line_z_for_x(x_val: float) -> float | None:
