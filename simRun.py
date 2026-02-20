@@ -405,6 +405,22 @@ def _terminate_process_group(pgid: int, grace_seconds: float = 8.0) -> None:
         return
 
 
+def _tail_text_file(path: Path, max_lines: int = 80, max_bytes: int = 262144) -> str:
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    if len(data) > max_bytes:
+        data = data[-max_bytes:]
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines).strip()
+
+
 def _can_read_quit_key() -> bool:
     if termios is None or tty is None:
         return False
@@ -480,11 +496,23 @@ def main() -> None:
     )
     proc_env = os.environ.copy()
     proc_env["HUB_RUNNER_SHUTDOWN_FILE"] = str(shutdown_signal_path)
+    runner_log_path: Path | None = None
+    runner_log_handle = None
+    if bool(args.show_runner_output):
+        runner_stdout = None
+        runner_stderr = None
+    else:
+        runner_log_path = (
+            Path(tempfile.gettempdir()) / f"hub_runner_{os.getpid()}_{int(time.time() * 1000)}.log"
+        )
+        runner_log_handle = runner_log_path.open("wb")
+        runner_stdout = runner_log_handle
+        runner_stderr = subprocess.STDOUT
     proc = subprocess.Popen(
         cmd,
         cwd=str(repo_root),
-        stdout=None if args.show_runner_output else subprocess.DEVNULL,
-        stderr=None if args.show_runner_output else subprocess.DEVNULL,
+        stdout=runner_stdout,
+        stderr=runner_stderr,
         env=proc_env,
         start_new_session=True,
     )
@@ -595,8 +623,23 @@ def main() -> None:
 
         _terminate_process_group(pgid)
         if returncode != 0:
+            print(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"hub_runner exited with code {returncode}."
+            )
+            if runner_log_path is not None:
+                tail = _tail_text_file(runner_log_path, max_lines=80)
+                if tail:
+                    print("Last hub_runner output:")
+                    print(tail)
+                print(f"hub_runner log: {runner_log_path}")
             raise SystemExit(returncode)
     finally:
+        if runner_log_handle is not None:
+            try:
+                runner_log_handle.close()
+            except Exception:
+                pass
         if stdin_fd is not None and stdin_attrs is not None:
             try:
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, stdin_attrs)
