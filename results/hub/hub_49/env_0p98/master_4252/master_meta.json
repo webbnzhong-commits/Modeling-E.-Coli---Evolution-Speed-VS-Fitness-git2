@@ -1,0 +1,68 @@
+{
+  "run_nums": [
+    64329,
+    64330,
+    64331,
+    64332,
+    64333,
+    64334,
+    64335,
+    64336,
+    64337,
+    64338,
+    64339,
+    64340,
+    64341,
+    64342,
+    64343
+  ],
+  "settings": {
+    "screen": {
+      "width": 1280,
+      "height": 832
+    },
+    "display_mode": 2,
+    "draw": false,
+    "drawSometimes": true,
+    "drawAmnt": 500,
+    "population_cap": 0.5,
+    "enviormentChangeRate": 0.98,
+    "ph_effect": {
+      "scale": 1.0,
+      "divisor": 2.0
+    },
+    "temp_effect": {
+      "scale": 1.0,
+      "divisor": 4.0
+    },
+    "reproduction_debuf_min": 0.001,
+    "quan": 2.0,
+    "immune_system_quan_factor": 0.15,
+    "num_tries_hub": 50,
+    "simulations": {
+      "count": 15
+    },
+    "master_graph": {
+      "dot_alpha": 50,
+      "dot_radius": 3
+    },
+    "hub": {
+      "start_rate": 0.1,
+      "end_rate": 2.5,
+      "step": 0.01,
+      "species_threshold": 8000,
+      "max_masters": 241
+    },
+    "stop_conditions": {
+      "runtime_enabled": false,
+      "max_runtime_hours": 0.0,
+      "frames_enabled": false,
+      "max_frames": 0,
+      "species_enabled": true,
+      "max_species": 8000,
+      "datetime_enabled": false,
+      "stop_at_datetime": ""
+    }
+  },
+  "updated_at": 1771588351.9571795
+}
