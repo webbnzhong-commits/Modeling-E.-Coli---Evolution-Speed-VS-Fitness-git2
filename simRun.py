@@ -40,6 +40,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-masters", type=int, default=None)
     parser.add_argument("--skip-plots", action="store_true")
     parser.add_argument(
+        "--show-runner-output",
+        action="store_true",
+        help="Show hub_runner stdout/stderr for debugging (default: hidden)",
+    )
+    parser.add_argument(
         "--print-every-seconds",
         type=int,
         default=10,
@@ -478,8 +483,8 @@ def main() -> None:
     proc = subprocess.Popen(
         cmd,
         cwd=str(repo_root),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=None if args.show_runner_output else subprocess.DEVNULL,
+        stderr=None if args.show_runner_output else subprocess.DEVNULL,
         env=proc_env,
         start_new_session=True,
     )

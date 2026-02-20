@@ -5005,6 +5005,14 @@ def _pick_fps_point(
 
 def main() -> None:
     args = _parse_args()
+    if args.non_interactive:
+        # Headless servers (e.g. cloud VMs) usually have no DISPLAY. Use SDL's
+        # dummy drivers so non-interactive hub runs can still execute.
+        display_env = str(os.environ.get("DISPLAY", "")).strip()
+        wayland_env = str(os.environ.get("WAYLAND_DISPLAY", "")).strip()
+        if (not display_env) and (not wayland_env):
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     results_arg_dir = Path(args.results_dir)
     results_arg_dir.mkdir(parents=True, exist_ok=True)
     results_root = _master_search_root(results_arg_dir)
