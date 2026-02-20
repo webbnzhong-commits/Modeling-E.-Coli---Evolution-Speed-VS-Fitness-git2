@@ -123,10 +123,15 @@ def _format_duration(seconds: float) -> str:
 
 
 def _runtime_prediction_from_steps(
-    steps: list[dict], total_steps: int, elapsed_s: float, now_ts: float
+    steps: list[dict],
+    total_steps: int,
+    elapsed_s: float,
+    now_ts: float,
+    is_running: bool = False,
 ) -> dict:
     done = 0
     durations: list[float] = []
+    done_duration_sum = 0.0
     running_elapsed = None
 
     for step in steps:
@@ -138,10 +143,21 @@ def _runtime_prediction_from_steps(
             dur = _safe_float(step.get("duration_s"))
             if dur is not None and dur > 0:
                 durations.append(float(dur))
+                done_duration_sum += float(dur)
         elif status == "running":
             started_at = _safe_float(step.get("started_at"))
             if started_at is not None:
                 running_elapsed = max(0.0, float(now_ts - started_at))
+
+    remaining_steps = max(0, int(total_steps) - int(done))
+    if running_elapsed is None and is_running and remaining_steps > 0 and elapsed_s > 0:
+        if done_duration_sum > 0:
+            inferred = max(0.0, float(elapsed_s) - float(done_duration_sum))
+            if inferred > 0:
+                running_elapsed = inferred
+        if running_elapsed is None:
+            # Early run fallback: infer current step elapsed from hub elapsed time.
+            running_elapsed = float(elapsed_s)
 
     avg_step_s = None
     if durations:
@@ -150,15 +166,16 @@ def _runtime_prediction_from_steps(
         avg_step_s = float(running_elapsed)
     elif done > 0 and elapsed_s > 0:
         avg_step_s = float(elapsed_s / done)
+    elif is_running and elapsed_s > 0 and remaining_steps > 0:
+        avg_step_s = float(elapsed_s)
 
-    remaining_steps = max(0, int(total_steps) - int(done))
     remaining_s = None
     predicted_total_s = None
     eta_ts = None
     if avg_step_s is not None:
         if remaining_steps == 0:
             remaining_s = 0.0
-        elif running_elapsed is not None:
+        elif is_running and running_elapsed is not None:
             remaining_s = max(0.0, avg_step_s - float(running_elapsed)) + (
                 avg_step_s * max(0, remaining_steps - 1)
             )
@@ -338,6 +355,7 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         total_steps=total,
         elapsed_s=elapsed,
         now_ts=now_ts,
+        is_running=(status == "running"),
     )
 
     last_step = None

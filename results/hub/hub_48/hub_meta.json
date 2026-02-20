@@ -501,9 +501,57 @@
       "planned_master_run_num": 4163,
       "returncode": 0,
       "finished_at": 1771561579.4736955,
+      "status": "aborted",
+      "fit": {
+        "apex_x": 0.073,
+        "apex_y": 1392.6338549992313,
+        "apex_point_y": 1760.5575757575757,
+        "sigma_left": 0.25368593748517343,
+        "sigma_right": 0.034271461799204504,
+        "shape_power": 0.8,
+        "r2": 0.8909643522497771,
+        "equation": "y=1392.63*exp(-(|x-0.073|^0.8)/(2*0.253686^0.8)) for x<=0.073; y=1392.63*exp(-(|x-0.073|^0.8)/(2*0.0342715^0.8)) for x>0.073"
+      },
+      "master_run_num": 4163,
+      "master_dir": "results/hub/hub_48/env_0p10/master_4163",
+      "run_nums": [
+        59379,
+        59380,
+        59381,
+        59382,
+        59383,
+        59384,
+        59385,
+        59386,
+        59387,
+        59388,
+        59389,
+        59390,
+        59391,
+        59392,
+        59393
+      ],
+      "max_species": 875.0,
+      "total_species": 12870.0,
+      "max_frames": 1042200.0,
+      "apex_evolution_rate": 0.073,
+      "apex_fitness": 1392.6338549992313,
+      "duration_s": 478.0281622450001,
+      "point_count": 351
+    },
+    {
+      "step_index": 0,
+      "env_rate": 0.1,
+      "env_dir": "results/hub/hub_48/env_0p10",
+      "planned_master_run_num": 4163,
+      "returncode": 0,
+      "finished_at": 1771562071.817276,
       "status": "aborted"
     }
   ],
   "status": "aborted_by_user",
-  "aborted_at": 1771561579.4736989
+  "aborted_at": 1771562071.817284,
+  "resumed_at": 1771562048.397177,
+  "resume_count": 1,
+  "updated_at": 1771562051.339804
 }

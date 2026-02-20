@@ -110,6 +110,36 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
+def _open_path_with_default_app(path: Path) -> bool:
+    if not isinstance(path, Path):
+        return False
+    try:
+        if not path.exists():
+            return False
+    except Exception:
+        return False
+    target = str(path)
+    commands: list[list[str]] = []
+    if sys.platform == "darwin":
+        commands.append(["open", target])
+    elif os.name == "nt":
+        commands.append(["cmd", "/c", "start", "", target])
+    else:
+        commands.append(["xdg-open", target])
+        commands.append(["gio", "open", target])
+    for cmd in commands:
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _rate_values(start: float, end: float, step: float) -> list[float]:
     if step <= 0:
         return []
@@ -4450,6 +4480,8 @@ def main() -> None:
             selected_path = hub_dir / selected_name
             if _plot_selected_master_view(selected_ref, selected_path):
                 print(f"[hub_{hub_idx}] wrote selected master graph: {selected_path}")
+                if _open_path_with_default_app(selected_path):
+                    print(f"[hub_{hub_idx}] opened selected master graph window")
             else:
                 print(
                     f"[hub_{hub_idx}] selected row has no graphable points yet; "
@@ -4461,8 +4493,13 @@ def main() -> None:
         full_hub_path = hub_dir / "u_full_hub_view.png"
         if _plot_hub_full_view(step_rows, full_hub_path):
             print(f"[hub_{hub_idx}] wrote full hub graph: {full_hub_path}")
+            if _open_path_with_default_app(full_hub_path):
+                print(f"[hub_{hub_idx}] opened full hub graph window")
         else:
             print(f"[hub_{hub_idx}] full hub graph export skipped (not enough data)")
+
+        # Keep a persistent hub-level graph UI open for inspection after U.
+        _open_hub_viewer()
 
     def _shutdown_hub_run() -> None:
         nonlocal abort_requested, current_step_proc, current_step_close_requested
