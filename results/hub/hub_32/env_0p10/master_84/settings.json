@@ -8,7 +8,7 @@
   "drawSometimes": true,
   "drawAmnt": 500,
   "population_cap": 0.5,
-  "enviormentChangeRate": 1.0,
+  "enviormentChangeRate": 0.1,
   "ph_effect": {
     "scale": 1.0,
     "divisor": 2.0
@@ -20,9 +20,7 @@
   "reproduction_debuf_min": 0.001,
   "quan": 2.0,
   "immune_system_quan_factor": 0.15,
-  "num_tries": 13744,
-  "num_tries_master": 571,
-  "num_tries_hub": 34,
+  "num_tries_hub": 33,
   "simulations": {
     "count": 6
   },
@@ -42,8 +40,8 @@
     "max_runtime_hours": 21.0,
     "frames_enabled": false,
     "max_frames": 0,
-    "species_enabled": false,
-    "max_species": 0,
+    "species_enabled": true,
+    "max_species": 100000,
     "datetime_enabled": false,
     "stop_at_datetime": ""
   }
