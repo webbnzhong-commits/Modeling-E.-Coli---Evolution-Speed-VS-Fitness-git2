@@ -1555,6 +1555,182 @@ def _plot_stitched_fits(rows: list[dict], out_path: Path) -> bool:
     return True
 
 
+def _plot_selected_master_view(row: dict, out_path: Path) -> bool:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+    if not isinstance(row, dict):
+        return False
+    raw_points = row.get("points")
+    if not isinstance(raw_points, list):
+        return False
+    points = []
+    for point in raw_points:
+        if not isinstance(point, (tuple, list)) or len(point) < 2:
+            continue
+        evo_val = point[0]
+        fit_val = point[1]
+        if _is_number(evo_val) and _is_number(fit_val):
+            points.append((float(evo_val), float(fit_val)))
+    if not points:
+        return False
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    fig = plt.figure(figsize=(11, 7))
+    ax = fig.add_subplot(111)
+    ax.scatter(xs, ys, color="#4da6ff", alpha=0.35, s=18, edgecolors="none", label="run points")
+
+    fit = row.get("fit")
+    if isinstance(fit, dict):
+        apex_x = fit.get("apex_x")
+        apex_y = fit.get("apex_y")
+        sigma_left = fit.get("sigma_left")
+        sigma_right = fit.get("sigma_right")
+        if (
+            _is_number(apex_x)
+            and _is_number(apex_y)
+            and _is_number(sigma_left)
+            and _is_number(sigma_right)
+        ):
+            min_x = min(xs)
+            max_x = max(xs)
+            if max_x <= min_x:
+                min_x -= 0.05
+                max_x += 0.05
+            sample_x = []
+            sample_y = []
+            for idx in range(180):
+                x_val = min_x + ((max_x - min_x) * float(idx) / 179.0)
+                y_val = _predict_piecewise_gaussian(
+                    float(x_val),
+                    float(apex_x),
+                    float(apex_y),
+                    float(sigma_left),
+                    float(sigma_right),
+                )
+                if _is_number(y_val):
+                    sample_x.append(float(x_val))
+                    sample_y.append(float(y_val))
+            if len(sample_x) >= 2:
+                ax.plot(sample_x, sample_y, color="#f8c45b", linewidth=2.0, label="stitched fit")
+            ax.scatter(
+                [float(apex_x)],
+                [float(apex_y)],
+                color="#ffd166",
+                edgecolors="#111111",
+                linewidths=0.6,
+                s=32,
+                zorder=5,
+            )
+
+    master_run = row.get("master_run_num")
+    env_rate = row.get("env_rate")
+    title_bits = ["Selected Master Graph: evo speed vs fitness"]
+    if _is_number(master_run):
+        title_bits.append(f"master_{int(master_run)}")
+    if _is_number(env_rate):
+        title_bits.append(f"env={float(env_rate):.4g}")
+    ax.set_title(" | ".join(title_bits))
+    ax.set_xlabel("evo speed")
+    ax.set_ylabel("fitness (arithmetic mean length lived)")
+    ax.grid(alpha=0.25)
+    try:
+        ax.legend(loc="best")
+    except Exception:
+        pass
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)
+    return True
+
+
+def _plot_hub_full_view(rows: list[dict], out_path: Path) -> bool:
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib import cm as mpl_cm
+        from matplotlib import colors as mpl_colors
+    except Exception:
+        return False
+
+    graph_points = []
+    for row in rows:
+        env_rate = row.get("env_rate")
+        points = row.get("points")
+        if (not _is_number(env_rate)) or (not isinstance(points, list)):
+            continue
+        env = float(env_rate)
+        for point in points:
+            if not isinstance(point, (tuple, list)) or len(point) < 2:
+                continue
+            evo_val = point[0]
+            fit_val = point[1]
+            if _is_number(evo_val) and _is_number(fit_val):
+                graph_points.append(
+                    {
+                        "x": env,
+                        "y": float(evo_val),
+                        "fitness": float(fit_val),
+                        "actual": True,
+                    }
+                )
+    if not graph_points:
+        return False
+
+    xs = [float(p["x"]) for p in graph_points]
+    ys = [float(p["y"]) for p in graph_points]
+    fits = [float(p["fitness"]) for p in graph_points]
+
+    x_min = min(xs)
+    x_max = max(xs)
+    y_min = min(ys)
+    y_max = max(ys)
+    x_pad = 0.05 if x_max <= x_min else (x_max - x_min) * 0.04
+    y_pad = 0.05 if y_max <= y_min else (y_max - y_min) * 0.04
+
+    fig = plt.figure(figsize=(13, 8))
+    ax = fig.add_subplot(111)
+    ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    fit_min = min(fits)
+    fit_max = max(fits)
+    if fit_max <= fit_min:
+        fit_max = fit_min + 1e-9
+    norm = mpl_colors.Normalize(vmin=fit_min, vmax=fit_max)
+    rgba = mpl_cm.viridis(norm(fits))
+    for idx, fit_val in enumerate(fits):
+        n = 0.5 if fit_max <= fit_min else (float(fit_val) - fit_min) / max(1e-9, fit_max - fit_min)
+        rgba[idx][3] = 0.25 + (0.75 * max(0.0, min(1.0, n)))
+    ax.scatter(xs, ys, s=14, c=rgba, edgecolors="#0f172a", linewidths=0.35)
+
+    fit_report = _fit_hub_models_from_graph_points(graph_points)
+    best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+    if isinstance(best_fit, dict):
+        sample_x = []
+        sample_y = []
+        for idx in range(220):
+            x_val = (x_min - x_pad) + (((x_max - x_min) + (2.0 * x_pad)) * float(idx) / 219.0)
+            y_val = _eval_hub_model(best_fit, x_val)
+            if _is_number(y_val):
+                sample_x.append(float(x_val))
+                sample_y.append(float(y_val))
+        if len(sample_x) >= 2:
+            ax.plot(sample_x, sample_y, color="#f8c45b", linewidth=2.0, alpha=0.9)
+
+    ax.set_title("Full Hub View: env change rate vs evo speed (all masters)")
+    ax.set_xlabel("env change rate")
+    ax.set_ylabel("evo speed")
+    ax.grid(alpha=0.25)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)
+    return True
+
+
 def _plot_ratio_curve(rows: list[dict], out_path: Path) -> bool:
     try:
         import matplotlib.pyplot as plt
@@ -3133,7 +3309,12 @@ class _HubDashboard:
             self._pending_manual_update = False
             if callable(self.update_callback):
                 try:
-                    self.update_callback()
+                    self.update_callback(self._selected_row())
+                except TypeError:
+                    try:
+                        self.update_callback()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             self._rows_cache = list(state.get("rows", []))
@@ -3488,7 +3669,7 @@ class _HubDashboard:
             f"Summary file: {state.get('summary_path', '')}",
             f"Fit file: {state.get('fit_path', '')}",
             f"Hub stats file: {state.get('hub_stats_path', '')}",
-            "Species/Frames refresh live. Controls: Update(U) Reopen(R) Close(C) Viewer(V) Close Hub(X) FPS(F), Copy buttons on equations",
+            "Species/Frames refresh live. Controls: Update+Plot(U) Reopen(R) Close(C) Viewer(V) Close Hub(X) FPS(F), Copy buttons on equations",
             "Graph: selecting a row shows that master graph; click dots to inspect",
         ]
         if self._copy_status_text and ((time.time() - float(self._copy_status_ts)) <= 3.0):
@@ -3589,7 +3770,7 @@ class _HubDashboard:
         pg.draw.rect(self.screen, upd_bg, self._update_button_rect)
         pg.draw.rect(self.screen, (150, 150, 150), self._update_button_rect, 1)
         upd_text = self.small.render(
-            _fit_text(self.small, "Update (U)", self._update_button_rect.width - 12),
+            _fit_text(self.small, "Update+Plot (U)", self._update_button_rect.width - 12),
             True,
             upd_fg,
         )
@@ -4126,7 +4307,11 @@ def main() -> None:
         row["points"] = points
         row["point_count"] = int(len(points))
 
-    def _manual_update_rows_from_disk(rebuild_master_combined: bool = False) -> None:
+    def _manual_update_rows_from_disk(
+        rebuild_master_combined: bool = False,
+        selected_row: dict | None = None,
+        export_graphs: bool = False,
+    ) -> None:
         nonlocal hub_all_points_weighted_by_fitness
         ready_rows = 0
         for row in step_rows:
@@ -4162,6 +4347,45 @@ def main() -> None:
                 f"[hub_{hub_idx}] manual update refreshed hub dashboard data "
                 f"({ready_rows}/{len(step_rows)} rows with graph points)"
             )
+        if not export_graphs:
+            return
+
+        selected_ref = None
+        if isinstance(selected_row, dict):
+            selected_step = selected_row.get("step_index")
+            if _is_number(selected_step):
+                for candidate in step_rows:
+                    if int(candidate.get("step_index", -1)) == int(selected_step):
+                        selected_ref = candidate
+                        break
+            if selected_ref is None and selected_row in step_rows:
+                selected_ref = selected_row
+
+        if isinstance(selected_ref, dict):
+            master_num = selected_ref.get("master_run_num")
+            step_idx = selected_ref.get("step_index")
+            if _is_number(master_num):
+                selected_name = f"u_master_{int(master_num)}_graph.png"
+            elif _is_number(step_idx):
+                selected_name = f"u_step_{int(step_idx) + 1:03d}_master_graph.png"
+            else:
+                selected_name = "u_selected_master_graph.png"
+            selected_path = hub_dir / selected_name
+            if _plot_selected_master_view(selected_ref, selected_path):
+                print(f"[hub_{hub_idx}] wrote selected master graph: {selected_path}")
+            else:
+                print(
+                    f"[hub_{hub_idx}] selected row has no graphable points yet; "
+                    "skipped selected master graph export"
+                )
+        else:
+            print(f"[hub_{hub_idx}] no selected row; skipped selected master graph export")
+
+        full_hub_path = hub_dir / "u_full_hub_view.png"
+        if _plot_hub_full_view(step_rows, full_hub_path):
+            print(f"[hub_{hub_idx}] wrote full hub graph: {full_hub_path}")
+        else:
+            print(f"[hub_{hub_idx}] full hub graph export skipped (not enough data)")
 
     def _shutdown_hub_run() -> None:
         nonlocal abort_requested, current_step_proc, current_step_close_requested
@@ -4256,7 +4480,11 @@ def main() -> None:
         hub_dir=hub_dir,
         planned_master_span=planned_master_span,
         species_threshold=species_threshold,
-        update_callback=lambda: _manual_update_rows_from_disk(rebuild_master_combined=True),
+        update_callback=lambda row=None: _manual_update_rows_from_disk(
+            rebuild_master_combined=True,
+            selected_row=row,
+            export_graphs=True,
+        ),
         reopen_callback=_reopen_master_row,
         close_callback=_close_master_row,
         viewer_callback=_open_hub_viewer,

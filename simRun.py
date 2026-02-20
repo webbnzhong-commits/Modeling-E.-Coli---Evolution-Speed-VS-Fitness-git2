@@ -122,6 +122,58 @@ def _format_duration(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _runtime_prediction_from_steps(
+    steps: list[dict], total_steps: int, elapsed_s: float, now_ts: float
+) -> dict:
+    done = 0
+    durations: list[float] = []
+    running_elapsed = None
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        status = str(step.get("status", "unknown"))
+        if status in TERMINAL_STEP_STATUSES:
+            done += 1
+            dur = _safe_float(step.get("duration_s"))
+            if dur is not None and dur > 0:
+                durations.append(float(dur))
+        elif status == "running":
+            started_at = _safe_float(step.get("started_at"))
+            if started_at is not None:
+                running_elapsed = max(0.0, float(now_ts - started_at))
+
+    avg_step_s = None
+    if durations:
+        avg_step_s = float(sum(durations) / len(durations))
+    elif running_elapsed is not None and running_elapsed > 0:
+        avg_step_s = float(running_elapsed)
+    elif done > 0 and elapsed_s > 0:
+        avg_step_s = float(elapsed_s / done)
+
+    remaining_steps = max(0, int(total_steps) - int(done))
+    remaining_s = None
+    predicted_total_s = None
+    eta_ts = None
+    if avg_step_s is not None:
+        if remaining_steps == 0:
+            remaining_s = 0.0
+        elif running_elapsed is not None:
+            remaining_s = max(0.0, avg_step_s - float(running_elapsed)) + (
+                avg_step_s * max(0, remaining_steps - 1)
+            )
+        else:
+            remaining_s = avg_step_s * remaining_steps
+        predicted_total_s = float(elapsed_s + remaining_s)
+        eta_ts = float(now_ts + remaining_s)
+
+    return {
+        "remaining_s": remaining_s,
+        "predicted_total_s": predicted_total_s,
+        "eta_ts": eta_ts,
+    }
+
+
 def _rate_label(rate: float) -> str:
     return f"env_{float(rate):.2f}".replace(".", "p")
 
@@ -265,6 +317,7 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
 
     counts: dict[str, int] = {}
     done = 0
+    now_ts = time.time()
     for step in steps:
         if not isinstance(step, dict):
             continue
@@ -274,12 +327,18 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
             done += 1
 
     created_at = _safe_float(meta.get("created_at"))
-    elapsed = time.time() - created_at if created_at is not None else 0.0
+    elapsed = now_ts - created_at if created_at is not None else 0.0
     status = str(meta.get("status", "unknown"))
     next_step_idx = done + 1 if (status == "running" and done < total) else None
     current_env_rate = None
     if next_step_idx is not None and isinstance(rates, list) and (0 <= (next_step_idx - 1) < len(rates)):
         current_env_rate = _safe_float(rates[next_step_idx - 1])
+    prediction = _runtime_prediction_from_steps(
+        steps=steps,
+        total_steps=total,
+        elapsed_s=elapsed,
+        now_ts=now_ts,
+    )
 
     last_step = None
     valid_steps: list[dict] = []
@@ -298,6 +357,9 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         "total": int(total),
         "counts": counts,
         "elapsed_s": float(elapsed),
+        "remaining_s": prediction.get("remaining_s"),
+        "predicted_total_s": prediction.get("predicted_total_s"),
+        "eta_ts": prediction.get("eta_ts"),
         "next_step_idx": next_step_idx,
         "current_env_rate": current_env_rate,
         "last_step": last_step,
@@ -321,6 +383,15 @@ def _print_snapshot(summary: dict, final: bool = False) -> None:
         f"ok={ok} failed={failed} stopped={stopped} no_master={no_master} aborted={aborted} "
         f"elapsed={_format_duration(_safe_float(summary.get('elapsed_s')) or 0.0)}"
     )
+    remaining_s = _safe_float(summary.get("remaining_s"))
+    predicted_total_s = _safe_float(summary.get("predicted_total_s"))
+    eta_ts = _safe_float(summary.get("eta_ts"))
+    if remaining_s is not None and predicted_total_s is not None and eta_ts is not None:
+        finish_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(eta_ts)))
+        print(
+            f"  estimate remaining={_format_duration(remaining_s)} "
+            f"total={_format_duration(predicted_total_s)} finish_at={finish_at}"
+        )
 
     next_idx = summary.get("next_step_idx")
     current_rate = summary.get("current_env_rate")
