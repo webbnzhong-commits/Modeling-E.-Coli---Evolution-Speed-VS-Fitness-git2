@@ -567,6 +567,8 @@ def main() -> None:
     )
     proc_env = os.environ.copy()
     proc_env["HUB_RUNNER_SHUTDOWN_FILE"] = str(shutdown_signal_path)
+    # Mark launches originating from simRun so hub_runner can keep master UI headless.
+    proc_env["HUB_RUNNER_FROM_SIMRUN"] = "1"
     runner_log_path: Path | None = None
     runner_log_handle = None
     if bool(args.show_runner_output):

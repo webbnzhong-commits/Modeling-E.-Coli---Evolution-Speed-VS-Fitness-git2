@@ -1233,12 +1233,21 @@ def _snapshot_points_from_runs(env_dir: Path, run_nums: list[int]) -> list[tuple
     return merged
 
 
-def _predict_piecewise_gaussian(x: float, apex_x: float, apex_y: float, sigma_left: float, sigma_right: float) -> float:
+def _predict_piecewise_gaussian(
+    x: float,
+    apex_x: float,
+    apex_y: float,
+    sigma_left: float,
+    sigma_right: float,
+    shape_power: float = 2.0,
+) -> float:
     if apex_y <= 0:
         return 0.0
     sigma = sigma_left if x <= apex_x else sigma_right
     sigma = max(1e-9, sigma)
-    expo = -((x - apex_x) ** 2) / (2.0 * sigma * sigma)
+    power = max(1e-6, float(shape_power))
+    dx = abs(float(x) - float(apex_x))
+    expo = -((dx**power) / (2.0 * (sigma**power)))
     return apex_y * math.exp(expo)
 
 
@@ -1264,16 +1273,19 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
             return hi
         return value
 
-    def _solve_amplitude_and_sse(sigma_left: float, sigma_right: float):
+    power_candidates = [float(v) / 10.0 for v in range(1, 101)]
+
+    def _solve_amplitude_and_sse(sigma_left: float, sigma_right: float, shape_power: float):
         sigma_left = max(sigma_min, min(sigma_max, float(sigma_left)))
         sigma_right = max(sigma_min, min(sigma_max, float(sigma_right)))
+        power = max(0.1, float(shape_power))
         sum_yk = 0.0
         sum_k2 = 0.0
         ks: list[tuple[float, float]] = []
         for x, y in points:
-            d2 = (float(x) - float(apex_x)) ** 2
+            dx = abs(float(x) - float(apex_x))
             sigma = sigma_left if float(x) <= float(apex_x) else sigma_right
-            k = math.exp(-(d2 / (2.0 * sigma * sigma)))
+            k = math.exp(-((dx**power) / (2.0 * (sigma**power))))
             sum_yk += float(y) * k
             sum_k2 += k * k
             ks.append((float(y), k))
@@ -1303,49 +1315,69 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
         mean_abs = sum(math.sqrt(max(0.0, d2)) for d2 in d2_values) / len(d2_values)
         return max(sigma_min, min(sigma_max, mean_abs if mean_abs > 0 else x_range * 0.12))
 
-    sigma_left = _initial_sigma(left_d2)
-    sigma_right = _initial_sigma(right_d2)
-    best = _solve_amplitude_and_sse(sigma_left, sigma_right)
-    if best is None:
+    global_best = None
+    for shape_power in power_candidates:
+        sigma_left = _initial_sigma(left_d2)
+        sigma_right = _initial_sigma(right_d2)
+        best = _solve_amplitude_and_sse(sigma_left, sigma_right, shape_power)
+        if best is None:
+            continue
+        best_a, best_sse = best
+        best_log_left = _clamp_log_sigma(math.log(max(sigma_min, sigma_left)))
+        best_log_right = _clamp_log_sigma(math.log(max(sigma_min, sigma_right)))
+
+        step = 1.0
+        for _ in range(20):
+            improved = False
+            for side in ("left", "right"):
+                base_log = best_log_left if side == "left" else best_log_right
+                candidates = [
+                    base_log - step,
+                    base_log - (step * 0.5),
+                    base_log,
+                    base_log + (step * 0.5),
+                    base_log + step,
+                ]
+                local_best = (best_a, best_sse, best_log_left, best_log_right)
+                for cand in candidates:
+                    cand_log = _clamp_log_sigma(cand)
+                    log_left = cand_log if side == "left" else best_log_left
+                    log_right = best_log_right if side == "left" else cand_log
+                    trial = _solve_amplitude_and_sse(
+                        math.exp(log_left),
+                        math.exp(log_right),
+                        shape_power,
+                    )
+                    if trial is None:
+                        continue
+                    a_val, sse_val = trial
+                    if sse_val + 1e-12 < local_best[1]:
+                        local_best = (a_val, sse_val, log_left, log_right)
+                if local_best[1] + 1e-12 < best_sse:
+                    best_a, best_sse, best_log_left, best_log_right = local_best
+                    improved = True
+            if not improved:
+                step *= 0.5
+                if step < 1e-3:
+                    break
+
+        fitted_left = max(sigma_min, min(sigma_max, math.exp(best_log_left)))
+        fitted_right = max(sigma_min, min(sigma_max, math.exp(best_log_right)))
+        if (global_best is None) or (best_sse + 1e-12 < float(global_best["sse"])):
+            global_best = {
+                "apex_y": float(best_a),
+                "sse": float(best_sse),
+                "sigma_left": float(fitted_left),
+                "sigma_right": float(fitted_right),
+                "shape_power": float(shape_power),
+            }
+
+    if not isinstance(global_best, dict):
         return None
-    best_a, best_sse = best
-    best_log_left = _clamp_log_sigma(math.log(max(sigma_min, sigma_left)))
-    best_log_right = _clamp_log_sigma(math.log(max(sigma_min, sigma_right)))
-
-    step = 1.0
-    for _ in range(20):
-        improved = False
-        for side in ("left", "right"):
-            base_log = best_log_left if side == "left" else best_log_right
-            candidates = [
-                base_log - step,
-                base_log - (step * 0.5),
-                base_log,
-                base_log + (step * 0.5),
-                base_log + step,
-            ]
-            local_best = (best_a, best_sse, best_log_left, best_log_right)
-            for cand in candidates:
-                cand_log = _clamp_log_sigma(cand)
-                log_left = cand_log if side == "left" else best_log_left
-                log_right = best_log_right if side == "left" else cand_log
-                trial = _solve_amplitude_and_sse(math.exp(log_left), math.exp(log_right))
-                if trial is None:
-                    continue
-                a_val, sse_val = trial
-                if sse_val + 1e-12 < local_best[1]:
-                    local_best = (a_val, sse_val, log_left, log_right)
-            if local_best[1] + 1e-12 < best_sse:
-                best_a, best_sse, best_log_left, best_log_right = local_best
-                improved = True
-        if not improved:
-            step *= 0.5
-            if step < 1e-3:
-                break
-
-    sigma_left = max(sigma_min, min(sigma_max, math.exp(best_log_left)))
-    sigma_right = max(sigma_min, min(sigma_max, math.exp(best_log_right)))
-    apex_y = float(best_a)
+    sigma_left = float(global_best["sigma_left"])
+    sigma_right = float(global_best["sigma_right"])
+    shape_power = float(global_best["shape_power"])
+    apex_y = float(global_best["apex_y"])
     if not math.isfinite(apex_y):
         return None
 
@@ -1353,15 +1385,24 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
     ss_tot = sum((y - y_mean) ** 2 for y in ys)
     ss_res = 0.0
     for x, y in points:
-        pred = _predict_piecewise_gaussian(x, apex_x, apex_y, sigma_left, sigma_right)
+        pred = _predict_piecewise_gaussian(
+            x,
+            apex_x,
+            apex_y,
+            sigma_left,
+            sigma_right,
+            shape_power=shape_power,
+        )
         ss_res += (y - pred) ** 2
     r2 = None
     if ss_tot > 0:
         r2 = 1.0 - (ss_res / ss_tot)
 
     equation = (
-        f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_left:.6g}^2)) for x<={apex_x:.6g}; "
-        f"y={apex_y:.6g}*exp(-((x-{apex_x:.6g})^2)/(2*{sigma_right:.6g}^2)) for x>{apex_x:.6g}"
+        f"y={apex_y:.6g}*exp(-(|x-{apex_x:.6g}|^{shape_power:.6g})/(2*{sigma_left:.6g}^{shape_power:.6g})) "
+        f"for x<={apex_x:.6g}; "
+        f"y={apex_y:.6g}*exp(-(|x-{apex_x:.6g}|^{shape_power:.6g})/(2*{sigma_right:.6g}^{shape_power:.6g})) "
+        f"for x>{apex_x:.6g}"
     )
     return {
         "apex_x": float(apex_x),
@@ -1369,6 +1410,7 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
         "apex_point_y": float(apex_point_y),
         "sigma_left": float(sigma_left),
         "sigma_right": float(sigma_right),
+        "shape_power": float(shape_power),
         "r2": (None if r2 is None else float(r2)),
         "equation": equation,
     }
@@ -1520,6 +1562,11 @@ def _plot_stitched_fits(rows: list[dict], out_path: Path) -> bool:
         fit = row["fit"]
         points = row["points"]
         color = cm.viridis(idx / total)
+        shape_power = (
+            float(fit.get("shape_power"))
+            if _is_number(fit.get("shape_power"))
+            else 2.0
+        )
         xs = sorted(set(float(x) for x, _ in points))
         if len(xs) < 2:
             continue
@@ -1534,6 +1581,7 @@ def _plot_stitched_fits(rows: list[dict], out_path: Path) -> bool:
                 float(fit["apex_y"]),
                 float(fit["sigma_left"]),
                 float(fit["sigma_right"]),
+                shape_power=shape_power,
             )
             sample.append((x, y))
         ax.plot([p[0] for p in sample], [p[1] for p in sample], color=color, alpha=0.8, linewidth=1.2)
@@ -1588,6 +1636,11 @@ def _plot_selected_master_view(row: dict, out_path: Path) -> bool:
         apex_y = fit.get("apex_y")
         sigma_left = fit.get("sigma_left")
         sigma_right = fit.get("sigma_right")
+        shape_power = (
+            float(fit.get("shape_power"))
+            if _is_number(fit.get("shape_power"))
+            else 2.0
+        )
         if (
             _is_number(apex_x)
             and _is_number(apex_y)
@@ -1609,6 +1662,7 @@ def _plot_selected_master_view(row: dict, out_path: Path) -> bool:
                     float(apex_y),
                     float(sigma_left),
                     float(sigma_right),
+                    shape_power=shape_power,
                 )
                 if _is_number(y_val):
                     sample_x.append(float(x_val))
@@ -2871,6 +2925,11 @@ class _HubDashboard:
             apex_y = fit.get("apex_y")
             sigma_left = fit.get("sigma_left")
             sigma_right = fit.get("sigma_right")
+            shape_power = (
+                float(fit.get("shape_power"))
+                if _is_number(fit.get("shape_power"))
+                else 2.0
+            )
             r2 = fit.get("r2")
             if (
                 _is_number(apex_x)
@@ -2879,11 +2938,11 @@ class _HubDashboard:
                 and _is_number(sigma_right)
             ):
                 fit_lines.append(
-                    "Best-fit normal: y=A*exp(-((x-mu)^2)/(2*sigma^2)); sigma=sigmaL (x<=mu), sigmaR (x>mu)"
+                    "Best-fit generalized normal: y=A*exp(-(|x-mu|^p)/(2*sigma^p)); p fitted in [0.1,10]"
                 )
                 params = (
                     f"A={float(apex_y):.6g}, mu={float(apex_x):.6g}, "
-                    f"sigmaL={float(sigma_left):.6g}, sigmaR={float(sigma_right):.6g}"
+                    f"sigmaL={float(sigma_left):.6g}, sigmaR={float(sigma_right):.6g}, p={float(shape_power):.6g}"
                 )
                 if _is_number(r2):
                     params += f", R^2={float(r2):.4f}"
@@ -2964,6 +3023,11 @@ class _HubDashboard:
             apex_y = fit.get("apex_y")
             sigma_left = fit.get("sigma_left")
             sigma_right = fit.get("sigma_right")
+            shape_power = (
+                float(fit.get("shape_power"))
+                if _is_number(fit.get("shape_power"))
+                else 2.0
+            )
             if (
                 _is_number(apex_x)
                 and _is_number(apex_y)
@@ -2979,6 +3043,7 @@ class _HubDashboard:
                         float(apex_y),
                         float(sigma_left),
                         float(sigma_right),
+                        shape_power=shape_power,
                     )
                     if _is_number(y_val):
                         sample.append((float(x_val), float(y_val)))
@@ -4088,6 +4153,8 @@ def main() -> None:
         hub_shutdown_path.unlink(missing_ok=True)
     except Exception:
         pass
+    simrun_launch_flag = str(os.environ.get("HUB_RUNNER_FROM_SIMRUN", "")).strip().lower()
+    master_headless_mode = simrun_launch_flag in {"1", "true", "yes", "on"}
     reopened_master_procs = {}
     reopened_master_close_paths = {}
     hub_viewer_proc = None
@@ -4095,6 +4162,17 @@ def main() -> None:
     current_step_close_path = None
     current_step_close_requested = False
     abort_requested = False
+
+    def _master_subprocess_env(close_path: Path | None = None) -> dict:
+        env = os.environ.copy()
+        if isinstance(close_path, Path):
+            env["MASTER_CLOSE_REQUEST_FILE"] = str(close_path)
+        if master_headless_mode:
+            # simRun launches hub_runner for terminal-only progress, so keep master
+            # pygame windows hidden while preserving master execution.
+            env.setdefault("SDL_VIDEODRIVER", "dummy")
+            env.setdefault("SDL_AUDIODRIVER", "dummy")
+        return env
 
     def _step_row_for_master(master_run_num: int):
         for item in step_rows:
@@ -4181,8 +4259,7 @@ def main() -> None:
             close_path.unlink(missing_ok=True)
         except Exception:
             pass
-        env = os.environ.copy()
-        env["MASTER_CLOSE_REQUEST_FILE"] = str(close_path)
+        env = _master_subprocess_env(close_path)
         proc = subprocess.Popen(cmd, cwd=str(repo_root), env=env)
         reopened_master_procs[int(master_run)] = proc
         reopened_master_close_paths[int(master_run)] = close_path
@@ -4610,8 +4687,7 @@ def main() -> None:
         except Exception:
             pass
         current_step_close_requested = False
-        env = os.environ.copy()
-        env["MASTER_CLOSE_REQUEST_FILE"] = str(current_step_close_path)
+        env = _master_subprocess_env(current_step_close_path)
         proc = subprocess.Popen(cmd, cwd=str(repo_root), env=env)
         current_step_proc = proc
         live_metrics_refresh_s = 0.5
