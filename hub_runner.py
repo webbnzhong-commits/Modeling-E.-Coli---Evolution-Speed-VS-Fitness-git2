@@ -3894,6 +3894,19 @@ def main() -> None:
     interpreter = sys.executable
     close_signal_dir = hub_dir / ".hub_control"
     close_signal_dir.mkdir(parents=True, exist_ok=True)
+    shutdown_signal_env = os.environ.get("HUB_RUNNER_SHUTDOWN_FILE", "").strip()
+    if shutdown_signal_env:
+        hub_shutdown_path = Path(shutdown_signal_env)
+    else:
+        hub_shutdown_path = close_signal_dir / "shutdown_hub.signal"
+    try:
+        hub_shutdown_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        hub_shutdown_path.unlink(missing_ok=True)
+    except Exception:
+        pass
     reopened_master_procs = {}
     reopened_master_close_paths = {}
     hub_viewer_proc = None
@@ -4165,6 +4178,18 @@ def main() -> None:
             )
             current_step_close_requested = True
 
+    def _consume_external_shutdown_signal() -> bool:
+        try:
+            if not hub_shutdown_path.exists():
+                return False
+        except Exception:
+            return False
+        try:
+            hub_shutdown_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return True
+
     hub_rows = []
     step_rows = []
     for idx, rate in enumerate(rates):
@@ -4277,6 +4302,8 @@ def main() -> None:
     dashboard.update(dash_state, force=True)
 
     for step_idx, rate in enumerate(rates):
+        if _consume_external_shutdown_signal():
+            _shutdown_hub_run()
         if abort_requested:
             break
         row_ref = step_rows[step_idx]
@@ -4362,6 +4389,8 @@ def main() -> None:
         live_metrics_refresh_s = 0.5
         last_live_metrics_refresh = 0.0
         while proc.poll() is None:
+            if _consume_external_shutdown_signal():
+                _shutdown_hub_run()
             if abort_requested and (not current_step_close_requested):
                 _request_graceful_close(
                     proc,

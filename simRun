@@ -4,11 +4,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+try:
+    import termios
+    import tty
+except Exception:
+    termios = None
+    tty = None
 
 
 TERMINAL_STEP_STATUSES = {"ok", "failed", "no_master", "stopped", "aborted"}
@@ -391,6 +400,30 @@ def _terminate_process_group(pgid: int, grace_seconds: float = 8.0) -> None:
         return
 
 
+def _can_read_quit_key() -> bool:
+    if termios is None or tty is None:
+        return False
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _poll_quit_key() -> bool:
+    if not _can_read_quit_key():
+        return False
+    try:
+        readable, _, _ = select.select([sys.stdin], [], [], 0.0)
+        if not readable:
+            return False
+        ch = sys.stdin.read(1)
+        if not ch:
+            return False
+        return str(ch).lower() == "q"
+    except Exception:
+        return False
+
+
 def main() -> None:
     args = _parse_args()
     results_root = Path(args.results_root)
@@ -436,11 +469,18 @@ def main() -> None:
         cmd.append("--skip-plots")
 
     print(f"Starting new hub run: {' '.join(cmd)}")
+    shutdown_signal_path = (
+        Path(tempfile.gettempdir())
+        / f"hub_runner_shutdown_{os.getpid()}_{int(time.time() * 1000)}.signal"
+    )
+    proc_env = os.environ.copy()
+    proc_env["HUB_RUNNER_SHUTDOWN_FILE"] = str(shutdown_signal_path)
     proc = subprocess.Popen(
         cmd,
         cwd=str(repo_root),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=proc_env,
         start_new_session=True,
     )
     pgid = int(proc.pid)
@@ -449,9 +489,49 @@ def main() -> None:
     discovered_once = False
     interval = max(1, int(args.print_every_seconds))
     next_print = time.time() + interval
+    quit_requested = False
+    quit_requested_at = None
+
+    use_keypoll = _can_read_quit_key()
+    stdin_fd = None
+    stdin_attrs = None
+    if use_keypoll:
+        try:
+            stdin_fd = sys.stdin.fileno()
+            stdin_attrs = termios.tcgetattr(stdin_fd)
+            tty.setcbreak(stdin_fd)
+            print("Press q to gracefully stop this hub run.")
+        except Exception:
+            use_keypoll = False
+            stdin_fd = None
+            stdin_attrs = None
 
     try:
         while proc.poll() is None:
+            if use_keypoll and _poll_quit_key() and (not quit_requested):
+                quit_requested = True
+                quit_requested_at = float(time.time())
+                try:
+                    shutdown_signal_path.write_text(str(time.time()))
+                    print(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        "q pressed: requested graceful hub shutdown"
+                    )
+                except Exception:
+                    print(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        "q pressed: failed to write graceful shutdown signal; forcing stop soon"
+                    )
+
+            if quit_requested and quit_requested_at is not None:
+                if (time.time() - float(quit_requested_at)) > 180.0:
+                    print(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        "graceful shutdown timeout reached; forcing process-group stop"
+                    )
+                    _terminate_process_group(pgid)
+                    break
+
             if hub_dir is None:
                 current = _discover_hub_dirs(results_root)
                 new_candidates = []
@@ -512,6 +592,15 @@ def main() -> None:
         if returncode != 0:
             raise SystemExit(returncode)
     finally:
+        if stdin_fd is not None and stdin_attrs is not None:
+            try:
+                termios.tcsetattr(stdin_fd, termios.TCSADRAIN, stdin_attrs)
+            except Exception:
+                pass
+        try:
+            shutdown_signal_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         _terminate_process_group(pgid)
 
 
