@@ -5,8 +5,10 @@ import argparse
 import csv
 import json
 import math
+import queue
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +26,9 @@ _SIM_COLORS = [
     (130, 200, 255),
     (255, 136, 136),
 ]
+
+_TIMELINE_MAX_SNAPSHOTS_PER_RUN = 24
+_BACKGROUND_MODEL_UPDATE_EVERY_ROWS = 12
 
 
 def _parse_args() -> argparse.Namespace:
@@ -88,6 +93,30 @@ def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, 
     if not (hr._is_number(x_val) and hr._is_number(y_val)):
         return (None, None)
     return (float(x_val), float(y_val))
+
+
+def _sample_paths_evenly(paths: list[Path], limit: int) -> list[Path]:
+    if limit <= 0 or len(paths) <= max(1, int(limit)):
+        return list(paths)
+    if len(paths) <= 2:
+        return list(paths)
+    limit = max(2, int(limit))
+    span = float(len(paths) - 1)
+    step = span / float(limit - 1)
+    sampled = []
+    for idx in range(limit):
+        src_idx = int(round(float(idx) * step))
+        src_idx = max(0, min(len(paths) - 1, src_idx))
+        sampled.append(paths[src_idx])
+    deduped = []
+    seen = set()
+    for path in sampled:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
 
 
 def _resolve_hub_dir(args: argparse.Namespace, results_root: Path) -> tuple[int | None, Path]:
@@ -170,12 +199,15 @@ def _rates_from_meta(hub_dir: Path, hub_meta: dict) -> list[float]:
     return sorted(set(from_dirs))
 
 
-def _refresh_row_from_disk(row: dict) -> None:
+def _refresh_row_from_disk(row: dict, recompute_fit: bool = True) -> None:
+    row["_full_loaded"] = False
     env_dir_raw = row.get("env_dir")
     if not env_dir_raw:
+        row["_full_loaded"] = True
         return
     env_dir = Path(str(env_dir_raw))
     if not env_dir.is_dir():
+        row["_full_loaded"] = True
         return
 
     master_dir = hr._latest_master_dir(env_dir)
@@ -183,6 +215,7 @@ def _refresh_row_from_disk(row: dict) -> None:
     if not run_nums:
         run_nums = hr._discover_env_run_nums(env_dir)
     if master_dir is None and not run_nums:
+        row["_full_loaded"] = True
         return
 
     max_species = hr._max_species(env_dir, run_nums)
@@ -210,12 +243,25 @@ def _refresh_row_from_disk(row: dict) -> None:
     if not points:
         points = hr._snapshot_points_from_runs(env_dir, run_nums)
 
-    fit = hr._fit_stitched_gaussian(points)
-    if isinstance(fit, dict):
-        apex_x = fit.get("apex_x")
-        apex_y = fit.get("apex_y")
-    else:
-        apex_x, apex_y = _apex_from_points(points)
+    fit = None
+    apex_x = None
+    apex_y = None
+    if (not recompute_fit) and isinstance(row.get("fit"), dict):
+        fit = row.get("fit")
+        if isinstance(fit, dict):
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+    if not (hr._is_number(apex_x) and hr._is_number(apex_y)):
+        if hr._is_number(row.get("apex_evolution_rate")) and hr._is_number(row.get("apex_fitness")):
+            apex_x = row.get("apex_evolution_rate")
+            apex_y = row.get("apex_fitness")
+    if recompute_fit or (not isinstance(fit, dict)):
+        fit = hr._fit_stitched_gaussian(points)
+        if isinstance(fit, dict):
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+        elif not (hr._is_number(apex_x) and hr._is_number(apex_y)):
+            apex_x, apex_y = _apex_from_points(points)
 
     if master_run_num is not None:
         row["master_run_num"] = int(master_run_num)
@@ -229,9 +275,10 @@ def _refresh_row_from_disk(row: dict) -> None:
     row["fit"] = fit if isinstance(fit, dict) else None
     row["apex_evolution_rate"] = float(apex_x) if hr._is_number(apex_x) else None
     row["apex_fitness"] = float(apex_y) if hr._is_number(apex_y) else None
+    row["_full_loaded"] = True
 
 
-def _build_rows(hub_dir: Path, hub_meta: dict) -> list[dict]:
+def _build_rows(hub_dir: Path, hub_meta: dict, refresh_disk: bool = True) -> list[dict]:
     rates = _rates_from_meta(hub_dir, hub_meta)
     planned = hub_meta.get("planned_master_ids")
     planned_ids = planned if isinstance(planned, list) else []
@@ -251,6 +298,11 @@ def _build_rows(hub_dir: Path, hub_meta: dict) -> list[dict]:
         env_dir = hub_dir / hr._rate_label(float(rate))
         step_info = step_info_by_idx.get(int(idx), {})
         status = str(step_info.get("status", "pending"))
+        apex_fitness = _safe_float(step_info.get("apex_fitness")) if isinstance(step_info, dict) else None
+        apex_evo = _safe_float(step_info.get("apex_evolution_rate")) if isinstance(step_info, dict) else None
+        preview_points = []
+        if hr._is_number(apex_evo) and hr._is_number(apex_fitness):
+            preview_points = [(float(apex_evo), float(apex_fitness))]
         row = {
             "step_index": int(idx),
             "env_rate": float(rate),
@@ -268,31 +320,32 @@ def _build_rows(hub_dir: Path, hub_meta: dict) -> list[dict]:
             "max_species": _safe_float(step_info.get("max_species")) if isinstance(step_info, dict) else None,
             "total_species": _safe_float(step_info.get("total_species")) if isinstance(step_info, dict) else None,
             "max_frames": _safe_float(step_info.get("max_frames")) if isinstance(step_info, dict) else None,
-            "apex_fitness": _safe_float(step_info.get("apex_fitness")) if isinstance(step_info, dict) else None,
-            "apex_evolution_rate": (
-                _safe_float(step_info.get("apex_evolution_rate")) if isinstance(step_info, dict) else None
-            ),
+            "apex_fitness": apex_fitness,
+            "apex_evolution_rate": apex_evo,
             "duration_s": _safe_float(step_info.get("duration_s")) if isinstance(step_info, dict) else None,
             "env_dir": str(env_dir),
             "master_dir": step_info.get("master_dir") if isinstance(step_info, dict) else None,
             "fit": step_info.get("fit") if isinstance(step_info.get("fit"), dict) else None,
-            "points": [],
+            "points": preview_points,
             "run_nums": step_info.get("run_nums") if isinstance(step_info.get("run_nums"), list) else [],
+            "_full_loaded": bool(refresh_disk),
         }
-        _refresh_row_from_disk(row)
+        if refresh_disk:
+            _refresh_row_from_disk(row)
         if row.get("master_run_num") is not None and row.get("status") in ("pending", "running", ""):
             row["status"] = "ok"
         rows.append(row)
     return rows
 
 
-def _compute_hub_graph_points(rows: list[dict]) -> list[dict]:
+def _compute_hub_graph_points(rows: list[dict], include_apex_fallback: bool = False) -> list[dict]:
     graph_points = []
     for row_idx, row in enumerate(rows):
         env_rate = row.get("env_rate")
+        row_loaded = bool(row.get("_full_loaded"))
         points = row.get("points")
-        if not (hr._is_number(env_rate) and isinstance(points, list)):
-            continue
+        if (not hr._is_number(env_rate)) or (not isinstance(points, list)) or (not row_loaded):
+            points = []
         for src_idx, pair in enumerate(points, start=1):
             if not isinstance(pair, (tuple, list)) or len(pair) < 2:
                 continue
@@ -309,6 +362,23 @@ def _compute_hub_graph_points(rows: list[dict]) -> list[dict]:
                     "source_row_index": int(src_idx),
                 }
             )
+        if points:
+            continue
+        if (not include_apex_fallback) or (not row_loaded):
+            continue
+        apex_x = row.get("apex_evolution_rate")
+        apex_y = row.get("apex_fitness")
+        if not (hr._is_number(apex_x) and hr._is_number(apex_y) and hr._is_number(env_rate)):
+            continue
+        graph_points.append(
+            {
+                "row_index": int(row_idx),
+                "x": float(env_rate),
+                "y": float(apex_x),
+                "fitness": float(apex_y),
+                "source_row_index": 0,
+            }
+        )
     return graph_points
 
 
@@ -583,6 +653,32 @@ class HubViewer:
         self.table_scroll = 0.0
         self.table_row_h = 24
         self.timeline_cache = {}
+        self._loader_thread = None
+        self._loader_stop_event = threading.Event()
+        self._loader_updates = queue.SimpleQueue()
+        self._loader_token = 0
+        self._loader_active = False
+        self._loader_total_steps = 1
+        self._loader_done_steps = 0
+        self._loader_status = ""
+        self._loader_error = None
+        self._selected_loader_thread = None
+        self._selected_loader_stop_event = threading.Event()
+        self._selected_loader_updates = queue.SimpleQueue()
+        self._selected_loader_token = 0
+        self._selected_row_loading_idx = None
+        self._selected_row_loading_status = ""
+        self._selected_row_loader_error = None
+        self._master_refresh_thread = None
+        self._master_refresh_stop_event = threading.Event()
+        self._master_refresh_updates = queue.SimpleQueue()
+        self._master_refresh_token = 0
+        self._master_refresh_active = False
+        self._master_refresh_total_steps = 1
+        self._master_refresh_done_steps = 1
+        self._master_refresh_status = ""
+        self._master_refresh_error = None
+        self._fit_cache = {}
         self.graph_modes = [
             "normal",
             "hub_3d",
@@ -636,18 +732,37 @@ class HubViewer:
 
         self.reload_from_disk()
 
-    def reload_from_disk(self) -> None:
-        self.hub_meta = _load_hub_meta(self.hub_dir)
-        self.rows = _build_rows(self.hub_dir, self.hub_meta)
-        self.graph_points = _compute_hub_graph_points(self.rows)
+    def _rebuild_graph_models(self) -> None:
+        self.graph_points = _compute_hub_graph_points(self.rows, include_apex_fallback=True)
         self.hub_fit_report = hr._fit_hub_models_from_rows(self.rows)
-        # Timeline data is rebuilt only on manual reload (U), not every frame.
-        self.timeline_cache.clear()
-        for row in self.rows:
-            key = self._timeline_cache_key_for_row(row)
-            if key is None:
-                continue
-            self.timeline_cache[key] = self._build_timeline_payload_for_row(row)
+        self.hub_best_fit = (
+            self.hub_fit_report.get("best_model") if isinstance(self.hub_fit_report, dict) else None
+        )
+        self._fit_cache.clear()
+
+    def _fit_report_for_graph_points(self, graph_points: list[dict], scope: str = "main") -> dict:
+        if not isinstance(graph_points, list) or not graph_points:
+            return {}
+        low = float(self.env_view_min) if hr._is_number(self.env_view_min) else -1e9
+        high = float(self.env_view_max) if hr._is_number(self.env_view_max) else 1e9
+        key = (
+            str(scope),
+            round(low, 5),
+            round(high, 5),
+            int(len(graph_points)),
+        )
+        cached = self._fit_cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+        report = hr._fit_hub_models_from_graph_points(graph_points)
+        if not isinstance(report, dict):
+            report = {}
+        if len(self._fit_cache) > 24:
+            self._fit_cache.clear()
+        self._fit_cache[key] = report
+        return report
+
+    def _refresh_row_ui_state(self) -> None:
         self.range_top_n_max = max(
             self.range_top_n_min,
             max(
@@ -695,9 +810,6 @@ class HubViewer:
                     high = float(self.env_global_max)
                 self.env_view_min = float(low)
                 self.env_view_max = float(high)
-        self.hub_best_fit = (
-            self.hub_fit_report.get("best_model") if isinstance(self.hub_fit_report, dict) else None
-        )
         if self.rows:
             if self.selected_row_index is None:
                 self.selected_row_index = 0
@@ -705,51 +817,520 @@ class HubViewer:
                 self.selected_row_index = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
         else:
             self.selected_row_index = None
+
+    def _stop_background_loader(self, wait: bool = False) -> None:
+        if isinstance(self._loader_thread, threading.Thread) and self._loader_thread.is_alive():
+            self._loader_stop_event.set()
+            if wait:
+                self._loader_thread.join(timeout=2.0)
+        self._loader_active = False
+
+    def _start_background_loader(self, rows_seed: list[dict]) -> None:
+        total_rows = len(rows_seed)
+        self._loader_token += 1
+        token = int(self._loader_token)
+        self._loader_stop_event = threading.Event()
+        self._loader_updates = queue.SimpleQueue()
+        self._loader_total_steps = max(1, int(total_rows) * 2)
+        self._loader_done_steps = 0
+        self._loader_error = None
+        self._loader_status = f"Loading simulation rows: 0/{total_rows}"
+        self._loader_active = bool(total_rows > 0)
+        if total_rows <= 0:
+            return
+        self._loader_thread = threading.Thread(
+            target=self._background_loader_worker,
+            args=(token, rows_seed, self._loader_stop_event),
+            daemon=True,
+            name=f"hub_viewer_loader_{self.hub_idx if self.hub_idx is not None else 'x'}",
+        )
+        self._loader_thread.start()
+
+    def _background_loader_worker(
+        self,
+        token: int,
+        rows_seed: list[dict],
+        stop_event: threading.Event,
+    ) -> None:
+        try:
+            loaded_rows = [dict(row) for row in rows_seed]
+            total_rows = len(loaded_rows)
+            total_steps = max(1, total_rows * 2)
+
+            for idx in range(total_rows):
+                if stop_event.is_set():
+                    return
+                row = dict(loaded_rows[idx])
+                _refresh_row_from_disk(row, recompute_fit=False)
+                loaded_rows[idx] = row
+                self._loader_updates.put(("row", token, int(idx), row))
+                self._loader_updates.put(
+                    (
+                        "progress",
+                        token,
+                        int(idx + 1),
+                        int(total_steps),
+                        f"Loading simulation rows: {idx + 1}/{total_rows}",
+                    )
+                )
+                if (
+                    (idx + 1) == 1
+                    or ((idx + 1) % int(_BACKGROUND_MODEL_UPDATE_EVERY_ROWS) == 0)
+                    or ((idx + 1) == total_rows)
+                ):
+                    graph_points = _compute_hub_graph_points(loaded_rows, include_apex_fallback=True)
+                    fit_report = hr._fit_hub_models_from_rows(loaded_rows)
+                    best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+                    self._loader_updates.put(("models", token, graph_points, fit_report, best_fit))
+
+            for idx in range(total_rows):
+                if stop_event.is_set():
+                    return
+                row = loaded_rows[idx]
+                key = self._timeline_cache_key_for_row(row)
+                if key is not None:
+                    payload = self._build_timeline_payload_for_row(row)
+                    self._loader_updates.put(("timeline", token, key, payload))
+                step_done = total_rows + idx + 1
+                self._loader_updates.put(
+                    (
+                        "progress",
+                        token,
+                        int(step_done),
+                        int(total_steps),
+                        f"Loading timeline cache: {idx + 1}/{total_rows}",
+                    )
+                )
+
+            graph_points = _compute_hub_graph_points(loaded_rows, include_apex_fallback=True)
+            fit_report = hr._fit_hub_models_from_rows(loaded_rows)
+            best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+            self._loader_updates.put(("models", token, graph_points, fit_report, best_fit))
+            self._loader_updates.put(("done", token, int(total_steps), int(total_steps), "Loaded 100%"))
+        except Exception as exc:
+            self._loader_updates.put(("error", token, str(exc)))
+
+    def _drain_background_loader_updates(self, max_items: int = 64) -> None:
+        rows_changed = False
+        items = 0
+        while items < max(1, int(max_items)):
+            try:
+                item = self._loader_updates.get_nowait()
+            except queue.Empty:
+                break
+            items += 1
+            if not isinstance(item, tuple) or len(item) < 2:
+                continue
+            event = str(item[0])
+            token = int(item[1])
+            if token != int(self._loader_token):
+                continue
+            if event == "row" and len(item) >= 4:
+                row_idx = int(item[2])
+                row = item[3]
+                if 0 <= row_idx < len(self.rows) and isinstance(row, dict):
+                    self.rows[row_idx] = row
+                    rows_changed = True
+            elif event == "timeline" and len(item) >= 4:
+                key = item[2]
+                payload = item[3]
+                if key is not None and isinstance(payload, dict):
+                    self.timeline_cache[key] = payload
+            elif event == "models" and len(item) >= 5:
+                graph_points = item[2]
+                fit_report = item[3]
+                best_fit = item[4]
+                if isinstance(graph_points, list):
+                    self.graph_points = graph_points
+                if isinstance(fit_report, dict):
+                    self.hub_fit_report = fit_report
+                    self.hub_best_fit = best_fit if isinstance(best_fit, dict) else None
+                self._fit_cache.clear()
+            elif event == "progress" and len(item) >= 5:
+                self._loader_done_steps = max(0, int(item[2]))
+                self._loader_total_steps = max(1, int(item[3]))
+                self._loader_status = str(item[4])
+            elif event == "done" and len(item) >= 5:
+                self._loader_done_steps = max(0, int(item[2]))
+                self._loader_total_steps = max(1, int(item[3]))
+                self._loader_status = str(item[4])
+                self._loader_active = False
+                rows_changed = True
+            elif event == "error" and len(item) >= 3:
+                self._loader_error = str(item[2])
+                self._loader_status = "Background loading failed"
+                self._loader_active = False
+        if rows_changed:
+            self._refresh_row_ui_state()
+
+    def _loader_progress_ratio(self) -> float:
+        den = max(1, int(self._loader_total_steps))
+        return max(0.0, min(1.0, float(self._loader_done_steps) / float(den)))
+
+    def _master_refresh_progress_ratio(self) -> float:
+        den = max(1, int(self._master_refresh_total_steps))
+        return max(0.0, min(1.0, float(self._master_refresh_done_steps) / float(den)))
+
+    def _stop_master_refresh(self, wait: bool = False) -> None:
+        if isinstance(self._master_refresh_thread, threading.Thread) and self._master_refresh_thread.is_alive():
+            self._master_refresh_stop_event.set()
+            if wait:
+                self._master_refresh_thread.join(timeout=2.0)
+        self._master_refresh_token += 1
+        self._master_refresh_updates = queue.SimpleQueue()
+        self._master_refresh_active = False
+        if not self._master_refresh_error:
+            self._master_refresh_done_steps = max(1, int(self._master_refresh_total_steps))
+
+    def _master_refresh_worker(self, token: int, stop_event: threading.Event) -> None:
+        try:
+            latest_meta = _load_hub_meta(self.hub_dir)
+            rows = _build_rows(self.hub_dir, latest_meta, refresh_disk=False)
+            total_rows = len(rows)
+            total_steps = max(1, int(total_rows) + 4)
+            self._master_refresh_updates.put(
+                (
+                    "progress",
+                    int(token),
+                    0,
+                    int(total_steps),
+                    f"Refreshing master fits: 0/{total_rows}",
+                )
+            )
+            for idx in range(total_rows):
+                if stop_event.is_set():
+                    return
+                row = dict(rows[idx])
+                _refresh_row_from_disk(row, recompute_fit=True)
+                rows[idx] = row
+                self._master_refresh_updates.put(
+                    (
+                        "progress",
+                        int(token),
+                        int(idx + 1),
+                        int(total_steps),
+                        f"Refreshing master fits: {idx + 1}/{total_rows}",
+                    )
+                )
+
+            issues = []
+            done_steps = int(total_rows)
+
+            if stop_event.is_set():
+                return
+            try:
+                _write_hub_fit_equations_csv(self.hub_dir / "hub_fit_equations.csv", rows)
+            except Exception as exc:
+                issues.append(f"hub_fit_equations.csv ({exc})")
+            done_steps += 1
+            self._master_refresh_updates.put(
+                (
+                    "progress",
+                    int(token),
+                    int(done_steps),
+                    int(total_steps),
+                    "Writing hub_fit_equations.csv",
+                )
+            )
+
+            if stop_event.is_set():
+                return
+            try:
+                hr._write_hub_all_points_csv(self.hub_dir / "hub_all_points.csv", rows)
+            except Exception as exc:
+                issues.append(f"hub_all_points.csv ({exc})")
+            done_steps += 1
+            self._master_refresh_updates.put(
+                (
+                    "progress",
+                    int(token),
+                    int(done_steps),
+                    int(total_steps),
+                    "Writing hub_all_points.csv",
+                )
+            )
+
+            if stop_event.is_set():
+                return
+            try:
+                hr._write_hub_stats_csv(self.hub_dir / "hub_stats.csv", rows)
+            except Exception as exc:
+                issues.append(f"hub_stats.csv ({exc})")
+            done_steps += 1
+            self._master_refresh_updates.put(
+                (
+                    "progress",
+                    int(token),
+                    int(done_steps),
+                    int(total_steps),
+                    "Writing hub_stats.csv",
+                )
+            )
+
+            if stop_event.is_set():
+                return
+            try:
+                if _sync_hub_meta_steps_from_rows(latest_meta, rows):
+                    (self.hub_dir / "hub_meta.json").write_text(json.dumps(latest_meta, indent=2))
+            except Exception as exc:
+                issues.append(f"hub_meta.json ({exc})")
+            done_steps += 1
+
+            if stop_event.is_set():
+                return
+            graph_points = _compute_hub_graph_points(rows, include_apex_fallback=True)
+            fit_report = hr._fit_hub_models_from_rows(rows)
+            best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
+            fit_count = len(
+                [row for row in rows if isinstance(row, dict) and isinstance(row.get("fit"), dict)]
+            )
+            summary = (
+                f"Updated all master best-fit lines ({fit_count}/{len(rows)}) and rewrote hub fit files"
+                if not issues
+                else (
+                    f"Updated fits in memory ({fit_count}/{len(rows)}); disk update issues: {'; '.join(issues)}"
+                )
+            )
+            self._master_refresh_updates.put(
+                (
+                    "done",
+                    int(token),
+                    int(total_steps),
+                    rows,
+                    latest_meta,
+                    graph_points,
+                    fit_report if isinstance(fit_report, dict) else {},
+                    best_fit if isinstance(best_fit, dict) else None,
+                    issues,
+                    summary,
+                )
+            )
+        except Exception as exc:
+            self._master_refresh_updates.put(("error", int(token), str(exc)))
+
+    def _start_master_refresh(self) -> None:
+        if isinstance(self._master_refresh_thread, threading.Thread) and self._master_refresh_thread.is_alive():
+            self._set_export_status(False, "Refresh already running")
+            return
+        self._stop_background_loader(wait=False)
+        self._stop_selected_loader(wait=False)
+        self._loader_token += 1
+        self._selected_loader_token += 1
+        self._loader_updates = queue.SimpleQueue()
+        self._selected_loader_updates = queue.SimpleQueue()
+        self._master_refresh_token += 1
+        token = int(self._master_refresh_token)
+        self._master_refresh_stop_event = threading.Event()
+        self._master_refresh_updates = queue.SimpleQueue()
+        self._master_refresh_total_steps = 1
+        self._master_refresh_done_steps = 0
+        self._master_refresh_status = "Preparing full refresh..."
+        self._master_refresh_error = None
+        self._master_refresh_active = True
+        self._set_export_status(True, "Refreshing all master fits in background...")
+        self._master_refresh_thread = threading.Thread(
+            target=self._master_refresh_worker,
+            args=(int(token), self._master_refresh_stop_event),
+            daemon=True,
+            name=f"hub_viewer_refresh_{self.hub_idx if self.hub_idx is not None else 'x'}",
+        )
+        self._master_refresh_thread.start()
+
+    def _drain_master_refresh_updates(self, max_items: int = 64) -> None:
+        items = 0
+        while items < max(1, int(max_items)):
+            try:
+                item = self._master_refresh_updates.get_nowait()
+            except queue.Empty:
+                break
+            items += 1
+            if not isinstance(item, tuple) or len(item) < 2:
+                continue
+            event = str(item[0])
+            token = int(item[1])
+            if token != int(self._master_refresh_token):
+                continue
+            if event == "progress" and len(item) >= 5:
+                self._master_refresh_done_steps = max(0, int(item[2]))
+                self._master_refresh_total_steps = max(1, int(item[3]))
+                self._master_refresh_status = str(item[4])
+            elif event == "done" and len(item) >= 10:
+                self._master_refresh_done_steps = max(0, int(item[2]))
+                self._master_refresh_total_steps = max(1, int(item[2]))
+                rows = item[3]
+                latest_meta = item[4]
+                graph_points = item[5]
+                fit_report = item[6]
+                best_fit = item[7]
+                issues = item[8]
+                summary = str(item[9])
+                if isinstance(rows, list):
+                    self.rows = rows
+                if isinstance(latest_meta, dict):
+                    self.hub_meta = latest_meta
+                if isinstance(graph_points, list):
+                    self.graph_points = graph_points
+                if isinstance(fit_report, dict):
+                    self.hub_fit_report = fit_report
+                self.hub_best_fit = best_fit if isinstance(best_fit, dict) else None
+                self.timeline_cache.clear()
+                self._fit_cache.clear()
+                self._refresh_row_ui_state()
+                self.last_reload = time.time()
+                self._master_refresh_status = "Refresh complete"
+                self._master_refresh_error = None
+                self._master_refresh_active = False
+                self._set_export_status(len(issues) == 0, summary)
+            elif event == "error" and len(item) >= 3:
+                self._master_refresh_error = str(item[2])
+                self._master_refresh_status = "Refresh failed"
+                self._master_refresh_active = False
+                self._set_export_status(False, f"Refresh failed ({self._master_refresh_error})")
+
+    def _stop_selected_loader(self, wait: bool = False) -> None:
+        if isinstance(self._selected_loader_thread, threading.Thread) and self._selected_loader_thread.is_alive():
+            self._selected_loader_stop_event.set()
+            if wait:
+                self._selected_loader_thread.join(timeout=1.5)
+        self._selected_row_loading_idx = None
+        self._selected_row_loading_status = ""
+
+    def _row_needs_full_load(self, row: dict | None) -> bool:
+        if not isinstance(row, dict):
+            return False
+        if bool(row.get("_full_loaded")):
+            return False
+        points = row.get("points")
+        if isinstance(points, list) and len(points) > 1:
+            return False
+        return True
+
+    def _selected_row_loader_worker(
+        self,
+        token: int,
+        row_idx: int,
+        row_seed: dict,
+        stop_event: threading.Event,
+    ) -> None:
+        try:
+            row = dict(row_seed)
+            _refresh_row_from_disk(row, recompute_fit=False)
+            if stop_event.is_set():
+                return
+            key = self._timeline_cache_key_for_row(row)
+            payload = self._build_timeline_payload_for_row(row) if key is not None else None
+            self._selected_loader_updates.put(("row", int(token), int(row_idx), row, key, payload))
+        except Exception as exc:
+            self._selected_loader_updates.put(("error", int(token), int(row_idx), str(exc)))
+
+    def _start_selected_row_loader(self, row_idx: int) -> None:
+        if row_idx < 0 or row_idx >= len(self.rows):
+            return
+        row = self.rows[row_idx]
+        if not self._row_needs_full_load(row):
+            return
+        if (
+            isinstance(self._selected_loader_thread, threading.Thread)
+            and self._selected_loader_thread.is_alive()
+            and self._selected_row_loading_idx == int(row_idx)
+        ):
+            return
+        self._stop_selected_loader(wait=False)
+        self._selected_loader_token += 1
+        token = int(self._selected_loader_token)
+        self._selected_loader_stop_event = threading.Event()
+        self._selected_row_loading_idx = int(row_idx)
+        self._selected_row_loader_error = None
+        self._selected_row_loading_status = f"Loading selected master row {int(row_idx) + 1}..."
+        seed = dict(row)
+        self._selected_loader_thread = threading.Thread(
+            target=self._selected_row_loader_worker,
+            args=(int(token), int(row_idx), seed, self._selected_loader_stop_event),
+            daemon=True,
+            name=f"hub_viewer_selected_loader_{int(row_idx)}",
+        )
+        self._selected_loader_thread.start()
+
+    def _drain_selected_loader_updates(self, max_items: int = 4) -> None:
+        changed = False
+        items = 0
+        while items < max(1, int(max_items)):
+            try:
+                item = self._selected_loader_updates.get_nowait()
+            except queue.Empty:
+                break
+            items += 1
+            if not isinstance(item, tuple) or not item:
+                continue
+            event = str(item[0])
+            if event == "row" and len(item) >= 6:
+                token = int(item[1])
+                row_idx = int(item[2])
+                row = item[3]
+                key = item[4]
+                payload = item[5]
+                if token != int(self._selected_loader_token):
+                    continue
+                if 0 <= row_idx < len(self.rows) and isinstance(row, dict):
+                    self.rows[row_idx] = row
+                    changed = True
+                if key is not None and isinstance(payload, dict):
+                    self.timeline_cache[key] = payload
+                self._selected_row_loading_status = ""
+                if self._selected_row_loading_idx == row_idx:
+                    self._selected_row_loading_idx = None
+            elif event == "error" and len(item) >= 4:
+                token = int(item[1])
+                row_idx = int(item[2])
+                if token != int(self._selected_loader_token):
+                    continue
+                self._selected_row_loader_error = str(item[3])
+                self._selected_row_loading_status = f"Selected master load failed: {self._selected_row_loader_error}"
+                if 0 <= row_idx < len(self.rows) and isinstance(self.rows[row_idx], dict):
+                    self.rows[row_idx]["_full_loaded"] = True
+                if self._selected_row_loading_idx == row_idx:
+                    self._selected_row_loading_idx = None
+        if changed:
+            self._rebuild_graph_models()
+            self._refresh_row_ui_state()
+
+    def _queue_selected_row_load(self) -> None:
+        if self.selected_row_index is None:
+            return
+        row_idx = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
+        self._start_selected_row_loader(row_idx)
+
+    def reload_from_disk(self, force_full: bool = False, run_in_background: bool = True) -> None:
+        self._stop_master_refresh(wait=False)
+        self._stop_background_loader(wait=(not run_in_background))
+        self._stop_selected_loader(wait=False)
+        self.hub_meta = _load_hub_meta(self.hub_dir)
+        self.rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=False)
+        self.timeline_cache.clear()
+        self._rebuild_graph_models()
+        if force_full or (not run_in_background):
+            self.rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=True)
+            self.timeline_cache.clear()
+            for row in self.rows:
+                key = self._timeline_cache_key_for_row(row)
+                if key is None:
+                    continue
+                self.timeline_cache[key] = self._build_timeline_payload_for_row(row)
+            self._rebuild_graph_models()
+            self._loader_total_steps = 1
+            self._loader_done_steps = 1
+            self._loader_status = "Loaded 100%"
+            self._loader_error = None
+            self._loader_active = False
+        else:
+            self._start_background_loader(self.rows)
+        self._refresh_row_ui_state()
         self.timeline_progress = max(0.0, min(1.0, float(self.timeline_progress)))
         self.timeline_playing = False
         self.last_reload = time.time()
 
     def _refresh_all_master_fit_lines(self) -> None:
-        self.reload_from_disk()
-        fit_count = len(
-            [row for row in self.rows if isinstance(row, dict) and isinstance(row.get("fit"), dict)]
-        )
-        total_rows = len(self.rows)
-        issues = []
-
-        try:
-            _write_hub_fit_equations_csv(self.hub_dir / "hub_fit_equations.csv", self.rows)
-        except Exception as exc:
-            issues.append(f"hub_fit_equations.csv ({exc})")
-
-        try:
-            hr._write_hub_all_points_csv(self.hub_dir / "hub_all_points.csv", self.rows)
-        except Exception as exc:
-            issues.append(f"hub_all_points.csv ({exc})")
-
-        try:
-            hr._write_hub_stats_csv(self.hub_dir / "hub_stats.csv", self.rows)
-        except Exception as exc:
-            issues.append(f"hub_stats.csv ({exc})")
-
-        try:
-            latest_meta = _load_hub_meta(self.hub_dir)
-            if _sync_hub_meta_steps_from_rows(latest_meta, self.rows):
-                (self.hub_dir / "hub_meta.json").write_text(json.dumps(latest_meta, indent=2))
-            self.hub_meta = latest_meta
-        except Exception as exc:
-            issues.append(f"hub_meta.json ({exc})")
-
-        if issues:
-            self._set_export_status(
-                False,
-                f"Updated fits in memory ({fit_count}/{total_rows}); disk update issues: {'; '.join(issues)}",
-            )
-        else:
-            self._set_export_status(
-                True,
-                f"Updated all master best-fit lines ({fit_count}/{total_rows}) and rewrote hub fit files",
-            )
+        self._start_master_refresh()
 
     def _selected_row(self) -> dict | None:
         if not self.rows:
@@ -758,6 +1339,7 @@ class HubViewer:
             return None
         idx = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
         self.selected_row_index = idx
+        self._queue_selected_row_load()
         return self.rows[idx]
 
     def _table_visible_rows(self) -> int:
@@ -802,6 +1384,7 @@ class HubViewer:
                 idx = (current + delta_i) % total
         self.selected_row_index = idx
         self._ensure_selected_visible()
+        self._queue_selected_row_load()
 
     def _env_rate_in_view(self, env_rate) -> bool:
         if not hr._is_number(env_rate):
@@ -920,7 +1503,10 @@ class HubViewer:
             snap_dir = child / "snapshots"
             if not snap_dir.is_dir():
                 continue
-            snap_files = sorted(snap_dir.glob("arith_mean_*.csv"))
+            snap_files = _sample_paths_evenly(
+                sorted(snap_dir.glob("arith_mean_*.csv")),
+                _TIMELINE_MAX_SNAPSHOTS_PER_RUN,
+            )
             if not snap_files:
                 continue
             snapshot_files_by_run[int(run_num)] = snap_files
@@ -1057,7 +1643,7 @@ class HubViewer:
             "timeline_source": source,
         }
 
-    def _timeline_payload_for_row(self, row: dict | None) -> dict:
+    def _timeline_payload_for_row(self, row: dict | None, build_if_missing: bool = True) -> dict:
         key = self._timeline_cache_key_for_row(row)
         if key is None:
             return {
@@ -1071,6 +1657,10 @@ class HubViewer:
         cached = self.timeline_cache.get(key)
         if isinstance(cached, dict):
             return cached
+        if build_if_missing:
+            payload = self._build_timeline_payload_for_row(row)
+            self.timeline_cache[key] = payload
+            return payload
         return {
             "series": [],
             "fit": None,
@@ -1658,7 +2248,7 @@ class HubViewer:
         graph_points = [
             point for point in self.graph_points if self._env_rate_in_view(point.get("x"))
         ]
-        fit_report = hr._fit_hub_models_from_graph_points(graph_points) if graph_points else {}
+        fit_report = self._fit_report_for_graph_points(graph_points, scope="hub_2d")
         best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
         if best and hr._is_number(best.get("r2")):
             equation = str(best.get("equation", ""))
@@ -1801,7 +2391,7 @@ class HubViewer:
         ]
         best = best_model
         if best is None:
-            fit_report = hr._fit_hub_models_from_graph_points(graph_points) if graph_points else {}
+            fit_report = self._fit_report_for_graph_points(graph_points, scope="hub_3d")
             best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
         fit_axes = (key_x, key_y) == ("x", "y")
         has_fit_equation = fit_axes and bool(best) and hr._is_number(best.get("r2"))
@@ -2187,6 +2777,21 @@ class HubViewer:
             title += f" | master_{int(master_label)}"
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, title, rect.width - 20), True, (195, 210, 235)), (rect.x + 10, rect.y + 8))
 
+        row_idx = _safe_int(row.get("step_index"))
+        row_loaded = bool(row.get("_full_loaded"))
+        if not row_loaded:
+            if (
+                row_idx is not None
+                and self._selected_row_loading_idx is not None
+                and int(row_idx) == int(self._selected_row_loading_idx)
+            ):
+                text = self._selected_row_loading_status or "Loading selected master points..."
+            else:
+                text = "Waiting for selected master points..."
+            msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
+            self.screen.blit(msg, (rect.x + 10, rect.y + 30))
+            return
+
         points = []
         raw_points = row.get("points")
         if isinstance(raw_points, list):
@@ -2196,7 +2801,15 @@ class HubViewer:
                 if hr._is_number(pair[0]) and hr._is_number(pair[1]):
                     points.append((float(pair[0]), float(pair[1])))
         if not points:
-            msg = self.small.render("No points available.", True, (170, 170, 170))
+            if (
+                row_idx is not None
+                and self._selected_row_loading_idx is not None
+                and int(row_idx) == int(self._selected_row_loading_idx)
+            ):
+                text = self._selected_row_loading_status or "Loading selected master points..."
+                msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
+            else:
+                msg = self.small.render("No points available.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
@@ -2460,7 +3073,7 @@ class HubViewer:
             if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)):
                 continue
             candidate_rows += 1
-            payload = self._timeline_payload_for_row(row)
+            payload = self._timeline_payload_for_row(row, build_if_missing=(not self._loader_active))
             cloud_series = payload.get("cloud_series") if isinstance(payload, dict) else None
             if not isinstance(cloud_series, list) or not cloud_series:
                 continue
@@ -2497,6 +3110,14 @@ class HubViewer:
         if not graph_points:
             msg = self.small.render("No timeline data available across hub.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 10, rect.y + 28))
+            if self._loader_active:
+                pending = max(0, int(self._loader_total_steps) - int(self._loader_done_steps))
+                note = self.tiny.render(
+                    f"Background loading in progress: {self._loader_progress_ratio() * 100.0:.1f}% ({pending} steps pending)",
+                    True,
+                    (158, 172, 196),
+                )
+                self.screen.blit(note, (rect.x + 10, rect.y + 48))
             return
 
         fit_report = hr._fit_hub_models_from_graph_points(graph_points)
@@ -3291,6 +3912,52 @@ class HubViewer:
         )
         self.screen.blit(env_label, (env_slider_x, env_slider_y - 18))
 
+    def _draw_loading_bar(self, x: int, y: int, width: int, height: int) -> None:
+        pg = self.pg
+        ratio = self._loader_progress_ratio()
+        filled_w = int(max(0.0, min(1.0, ratio)) * float(max(1, width)))
+        track = pg.Rect(int(x), int(y), int(width), int(height))
+        fill = pg.Rect(int(x), int(y), int(filled_w), int(height))
+        pg.draw.rect(self.screen, (34, 38, 46), track)
+        if self._loader_error:
+            fill_color = (196, 82, 82)
+        else:
+            fill_color = (102, 170, 238)
+        if fill.width > 0:
+            pg.draw.rect(self.screen, fill_color, fill)
+        pg.draw.rect(self.screen, (96, 108, 126), track, 1)
+        percent_text = f"{ratio * 100.0:.1f}%"
+        detail_text = self._loader_status if self._loader_status else "Loading hub data in background..."
+        label = f"Background loading: {percent_text} ({self._loader_done_steps}/{self._loader_total_steps})  {detail_text}"
+        color = (230, 140, 140) if self._loader_error else (188, 206, 232)
+        self.screen.blit(
+            self.tiny.render(hr._fit_text(self.tiny, label, max(32, width)), True, color),
+            (int(x), int(y) - 16),
+        )
+
+    def _draw_master_refresh_bar(self, x: int, y: int, width: int, height: int) -> None:
+        pg = self.pg
+        ratio = self._master_refresh_progress_ratio()
+        filled_w = int(max(0.0, min(1.0, ratio)) * float(max(1, width)))
+        track = pg.Rect(int(x), int(y), int(width), int(height))
+        fill = pg.Rect(int(x), int(y), int(filled_w), int(height))
+        pg.draw.rect(self.screen, (34, 38, 46), track)
+        fill_color = (196, 82, 82) if self._master_refresh_error else (130, 188, 110)
+        if fill.width > 0:
+            pg.draw.rect(self.screen, fill_color, fill)
+        pg.draw.rect(self.screen, (96, 108, 126), track, 1)
+        percent_text = f"{ratio * 100.0:.1f}%"
+        detail_text = self._master_refresh_status if self._master_refresh_status else "Refreshing all master fits..."
+        label = (
+            f"Refresh all master fits: {percent_text} "
+            f"({self._master_refresh_done_steps}/{self._master_refresh_total_steps})  {detail_text}"
+        )
+        color = (230, 140, 140) if self._master_refresh_error else (186, 224, 178)
+        self.screen.blit(
+            self.tiny.render(hr._fit_text(self.tiny, label, max(32, width)), True, color),
+            (int(x), int(y) - 16),
+        )
+
     def _draw(self, include_status: bool = True) -> None:
         pg = self.pg
         self.screen.fill((10, 12, 16))
@@ -3298,7 +3965,17 @@ class HubViewer:
 
         margin = 16
         gap = 12
-        top_y = 72
+        show_loader = bool(
+            self._loader_error
+            or self._loader_active
+            or (int(self._loader_done_steps) < int(self._loader_total_steps))
+        )
+        show_refresh = bool(
+            self._master_refresh_error
+            or self._master_refresh_active
+            or (int(self._master_refresh_done_steps) < int(self._master_refresh_total_steps))
+        )
+        top_y = 120 if (show_loader and show_refresh) else (96 if (show_loader or show_refresh) else 72)
         left_w = 486
         left_rect = pg.Rect(margin, top_y, left_w, self.window_h - top_y - margin)
 
@@ -3328,6 +4005,11 @@ class HubViewer:
             status_color = (172, 226, 178) if self._export_status_ok else (255, 164, 164)
             status_text = hr._fit_text(self.tiny, self.export_status, self.window_w - (2 * margin))
             self.screen.blit(self.tiny.render(status_text, True, status_color), (margin, 58))
+        if include_status and show_loader:
+            self._draw_loading_bar(margin, 76, self.window_w - (2 * margin), 12)
+        if include_status and show_refresh:
+            refresh_y = 92 if show_loader else 76
+            self._draw_master_refresh_bar(margin, refresh_y, self.window_w - (2 * margin), 12)
 
         self._draw_table(left_rect)
         selected = self._selected_row()
@@ -3370,9 +4052,11 @@ class HubViewer:
             for row_idx, y0, y1 in self.table_row_hits:
                 if y0 <= my < y1:
                     self.selected_row_index = int(row_idx)
+                    self._queue_selected_row_load()
                     return
             # Clicked selector panel but not on a row: clear selection.
             self.selected_row_index = None
+            self._stop_selected_loader(wait=False)
             return
         if self._back_button_rect is not None and self._back_button_rect.collidepoint(mx, my):
             self._rotate_graph_mode(-1)
@@ -3433,8 +4117,10 @@ class HubViewer:
             return
         # Clicked outside selector rows/controls: clear selection.
         self.selected_row_index = None
+        self._stop_selected_loader(wait=False)
 
     def _open_selector(self) -> None:
+        self._stop_master_refresh(wait=False)
         choice = hr._select_hub_run_ui(self.results_root)
         if not isinstance(choice, dict):
             return
@@ -3447,6 +4133,7 @@ class HubViewer:
         self.hub_dir = hub_dir
         self.hub_idx = hub_idx
         self.selected_row_index = None
+        self._stop_selected_loader(wait=False)
         self.env_view_min = None
         self.env_view_max = None
         self.reload_from_disk()
@@ -3562,11 +4249,17 @@ class HubViewer:
                                 self._graph3d_yaw += (2.0 * math.pi)
                             self._graph3d_last_mouse = (int(event.pos[0]), int(event.pos[1]))
 
+            self._drain_background_loader_updates()
+            self._drain_selected_loader_updates()
+            self._drain_master_refresh_updates()
             self._draw()
             dt_s = self.clock.tick(30) / 1000.0
             self._update_timeline_playback(dt_s)
 
         try:
+            self._stop_master_refresh(wait=False)
+            self._stop_background_loader(wait=False)
+            self._stop_selected_loader(wait=False)
             self.pg.display.quit()
             self.pg.quit()
         except Exception:
