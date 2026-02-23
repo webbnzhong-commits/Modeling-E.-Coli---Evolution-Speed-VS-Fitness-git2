@@ -158,39 +158,34 @@ def _runtime_prediction_from_steps(
                 running_elapsed = max(0.0, float(now_ts - started_at))
 
     remaining_steps = max(0, int(total_steps) - int(done))
-    if running_elapsed is None and is_running and remaining_steps > 0 and elapsed_s > 0:
-        if done_duration_sum > 0:
-            inferred = max(0.0, float(elapsed_s) - float(done_duration_sum))
-            if inferred > 0:
-                running_elapsed = inferred
-        if running_elapsed is None:
-            # Early run fallback: infer current step elapsed from hub elapsed time.
-            running_elapsed = float(elapsed_s)
+    # Keep ETA strict: only estimate from completed steps with known durations.
+    if done <= 0 or len(durations) <= 0 or len(durations) < done:
+        return {
+            "remaining_s": None,
+            "predicted_total_s": None,
+            "eta_ts": None,
+        }
 
-    avg_step_s = None
-    if durations:
-        avg_step_s = float(sum(durations) / len(durations))
-    elif running_elapsed is not None and running_elapsed > 0:
-        avg_step_s = float(running_elapsed)
-    elif done > 0 and elapsed_s > 0:
-        avg_step_s = float(elapsed_s / done)
-    elif is_running and elapsed_s > 0 and remaining_steps > 0:
-        avg_step_s = float(elapsed_s)
+    if running_elapsed is None and is_running and remaining_steps > 0 and elapsed_s > 0:
+        inferred = max(0.0, float(elapsed_s) - float(done_duration_sum))
+        if inferred > 0:
+            running_elapsed = inferred
+
+    avg_step_s = float(sum(durations) / len(durations))
 
     remaining_s = None
     predicted_total_s = None
     eta_ts = None
-    if avg_step_s is not None:
-        if remaining_steps == 0:
-            remaining_s = 0.0
-        elif is_running and running_elapsed is not None:
-            remaining_s = max(0.0, avg_step_s - float(running_elapsed)) + (
-                avg_step_s * max(0, remaining_steps - 1)
-            )
-        else:
-            remaining_s = avg_step_s * remaining_steps
-        predicted_total_s = float(elapsed_s + remaining_s)
-        eta_ts = float(now_ts + remaining_s)
+    if remaining_steps == 0:
+        remaining_s = 0.0
+    elif is_running and running_elapsed is not None:
+        remaining_s = max(0.0, avg_step_s - float(running_elapsed)) + (
+            avg_step_s * max(0, remaining_steps - 1)
+        )
+    else:
+        remaining_s = avg_step_s * remaining_steps
+    predicted_total_s = float(elapsed_s + remaining_s)
+    eta_ts = float(now_ts + remaining_s)
 
     return {
         "remaining_s": remaining_s,
@@ -263,6 +258,7 @@ def _running_master_metrics(summary: dict) -> dict | None:
             "run_count": 0,
             "avg_interval_1000": None,
             "avg_fps": None,
+            "species_measure": None,
             "total_species": None,
             "max_species": None,
             "max_frames": None,
@@ -316,12 +312,14 @@ def _running_master_metrics(summary: dict) -> dict | None:
 
     avg_interval = (interval_sum / interval_count) if interval_count > 0 else None
     avg_fps = (1000.0 / avg_interval) if (avg_interval is not None and avg_interval > 0) else None
+    species_measure = float(total_species) if has_species else max_species
 
     return {
         "master_run_num": master_run_num,
         "run_count": int(len(run_dirs)),
         "avg_interval_1000": avg_interval,
         "avg_fps": avg_fps,
+        "species_measure": species_measure,
         "total_species": (float(total_species) if has_species else None),
         "max_species": max_species,
         "max_frames": max_frames,
@@ -365,6 +363,8 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         now_ts=now_ts,
         is_running=(status == "running"),
     )
+    progress_pct = (float(done) / float(total) * 100.0) if total > 0 else None
+    species_threshold = _safe_int(meta.get("species_threshold"), 0)
 
     last_step = None
     valid_steps: list[dict] = []
@@ -381,6 +381,8 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         "status": status,
         "done": int(done),
         "total": int(total),
+        "progress_pct": progress_pct,
+        "species_threshold": max(0, int(species_threshold)),
         "counts": counts,
         "elapsed_s": float(elapsed),
         "remaining_s": prediction.get("remaining_s"),
@@ -402,10 +404,16 @@ def _print_snapshot(summary: dict, final: bool = False) -> None:
     no_master = _safe_int(counts.get("no_master"), 0)
     aborted = _safe_int(counts.get("aborted"), 0)
 
+    done = _safe_int(summary.get("done"), 0)
+    total = _safe_int(summary.get("total"), 0)
+    progress_pct = _safe_float(summary.get("progress_pct"))
+    progress_text = f"{done}/{total}"
+    if progress_pct is not None:
+        progress_text = f"{progress_text} ({progress_pct:.2f}%)"
     print(
         f"[{ts}] [{phase}] hub_{summary.get('hub_idx')} "
         f"status={summary.get('status')} "
-        f"progress={summary.get('done')}/{summary.get('total')} "
+        f"progress={progress_text} "
         f"ok={ok} failed={failed} stopped={stopped} no_master={no_master} aborted={aborted} "
         f"elapsed={_format_duration(_safe_float(summary.get('elapsed_s')) or 0.0)}"
     )
@@ -431,9 +439,21 @@ def _print_snapshot(summary: dict, final: bool = False) -> None:
             avg_fps = _safe_float(running_metrics.get("avg_fps"))
             total_species = _safe_float(running_metrics.get("total_species"))
             max_species = _safe_float(running_metrics.get("max_species"))
+            species_measure = _safe_float(running_metrics.get("species_measure"))
+            species_threshold = _safe_int(summary.get("species_threshold"), 0)
             max_frames = _safe_float(running_metrics.get("max_frames"))
             species_text = f"{total_species:.1f}" if total_species is not None else "--"
             species_max_text = f"{max_species:.1f}" if max_species is not None else "--"
+            if species_threshold > 0:
+                if species_measure is not None:
+                    species_progress = (
+                        f"{species_measure:.1f}/{species_threshold} "
+                        f"({(100.0 * float(species_measure) / float(species_threshold)):.2f}%)"
+                    )
+                else:
+                    species_progress = f"--/{species_threshold}"
+            else:
+                species_progress = "--"
             frames_text = f"{max_frames:.0f}" if max_frames is not None else "--"
             if master_num is None:
                 master_text = "master=--"
@@ -445,6 +465,7 @@ def _print_snapshot(summary: dict, final: bool = False) -> None:
                 perf = "avg_1000_iter=-- avg_fps=--"
             print(
                 f"  running {master_text} sims={run_count} {perf} "
+                f"species_progress={species_progress} "
                 f"species_total={species_text} species_max={species_max_text} frames_max={frames_text}"
             )
 
