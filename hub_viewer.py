@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 
+import hub_loading_pool as hlp
 import hub_runner as hr
 from settings_manager import load_settings
 
@@ -29,6 +30,7 @@ _SIM_COLORS = [
 
 _TIMELINE_MAX_SNAPSHOTS_PER_RUN = 24
 _BACKGROUND_MODEL_UPDATE_EVERY_ROWS = 12
+_HUB_LOADING_WORKERS = 6
 
 
 def _parse_args() -> argparse.Namespace:
@@ -653,15 +655,26 @@ class HubViewer:
         self.table_scroll = 0.0
         self.table_row_h = 24
         self.timeline_cache = {}
+        self._loading_pool = hlp.HubLoadingPool(workers=_HUB_LOADING_WORKERS)
         self._loader_thread = None
         self._loader_stop_event = threading.Event()
         self._loader_updates = queue.SimpleQueue()
         self._loader_token = 0
         self._loader_active = False
         self._loader_total_steps = 1
-        self._loader_done_steps = 0
+        self._loader_done_steps = 1
         self._loader_status = ""
         self._loader_error = None
+        self._loader_rows_total = 1
+        self._loader_rows_done = 1
+        self._loader_rows_status = ""
+        self._loader_rows_active = False
+        self._loader_rows_started_at = None
+        self._loader_timeline_total = 1
+        self._loader_timeline_done = 1
+        self._loader_timeline_status = ""
+        self._loader_timeline_active = False
+        self._loader_timeline_started_at = None
         self._selected_loader_thread = None
         self._selected_loader_stop_event = threading.Event()
         self._selected_loader_updates = queue.SimpleQueue()
@@ -669,6 +682,8 @@ class HubViewer:
         self._selected_row_loading_idx = None
         self._selected_row_loading_status = ""
         self._selected_row_loader_error = None
+        self._selected_row_loading_started_at = None
+        self._selected_row_load_avg_seconds = None
         self._master_refresh_thread = None
         self._master_refresh_stop_event = threading.Event()
         self._master_refresh_updates = queue.SimpleQueue()
@@ -678,6 +693,7 @@ class HubViewer:
         self._master_refresh_done_steps = 1
         self._master_refresh_status = ""
         self._master_refresh_error = None
+        self._master_refresh_started_at = None
         self._fit_cache = {}
         self.graph_modes = [
             "normal",
@@ -718,6 +734,7 @@ class HubViewer:
         self.timeline_frame_count = 101
         self.timeline_play_frames_per_sec = 12.0
         self.range_top_n = 80
+        self._range_top_n_auto_all = True
         self.range_top_n_min = 1
         self.range_top_n_max = 1
         self.env_global_min = 0.0
@@ -778,6 +795,8 @@ class HubViewer:
             self.range_top_n_min,
             min(int(self.range_top_n), int(self.range_top_n_max)),
         )
+        if bool(self._range_top_n_auto_all):
+            self.range_top_n = int(self.range_top_n_max)
         env_values = [
             float(row.get("env_rate"))
             for row in self.rows
@@ -824,9 +843,18 @@ class HubViewer:
             if wait:
                 self._loader_thread.join(timeout=2.0)
         self._loader_active = False
+        self._loader_rows_active = False
+        self._loader_timeline_active = False
+        if not self._loader_error:
+            self._loader_rows_done = max(1, int(self._loader_rows_total))
+            self._loader_timeline_done = max(1, int(self._loader_timeline_total))
+            self._loader_done_steps = max(1, int(self._loader_total_steps))
+        self._loader_rows_started_at = None
+        self._loader_timeline_started_at = None
 
     def _start_background_loader(self, rows_seed: list[dict]) -> None:
         total_rows = len(rows_seed)
+        now_ts = float(time.time())
         self._loader_token += 1
         token = int(self._loader_token)
         self._loader_stop_event = threading.Event()
@@ -834,9 +862,26 @@ class HubViewer:
         self._loader_total_steps = max(1, int(total_rows) * 2)
         self._loader_done_steps = 0
         self._loader_error = None
-        self._loader_status = f"Loading simulation rows: 0/{total_rows}"
+        self._loader_rows_total = max(1, int(total_rows))
+        self._loader_rows_done = 0 if total_rows > 0 else 1
+        self._loader_rows_status = f"Loading simulation rows: 0/{total_rows}"
+        self._loader_rows_active = bool(total_rows > 0)
+        self._loader_rows_started_at = (now_ts if total_rows > 0 else None)
+        self._loader_timeline_total = max(1, int(total_rows))
+        self._loader_timeline_done = 0 if total_rows > 0 else 1
+        self._loader_timeline_status = (
+            f"Loading timeline cache: 0/{total_rows}" if total_rows > 0 else "Timeline cache loaded"
+        )
+        self._loader_timeline_active = bool(total_rows > 0)
+        self._loader_timeline_started_at = None
+        self._loader_status = self._loader_rows_status
         self._loader_active = bool(total_rows > 0)
         if total_rows <= 0:
+            self._loader_total_steps = 1
+            self._loader_done_steps = 1
+            self._loader_status = "Loaded 100%"
+            self._loader_rows_started_at = None
+            self._loader_timeline_started_at = None
             return
         self._loader_thread = threading.Thread(
             target=self._background_loader_worker,
@@ -855,50 +900,69 @@ class HubViewer:
         try:
             loaded_rows = [dict(row) for row in rows_seed]
             total_rows = len(loaded_rows)
-            total_steps = max(1, total_rows * 2)
+            row_done = 0
+            timeline_done = 0
 
-            for idx in range(total_rows):
+            def _row_task(_idx: int, row_seed: dict) -> dict:
+                row = dict(row_seed)
+                _refresh_row_from_disk(row, recompute_fit=False)
+                return row
+
+            for idx, row in self._loading_pool.run_indexed(
+                loaded_rows,
+                _row_task,
+                stop_event=stop_event,
+            ):
                 if stop_event.is_set():
                     return
-                row = dict(loaded_rows[idx])
-                _refresh_row_from_disk(row, recompute_fit=False)
-                loaded_rows[idx] = row
+                loaded_rows[int(idx)] = row
+                row_done += 1
                 self._loader_updates.put(("row", token, int(idx), row))
                 self._loader_updates.put(
                     (
-                        "progress",
+                        "progress_rows",
                         token,
-                        int(idx + 1),
-                        int(total_steps),
-                        f"Loading simulation rows: {idx + 1}/{total_rows}",
+                        int(row_done),
+                        int(total_rows),
+                        f"Loading simulation rows: {row_done}/{total_rows}",
                     )
                 )
                 if (
-                    (idx + 1) == 1
-                    or ((idx + 1) % int(_BACKGROUND_MODEL_UPDATE_EVERY_ROWS) == 0)
-                    or ((idx + 1) == total_rows)
+                    row_done == 1
+                    or (row_done % int(_BACKGROUND_MODEL_UPDATE_EVERY_ROWS) == 0)
+                    or (row_done == total_rows)
                 ):
                     graph_points = _compute_hub_graph_points(loaded_rows, include_apex_fallback=True)
                     fit_report = hr._fit_hub_models_from_rows(loaded_rows)
                     best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
                     self._loader_updates.put(("models", token, graph_points, fit_report, best_fit))
 
-            for idx in range(total_rows):
+            if stop_event.is_set():
+                return
+
+            def _timeline_task(_idx: int, row: dict):
+                key = self._timeline_cache_key_for_row(row)
+                payload = self._build_timeline_payload_for_row(row) if key is not None else None
+                return key, payload
+
+            for _, timeline_result in self._loading_pool.run_indexed(
+                loaded_rows,
+                _timeline_task,
+                stop_event=stop_event,
+            ):
                 if stop_event.is_set():
                     return
-                row = loaded_rows[idx]
-                key = self._timeline_cache_key_for_row(row)
-                if key is not None:
-                    payload = self._build_timeline_payload_for_row(row)
+                timeline_done += 1
+                key, payload = timeline_result
+                if key is not None and isinstance(payload, dict):
                     self._loader_updates.put(("timeline", token, key, payload))
-                step_done = total_rows + idx + 1
                 self._loader_updates.put(
                     (
-                        "progress",
+                        "progress_timeline",
                         token,
-                        int(step_done),
-                        int(total_steps),
-                        f"Loading timeline cache: {idx + 1}/{total_rows}",
+                        int(timeline_done),
+                        int(total_rows),
+                        f"Loading timeline cache: {timeline_done}/{total_rows}",
                     )
                 )
 
@@ -906,7 +970,7 @@ class HubViewer:
             fit_report = hr._fit_hub_models_from_rows(loaded_rows)
             best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
             self._loader_updates.put(("models", token, graph_points, fit_report, best_fit))
-            self._loader_updates.put(("done", token, int(total_steps), int(total_steps), "Loaded 100%"))
+            self._loader_updates.put(("done", token, int(total_rows), int(total_rows), "Loaded 100%"))
         except Exception as exc:
             self._loader_updates.put(("error", token, str(exc)))
 
@@ -946,26 +1010,96 @@ class HubViewer:
                     self.hub_fit_report = fit_report
                     self.hub_best_fit = best_fit if isinstance(best_fit, dict) else None
                 self._fit_cache.clear()
-            elif event == "progress" and len(item) >= 5:
-                self._loader_done_steps = max(0, int(item[2]))
-                self._loader_total_steps = max(1, int(item[3]))
-                self._loader_status = str(item[4])
+            elif event == "progress_rows" and len(item) >= 5:
+                if not hr._is_number(self._loader_rows_started_at):
+                    self._loader_rows_started_at = float(time.time())
+                self._loader_rows_done = max(0, int(item[2]))
+                self._loader_rows_total = max(1, int(item[3]))
+                self._loader_rows_status = str(item[4])
+                if self._loader_rows_done >= self._loader_rows_total:
+                    self._loader_rows_active = False
+                self._loader_status = self._loader_rows_status
+            elif event == "progress_timeline" and len(item) >= 5:
+                if not hr._is_number(self._loader_timeline_started_at):
+                    self._loader_timeline_started_at = float(time.time())
+                self._loader_timeline_done = max(0, int(item[2]))
+                self._loader_timeline_total = max(1, int(item[3]))
+                self._loader_timeline_status = str(item[4])
+                if self._loader_timeline_done >= self._loader_timeline_total:
+                    self._loader_timeline_active = False
+                self._loader_status = self._loader_timeline_status
             elif event == "done" and len(item) >= 5:
-                self._loader_done_steps = max(0, int(item[2]))
-                self._loader_total_steps = max(1, int(item[3]))
+                self._loader_rows_done = max(1, int(self._loader_rows_total))
+                self._loader_timeline_done = max(1, int(self._loader_timeline_total))
+                self._loader_rows_active = False
+                self._loader_timeline_active = False
                 self._loader_status = str(item[4])
                 self._loader_active = False
+                self._loader_rows_started_at = None
+                self._loader_timeline_started_at = None
                 rows_changed = True
             elif event == "error" and len(item) >= 3:
                 self._loader_error = str(item[2])
                 self._loader_status = "Background loading failed"
+                self._loader_rows_status = self._loader_status
+                self._loader_timeline_status = self._loader_status
+                self._loader_rows_active = False
+                self._loader_timeline_active = False
                 self._loader_active = False
+                self._loader_rows_started_at = None
+                self._loader_timeline_started_at = None
+            self._loader_total_steps = max(1, int(self._loader_rows_total) + int(self._loader_timeline_total))
+            self._loader_done_steps = max(0, int(self._loader_rows_done) + int(self._loader_timeline_done))
+            if self._loader_done_steps > self._loader_total_steps:
+                self._loader_done_steps = int(self._loader_total_steps)
         if rows_changed:
             self._refresh_row_ui_state()
 
     def _loader_progress_ratio(self) -> float:
         den = max(1, int(self._loader_total_steps))
         return max(0.0, min(1.0, float(self._loader_done_steps) / float(den)))
+
+    def _eta_seconds(self, done_steps: int, total_steps: int, started_at: float | None) -> float | None:
+        done = max(0, int(done_steps))
+        total = max(1, int(total_steps))
+        if done >= total:
+            return 0.0
+        if done <= 0 or (not hr._is_number(started_at)):
+            return None
+        elapsed = max(0.0, float(time.time()) - float(started_at))
+        if elapsed < 0.2:
+            return None
+        rate = float(done) / elapsed
+        if rate <= 1e-9:
+            return None
+        remaining = float(total - done) / rate
+        if (not math.isfinite(remaining)) or remaining < 0:
+            return None
+        return float(remaining)
+
+    def _eta_text(self, done_steps: int, total_steps: int, started_at: float | None) -> str:
+        eta_remaining = self._eta_seconds(done_steps, total_steps, started_at)
+        if not hr._is_number(eta_remaining):
+            return "Time remaining --:--"
+        return f"Time remaining {hr._fmt_duration(eta_remaining)}"
+
+    def _selected_row_eta_text(self) -> str:
+        if not hr._is_number(self._selected_row_load_avg_seconds):
+            return "Time remaining --:--"
+        avg_seconds = max(0.0, float(self._selected_row_load_avg_seconds))
+        if not hr._is_number(self._selected_row_loading_started_at):
+            return f"Time remaining {hr._fmt_duration(avg_seconds)}"
+        elapsed = max(0.0, float(time.time()) - float(self._selected_row_loading_started_at))
+        remaining = max(0.0, avg_seconds - elapsed)
+        return f"Time remaining {hr._fmt_duration(remaining)}"
+
+    def _loader_rows_progress_ratio(self) -> float:
+        den = max(1, int(self._loader_rows_total))
+        return max(0.0, min(1.0, float(self._loader_rows_done) / float(den)))
+
+    def _loader_timeline_progress_ratio(self) -> float:
+        den = max(1, int(self._loader_timeline_total))
+        return max(0.0, min(1.0, float(self._loader_timeline_done) / float(den)))
 
     def _master_refresh_progress_ratio(self) -> float:
         den = max(1, int(self._master_refresh_total_steps))
@@ -981,6 +1115,7 @@ class HubViewer:
         self._master_refresh_active = False
         if not self._master_refresh_error:
             self._master_refresh_done_steps = max(1, int(self._master_refresh_total_steps))
+        self._master_refresh_started_at = None
 
     def _master_refresh_worker(self, token: int, stop_event: threading.Event) -> None:
         try:
@@ -997,19 +1132,29 @@ class HubViewer:
                     f"Refreshing master fits: 0/{total_rows}",
                 )
             )
-            for idx in range(total_rows):
+            refresh_done = 0
+
+            def _refresh_row_task(_idx: int, row_seed: dict) -> dict:
+                row = dict(row_seed)
+                _refresh_row_from_disk(row, recompute_fit=True)
+                return row
+
+            for idx, row in self._loading_pool.run_indexed(
+                rows,
+                _refresh_row_task,
+                stop_event=stop_event,
+            ):
                 if stop_event.is_set():
                     return
-                row = dict(rows[idx])
-                _refresh_row_from_disk(row, recompute_fit=True)
-                rows[idx] = row
+                rows[int(idx)] = row
+                refresh_done += 1
                 self._master_refresh_updates.put(
                     (
                         "progress",
                         int(token),
-                        int(idx + 1),
+                        int(refresh_done),
                         int(total_steps),
-                        f"Refreshing master fits: {idx + 1}/{total_rows}",
+                        f"Refreshing master fits: {refresh_done}/{total_rows}",
                     )
                 )
 
@@ -1127,6 +1272,7 @@ class HubViewer:
         self._master_refresh_status = "Preparing full refresh..."
         self._master_refresh_error = None
         self._master_refresh_active = True
+        self._master_refresh_started_at = float(time.time())
         self._set_export_status(True, "Refreshing all master fits in background...")
         self._master_refresh_thread = threading.Thread(
             target=self._master_refresh_worker,
@@ -1151,6 +1297,8 @@ class HubViewer:
             if token != int(self._master_refresh_token):
                 continue
             if event == "progress" and len(item) >= 5:
+                if not hr._is_number(self._master_refresh_started_at):
+                    self._master_refresh_started_at = float(time.time())
                 self._master_refresh_done_steps = max(0, int(item[2]))
                 self._master_refresh_total_steps = max(1, int(item[3]))
                 self._master_refresh_status = str(item[4])
@@ -1180,11 +1328,13 @@ class HubViewer:
                 self._master_refresh_status = "Refresh complete"
                 self._master_refresh_error = None
                 self._master_refresh_active = False
+                self._master_refresh_started_at = None
                 self._set_export_status(len(issues) == 0, summary)
             elif event == "error" and len(item) >= 3:
                 self._master_refresh_error = str(item[2])
                 self._master_refresh_status = "Refresh failed"
                 self._master_refresh_active = False
+                self._master_refresh_started_at = None
                 self._set_export_status(False, f"Refresh failed ({self._master_refresh_error})")
 
     def _stop_selected_loader(self, wait: bool = False) -> None:
@@ -1194,6 +1344,7 @@ class HubViewer:
                 self._selected_loader_thread.join(timeout=1.5)
         self._selected_row_loading_idx = None
         self._selected_row_loading_status = ""
+        self._selected_row_loading_started_at = None
 
     def _row_needs_full_load(self, row: dict | None) -> bool:
         if not isinstance(row, dict):
@@ -1242,6 +1393,7 @@ class HubViewer:
         self._selected_row_loading_idx = int(row_idx)
         self._selected_row_loader_error = None
         self._selected_row_loading_status = f"Loading selected master row {int(row_idx) + 1}..."
+        self._selected_row_loading_started_at = float(time.time())
         seed = dict(row)
         self._selected_loader_thread = threading.Thread(
             target=self._selected_row_loader_worker,
@@ -1276,9 +1428,18 @@ class HubViewer:
                     changed = True
                 if key is not None and isinstance(payload, dict):
                     self.timeline_cache[key] = payload
+                if hr._is_number(self._selected_row_loading_started_at):
+                    elapsed = max(0.0, float(time.time()) - float(self._selected_row_loading_started_at))
+                    if elapsed > 0.05:
+                        if hr._is_number(self._selected_row_load_avg_seconds):
+                            prev = float(self._selected_row_load_avg_seconds)
+                            self._selected_row_load_avg_seconds = (0.65 * prev) + (0.35 * elapsed)
+                        else:
+                            self._selected_row_load_avg_seconds = float(elapsed)
                 self._selected_row_loading_status = ""
                 if self._selected_row_loading_idx == row_idx:
                     self._selected_row_loading_idx = None
+                self._selected_row_loading_started_at = None
             elif event == "error" and len(item) >= 4:
                 token = int(item[1])
                 row_idx = int(item[2])
@@ -1290,6 +1451,7 @@ class HubViewer:
                     self.rows[row_idx]["_full_loaded"] = True
                 if self._selected_row_loading_idx == row_idx:
                     self._selected_row_loading_idx = None
+                self._selected_row_loading_started_at = None
         if changed:
             self._rebuild_graph_models()
             self._refresh_row_ui_state()
@@ -1309,19 +1471,44 @@ class HubViewer:
         self.timeline_cache.clear()
         self._rebuild_graph_models()
         if force_full or (not run_in_background):
-            self.rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=True)
+            seed_rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=False)
+            loaded_rows = [dict(row) for row in seed_rows]
+
+            def _full_row_task(_idx: int, row_seed: dict) -> dict:
+                row = dict(row_seed)
+                _refresh_row_from_disk(row, recompute_fit=True)
+                return row
+
+            for idx, row in self._loading_pool.run_indexed(loaded_rows, _full_row_task):
+                loaded_rows[int(idx)] = row
+            self.rows = loaded_rows
             self.timeline_cache.clear()
-            for row in self.rows:
+
+            def _full_timeline_task(_idx: int, row: dict):
                 key = self._timeline_cache_key_for_row(row)
-                if key is None:
-                    continue
-                self.timeline_cache[key] = self._build_timeline_payload_for_row(row)
+                payload = self._build_timeline_payload_for_row(row) if key is not None else None
+                return key, payload
+
+            for _, timeline_result in self._loading_pool.run_indexed(self.rows, _full_timeline_task):
+                key, payload = timeline_result
+                if key is not None and isinstance(payload, dict):
+                    self.timeline_cache[key] = payload
             self._rebuild_graph_models()
             self._loader_total_steps = 1
             self._loader_done_steps = 1
             self._loader_status = "Loaded 100%"
             self._loader_error = None
             self._loader_active = False
+            self._loader_rows_total = 1
+            self._loader_rows_done = 1
+            self._loader_rows_status = "Simulation rows loaded"
+            self._loader_rows_active = False
+            self._loader_rows_started_at = None
+            self._loader_timeline_total = 1
+            self._loader_timeline_done = 1
+            self._loader_timeline_status = "Timeline cache loaded"
+            self._loader_timeline_active = False
+            self._loader_timeline_started_at = None
         else:
             self._start_background_loader(self.rows)
         self._refresh_row_ui_state()
@@ -1516,11 +1703,17 @@ class HubViewer:
         cloud_series = []
         used_snapshots = False
         used_fallback = False
-        for idx, run_num in enumerate(sorted(run_dirs.keys())):
+        run_nums_sorted = sorted(run_dirs.keys())
+        run_results: dict[int, dict] = {}
+
+        def _timeline_run_task(_idx: int, run_num: int) -> dict:
+            run_num = int(run_num)
             run_dir = run_dirs[int(run_num)]
             snap_files = snapshot_files_by_run.get(int(run_num), [])
             norm_points = []
             norm_cloud_samples = []
+            used_snapshots_local = False
+            used_fallback_local = False
             if snap_files:
                 frame_entries = []
                 for path in snap_files:
@@ -1587,13 +1780,13 @@ class HubViewer:
                                 norm_val = float(i) / float(den)
                                 norm_cloud_samples.append({"norm": float(norm_val), "points": list(item.get("points", []))})
                 if norm_points:
-                    used_snapshots = True
+                    used_snapshots_local = True
             if not norm_points:
                 parsed_points = _run_parsed_arithmetic_points(run_dir, int(run_num))
                 apex_x, _ = _apex_from_points(parsed_points)
                 if hr._is_number(apex_x):
                     norm_points = [(0.0, float(apex_x)), (1.0, float(apex_x))]
-                    used_fallback = True
+                    used_fallback_local = True
                 numeric_parsed = []
                 for pair in parsed_points:
                     if not isinstance(pair, (tuple, list)) or len(pair) < 2:
@@ -1606,7 +1799,33 @@ class HubViewer:
                         {"norm": 0.0, "points": list(numeric_parsed)},
                         {"norm": 1.0, "points": list(numeric_parsed)},
                     ]
-            if not norm_points:
+            return {
+                "run_num": int(run_num),
+                "norm_points": norm_points,
+                "norm_cloud_samples": norm_cloud_samples,
+                "used_snapshots": bool(used_snapshots_local),
+                "used_fallback": bool(used_fallback_local),
+            }
+
+        for _, run_payload in self._loading_pool.run_indexed(run_nums_sorted, _timeline_run_task):
+            if not isinstance(run_payload, dict):
+                continue
+            run_num = _safe_int(run_payload.get("run_num"))
+            if run_num is None:
+                continue
+            run_results[int(run_num)] = run_payload
+
+        for idx, run_num in enumerate(run_nums_sorted):
+            run_payload = run_results.get(int(run_num))
+            if not isinstance(run_payload, dict):
+                continue
+            norm_points = run_payload.get("norm_points")
+            norm_cloud_samples = run_payload.get("norm_cloud_samples")
+            if bool(run_payload.get("used_snapshots")):
+                used_snapshots = True
+            if bool(run_payload.get("used_fallback")):
+                used_fallback = True
+            if not isinstance(norm_points, list) or not norm_points:
                 continue
             all_points.extend(norm_points)
             series.append(
@@ -1616,7 +1835,7 @@ class HubViewer:
                     "points": norm_points,
                 }
             )
-            if norm_cloud_samples:
+            if isinstance(norm_cloud_samples, list) and norm_cloud_samples:
                 cloud_series.append(
                     {
                         "run_num": int(run_num),
@@ -2786,6 +3005,7 @@ class HubViewer:
                 and int(row_idx) == int(self._selected_row_loading_idx)
             ):
                 text = self._selected_row_loading_status or "Loading selected master points..."
+                text = f"{text}  {self._selected_row_eta_text()}"
             else:
                 text = "Waiting for selected master points..."
             msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
@@ -2807,6 +3027,7 @@ class HubViewer:
                 and int(row_idx) == int(self._selected_row_loading_idx)
             ):
                 text = self._selected_row_loading_status or "Loading selected master points..."
+                text = f"{text}  {self._selected_row_eta_text()}"
                 msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
             else:
                 msg = self.small.render("No points available.", True, (170, 170, 170))
@@ -3110,10 +3331,33 @@ class HubViewer:
         if not graph_points:
             msg = self.small.render("No timeline data available across hub.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 10, rect.y + 28))
-            if self._loader_active:
-                pending = max(0, int(self._loader_total_steps) - int(self._loader_done_steps))
+            if self._loader_rows_active or self._loader_timeline_active:
+                if self._loader_timeline_active:
+                    pending = max(0, int(self._loader_timeline_total) - int(self._loader_timeline_done))
+                    status = self._loader_timeline_status or "Loading timeline cache..."
+                    eta_text = self._eta_text(
+                        self._loader_timeline_done,
+                        self._loader_timeline_total,
+                        self._loader_timeline_started_at,
+                    )
+                    note_text = (
+                        f"Timeline loading: {self._loader_timeline_progress_ratio() * 100.0:.1f}% "
+                        f"({pending} pending)  {eta_text}  {status}"
+                    )
+                else:
+                    pending = max(0, int(self._loader_rows_total) - int(self._loader_rows_done))
+                    status = self._loader_rows_status or "Loading simulation rows..."
+                    eta_text = self._eta_text(
+                        self._loader_rows_done,
+                        self._loader_rows_total,
+                        self._loader_rows_started_at,
+                    )
+                    note_text = (
+                        f"Simulation loading: {self._loader_rows_progress_ratio() * 100.0:.1f}% "
+                        f"({pending} pending)  {eta_text}  {status}"
+                    )
                 note = self.tiny.render(
-                    f"Background loading in progress: {self._loader_progress_ratio() * 100.0:.1f}% ({pending} steps pending)",
+                    hr._fit_text(self.tiny, note_text, rect.width - 20),
                     True,
                     (158, 172, 196),
                 )
@@ -3755,6 +3999,7 @@ class HubViewer:
     def _set_range_slider_from_mouse(self, mx: int) -> None:
         if self._range_slider_rect is None:
             return
+        self._range_top_n_auto_all = False
         if self.range_top_n_max <= self.range_top_n_min:
             self.range_top_n = int(self.range_top_n_min)
             return
@@ -3912,9 +4157,10 @@ class HubViewer:
         )
         self.screen.blit(env_label, (env_slider_x, env_slider_y - 18))
 
-    def _draw_loading_bar(self, x: int, y: int, width: int, height: int) -> None:
+    def _draw_rows_loading_bar(self, x: int, y: int, width: int, height: int) -> None:
         pg = self.pg
-        ratio = self._loader_progress_ratio()
+        ratio = self._loader_rows_progress_ratio()
+        eta_text = self._eta_text(self._loader_rows_done, self._loader_rows_total, self._loader_rows_started_at)
         filled_w = int(max(0.0, min(1.0, ratio)) * float(max(1, width)))
         track = pg.Rect(int(x), int(y), int(width), int(height))
         fill = pg.Rect(int(x), int(y), int(filled_w), int(height))
@@ -3927,9 +4173,43 @@ class HubViewer:
             pg.draw.rect(self.screen, fill_color, fill)
         pg.draw.rect(self.screen, (96, 108, 126), track, 1)
         percent_text = f"{ratio * 100.0:.1f}%"
-        detail_text = self._loader_status if self._loader_status else "Loading hub data in background..."
-        label = f"Background loading: {percent_text} ({self._loader_done_steps}/{self._loader_total_steps})  {detail_text}"
+        detail_text = self._loader_rows_status if self._loader_rows_status else "Loading simulation rows..."
+        label = (
+            f"Simulation loading: {percent_text} "
+            f"({self._loader_rows_done}/{self._loader_rows_total})  {eta_text}  {detail_text}"
+        )
         color = (230, 140, 140) if self._loader_error else (188, 206, 232)
+        self.screen.blit(
+            self.tiny.render(hr._fit_text(self.tiny, label, max(32, width)), True, color),
+            (int(x), int(y) - 16),
+        )
+
+    def _draw_timeline_loading_bar(self, x: int, y: int, width: int, height: int) -> None:
+        pg = self.pg
+        ratio = self._loader_timeline_progress_ratio()
+        eta_text = self._eta_text(
+            self._loader_timeline_done,
+            self._loader_timeline_total,
+            self._loader_timeline_started_at,
+        )
+        filled_w = int(max(0.0, min(1.0, ratio)) * float(max(1, width)))
+        track = pg.Rect(int(x), int(y), int(width), int(height))
+        fill = pg.Rect(int(x), int(y), int(filled_w), int(height))
+        pg.draw.rect(self.screen, (34, 38, 46), track)
+        if self._loader_error:
+            fill_color = (196, 82, 82)
+        else:
+            fill_color = (90, 182, 176)
+        if fill.width > 0:
+            pg.draw.rect(self.screen, fill_color, fill)
+        pg.draw.rect(self.screen, (96, 108, 126), track, 1)
+        percent_text = f"{ratio * 100.0:.1f}%"
+        detail_text = self._loader_timeline_status if self._loader_timeline_status else "Loading timeline cache..."
+        label = (
+            f"Timeline loading: {percent_text} "
+            f"({self._loader_timeline_done}/{self._loader_timeline_total})  {eta_text}  {detail_text}"
+        )
+        color = (230, 140, 140) if self._loader_error else (178, 224, 220)
         self.screen.blit(
             self.tiny.render(hr._fit_text(self.tiny, label, max(32, width)), True, color),
             (int(x), int(y) - 16),
@@ -3938,6 +4218,11 @@ class HubViewer:
     def _draw_master_refresh_bar(self, x: int, y: int, width: int, height: int) -> None:
         pg = self.pg
         ratio = self._master_refresh_progress_ratio()
+        eta_text = self._eta_text(
+            self._master_refresh_done_steps,
+            self._master_refresh_total_steps,
+            self._master_refresh_started_at,
+        )
         filled_w = int(max(0.0, min(1.0, ratio)) * float(max(1, width)))
         track = pg.Rect(int(x), int(y), int(width), int(height))
         fill = pg.Rect(int(x), int(y), int(filled_w), int(height))
@@ -3950,7 +4235,7 @@ class HubViewer:
         detail_text = self._master_refresh_status if self._master_refresh_status else "Refreshing all master fits..."
         label = (
             f"Refresh all master fits: {percent_text} "
-            f"({self._master_refresh_done_steps}/{self._master_refresh_total_steps})  {detail_text}"
+            f"({self._master_refresh_done_steps}/{self._master_refresh_total_steps})  {eta_text}  {detail_text}"
         )
         color = (230, 140, 140) if self._master_refresh_error else (186, 224, 178)
         self.screen.blit(
@@ -3965,17 +4250,23 @@ class HubViewer:
 
         margin = 16
         gap = 12
-        show_loader = bool(
+        show_loader_rows = bool(
             self._loader_error
-            or self._loader_active
-            or (int(self._loader_done_steps) < int(self._loader_total_steps))
+            or self._loader_rows_active
+            or (int(self._loader_rows_done) < int(self._loader_rows_total))
+        )
+        show_loader_timeline = bool(
+            self._loader_error
+            or self._loader_timeline_active
+            or (int(self._loader_timeline_done) < int(self._loader_timeline_total))
         )
         show_refresh = bool(
             self._master_refresh_error
             or self._master_refresh_active
             or (int(self._master_refresh_done_steps) < int(self._master_refresh_total_steps))
         )
-        top_y = 120 if (show_loader and show_refresh) else (96 if (show_loader or show_refresh) else 72)
+        status_bar_count = int(show_loader_rows) + int(show_loader_timeline) + int(show_refresh)
+        top_y = 72 + (24 * int(status_bar_count))
         left_w = 486
         left_rect = pg.Rect(margin, top_y, left_w, self.window_h - top_y - margin)
 
@@ -3996,6 +4287,15 @@ class HubViewer:
         complete_count = len([r for r in self.rows if str(r.get("status", "")) == "ok"])
         title = f"HUB VIEWER {self.hub_dir.name}    status: {hub_status.upper()}    sims: {complete_count}/{len(self.rows)}"
         self.screen.blit(self.font.render(title, True, (226, 226, 226)), (margin, 14))
+        fps_val = self.clock.get_fps()
+        if not hr._is_number(fps_val) or (not math.isfinite(float(fps_val))):
+            fps_val = 0.0
+        fps_text = f"FPS: {float(fps_val):.1f}"
+        fps_surface = self.tiny.render(fps_text, True, (168, 176, 191))
+        self.screen.blit(
+            fps_surface,
+            (self.window_w - margin - fps_surface.get_width(), 18),
+        )
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
             "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
@@ -4005,11 +4305,16 @@ class HubViewer:
             status_color = (172, 226, 178) if self._export_status_ok else (255, 164, 164)
             status_text = hr._fit_text(self.tiny, self.export_status, self.window_w - (2 * margin))
             self.screen.blit(self.tiny.render(status_text, True, status_color), (margin, 58))
-        if include_status and show_loader:
-            self._draw_loading_bar(margin, 76, self.window_w - (2 * margin), 12)
-        if include_status and show_refresh:
-            refresh_y = 92 if show_loader else 76
-            self._draw_master_refresh_bar(margin, refresh_y, self.window_w - (2 * margin), 12)
+        if include_status:
+            bar_index = 0
+            if show_loader_rows:
+                self._draw_rows_loading_bar(margin, 76 + (16 * bar_index), self.window_w - (2 * margin), 12)
+                bar_index += 1
+            if show_loader_timeline:
+                self._draw_timeline_loading_bar(margin, 76 + (16 * bar_index), self.window_w - (2 * margin), 12)
+                bar_index += 1
+            if show_refresh:
+                self._draw_master_refresh_bar(margin, 76 + (16 * bar_index), self.window_w - (2 * margin), 12)
 
         self._draw_table(left_rect)
         selected = self._selected_row()

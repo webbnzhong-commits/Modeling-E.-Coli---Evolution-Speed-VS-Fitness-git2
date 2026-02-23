@@ -26,6 +26,10 @@ if HAS_NUMBA:
         repro_n,
         opt_ph,
         opt_temp,
+        evo_speed,
+        target_evo_speed,
+        evo_speed_min,
+        evo_speed_max,
         ph_level,
         temp,
         ph_scale,
@@ -84,6 +88,27 @@ if HAS_NUMBA:
             if debuf < repro_debuf_min:
                 debuf = repro_debuf_min
 
+            lag = target_evo_speed - evo_speed[i]
+            if lag < 0.0:
+                lag = 0.0
+            mismatch = 0.5 * (ph_effect + temp_effect)
+            if mismatch < 0.0:
+                mismatch = 0.0
+            if mismatch > 1.0:
+                mismatch = 1.0
+            lag_penalty = 1.0 + lag * (8.0 + 6.0 * mismatch)
+
+            evo_span = evo_speed_max - evo_speed_min
+            if evo_span <= 0.0:
+                evo_span = 1e-6
+            evo_norm = (evo_speed[i] - evo_speed_min) / evo_span
+            if evo_norm < 0.0:
+                evo_norm = 0.0
+            if evo_norm > 1.0:
+                evo_norm = 1.0
+            mutational_load = 1.0 + 0.22 * (evo_norm * evo_norm)
+            debuf *= lag_penalty * mutational_load
+
             if (res_o[i] / debuf >= repro_o[i]
                 and res_c[i] / debuf >= repro_c[i]
                 and res_n[i] / debuf >= repro_n[i]):
@@ -111,6 +136,10 @@ def _fast_update_np(
     repro_n,
     opt_ph,
     opt_temp,
+    evo_speed,
+    target_evo_speed,
+    evo_speed_min,
+    evo_speed_max,
     ph_level,
     temp,
     ph_scale,
@@ -148,6 +177,17 @@ def _fast_update_np(
     ph_effect = np.minimum(1.0, (np.abs(opt_ph - ph_level) / ph_div) * ph_scale)
     temp_effect = np.minimum(1.0, (np.abs(opt_temp - temp) / temp_div) * temp_scale)
     debuf = np.maximum(repro_debuf_min, ph_effect * temp_effect)
+
+    lag = np.maximum(0.0, float(target_evo_speed) - evo_speed)
+    mismatch = np.clip(0.5 * (ph_effect + temp_effect), 0.0, 1.0)
+    lag_penalty = 1.0 + lag * (8.0 + 6.0 * mismatch)
+
+    evo_span = float(evo_speed_max) - float(evo_speed_min)
+    if evo_span <= 0.0:
+        evo_span = 1e-6
+    evo_norm = np.clip((evo_speed - float(evo_speed_min)) / evo_span, 0.0, 1.0)
+    mutational_load = 1.0 + 0.22 * np.square(evo_norm)
+    debuf = debuf * lag_penalty * mutational_load
 
     reproduce = (
         (res_o / debuf >= repro_o)

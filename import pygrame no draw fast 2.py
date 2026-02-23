@@ -117,7 +117,7 @@ while running:
     
 
 
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
+    if frame_count % _env_event_interval_frames() == 0:
         # Find the most common immune_system value among all dots
         immune_counts = Counter(dot.immune_system for dot in dots)
         if immune_counts:
@@ -171,6 +171,7 @@ while running:
             repro_n = np.array([dot.reproduction_resource["n"] for dot in dots], dtype=np.float32)
             opt_ph = np.array([dot.optimal_ph for dot in dots], dtype=np.float32)
             opt_temp = np.array([dot.optimal_temp for dot in dots], dtype=np.float32)
+            evo_speed = np.array([dot.evolution_speed for dot in dots], dtype=np.float32)
 
             dead_mask, reproduce_mask = fast_update(
                 realx,
@@ -187,6 +188,10 @@ while running:
                 repro_n,
                 opt_ph,
                 opt_temp,
+                evo_speed,
+                _target_evolution_speed_for_environment(),
+                evo_speed_range[0],
+                evo_speed_range[1],
                 phLevel,
                 temp,
                 PH_EFFECT_SCALE,
@@ -243,17 +248,17 @@ while running:
     else:
         for dot in list(dots):
             dot.update()
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
-        phLevel += random.uniform(-2, 2)
+    if frame_count % _env_event_interval_frames() == 0:
+        phLevel += _env_ph_delta()
         if phLevel < 4:
             phLevel = 4
         if phLevel > 10:
             phLevel = 10
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
+    if frame_count % _env_event_interval_frames() == 0:
         if tempDirUp:
-            temp += random.uniform(0, 1)
+            temp += _env_temp_delta()
         else:
-            temp -= random.uniform(0, 1)
+            temp -= _env_temp_delta()
         if temp > 40:
             temp = 40
             tempDirUp = False

@@ -88,6 +88,63 @@ IMMUNE_SYSTEM_QUAN_FACTOR = float(settings.get("immune_system_quan_factor", 0.15
 
 evo_speed_range = [0.05, 0.4]
 
+
+def _env_rate_for_scaling() -> float:
+    try:
+        rate = float(enviormentChangeRate)
+    except Exception:
+        rate = 0.1
+    return max(0.05, rate)
+
+
+def _env_aggression_scale() -> float:
+    # Baseline around env_rate=0.1 => scale 1.0; rises nonlinearly for higher rates.
+    rate = _env_rate_for_scaling()
+    scale = (rate / 0.1) ** 0.55
+    return max(0.7, min(5.0, float(scale)))
+
+
+def _env_event_interval_frames() -> int:
+    return max(1, int(round(500 / _env_rate_for_scaling())))
+
+
+def _env_ph_delta() -> float:
+    return random.uniform(-2.0, 2.0) * _env_aggression_scale()
+
+
+def _env_temp_delta() -> float:
+    return random.uniform(0.0, 1.0) * _env_aggression_scale()
+
+
+def _env_adaptation_pressure() -> float:
+    # 0 at mild baseline conditions, 1 near strongly volatile environments.
+    return max(0.0, min(1.0, (_env_aggression_scale() - 1.0) / 4.0))
+
+
+def _target_evolution_speed_for_environment() -> float:
+    # As environmental volatility rises, the adaptive optimum shifts toward faster evolution.
+    evo_min, evo_max = float(evo_speed_range[0]), float(evo_speed_range[1])
+    evo_span = max(1e-6, evo_max - evo_min)
+    pressure = _env_adaptation_pressure()
+    target = evo_min + (0.20 + 0.65 * pressure) * evo_span
+    return max(evo_min, min(evo_max, target))
+
+
+def _evolution_speed_selection_penalty(evolution_speed: float, ph_effect: float, temp_effect: float) -> float:
+    # Biology model:
+    # 1) adaptation lag cost when evolution speed is below the environment-dependent target
+    # 2) mutational load cost at high evolution speed (keeps the curve bell-shaped)
+    target_speed = _target_evolution_speed_for_environment()
+    lag = max(0.0, target_speed - float(evolution_speed))
+    mismatch = max(0.0, min(1.0, 0.5 * (float(ph_effect) + float(temp_effect))))
+    lag_penalty = 1.0 + lag * (8.0 + 6.0 * mismatch)
+
+    evo_min, evo_max = float(evo_speed_range[0]), float(evo_speed_range[1])
+    evo_span = max(1e-6, evo_max - evo_min)
+    evo_norm = max(0.0, min(1.0, (float(evolution_speed) - evo_min) / evo_span))
+    mutational_load = 1.0 + 0.22 * (evo_norm ** 2)
+    return lag_penalty * mutational_load
+
 SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
 ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
 SIM_FPS_PATH = os.environ.get("SIM_FPS_PATH")
@@ -331,7 +388,12 @@ class Dot:
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
         ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
         temp_effect = min(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
-        debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
+        base_debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
+        debuf = base_debuf * _evolution_speed_selection_penalty(
+            self.evolution_speed,
+            ph_effect,
+            temp_effect,
+        )
         for r in ["o", "c", "n"]:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
                 reproduce = False
@@ -383,9 +445,20 @@ class nutrients ():
     
 
     def regenerate_resources(self):
-        # Slightly vary each resource value
+        volatility = _env_aggression_scale()
+        jitter_amp = 0.1 * volatility
+
+        # Env-rate-scaled per-frame nutrient jitter.
         for r in ["o", "c", "n"]:
+            # Keep baseline drift, then add env-rate-scaled volatility.
             self.resource_pool[r] += random.uniform(-0.1, 0.1)
+            self.resource_pool[r] += random.uniform(-jitter_amp, jitter_amp)
+
+        # Occasional large nutrient shocks at higher env rates.
+        shock_prob = min(0.02 * volatility, 0.25)
+        if random.random() < shock_prob:
+            focus = random.choice(["o", "c", "n"])
+            self.resource_pool[focus] += random.uniform(-0.55, 0.55) * volatility
 
         # Prevent negative values
         for r in ["o", "c", "n"]:
@@ -399,10 +472,13 @@ class nutrients ():
 
         
 
-        # Normalize so that o + c + n ≈ 100
+        # Normalize pool composition.
         total = self.resource_pool["o"] + self.resource_pool["c"] + self.resource_pool["n"]
-        for r in ["o", "c", "n"]:
-            self.resource_pool[r] *= 1/ total
+        if total <= 1e-9:
+            self.resource_pool = {"o": 1 / 3, "c": 1 / 3, "n": 1 / 3}
+        else:
+            for r in ["o", "c", "n"]:
+                self.resource_pool[r] *= 1 / total
         '''
         if len(dots) > 300:
             self.foodAmnt -= 1
@@ -410,18 +486,24 @@ class nutrients ():
             self.foodAmnt += 1
         '''
         
+        food_step = max(1, int(round(volatility)))
         if self.foodAmnt > self.goingToAmnt:
-            self.foodAmnt -= 1
+            self.foodAmnt -= (1 + food_step)
         elif self.foodAmnt < self.goingToAmnt:
-            self.foodAmnt += 1
+            self.foodAmnt += (1 + food_step)
         else:
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
             scale = 300 / pop
 
-            low = int(7 * scale) * (1 - enviormentChangeRate/10)
-            
-            high = low * ((1 + enviormentChangeRate/10) / (1 - enviormentChangeRate/10))
+            low = int(7 * scale) * (1 - enviormentChangeRate / 10)
+            high = low * ((1 + enviormentChangeRate / 10) / max(1e-6, (1 - enviormentChangeRate / 10)))
+
+            # Widen target swings aggressively with env-rate-driven volatility.
+            center = (float(low) + float(high)) * 0.5
+            half_span = max(1.0, (float(high) - float(low)) * 0.5 * (0.75 + (0.55 * volatility)))
+            low = int(round(center - half_span))
+            high = int(round(center + half_span))
 
             # Clamp to keep targets reasonable
             low = int(max(1, min(low, 200)))
@@ -645,7 +727,16 @@ def _snapshot_arithmetic_mean(frame_count: int) -> None:
 
 def _spawn_child_from_parent(parent):
     child = Dot(parent.x, parent.y)
-    child.evolution_speed = max(0.001, parent.evolution_speed)
+    child.evolution_speed = max(evo_speed_range[0], min(evo_speed_range[1], parent.evolution_speed))
+    pressure = _env_adaptation_pressure()
+    mutation_chance = 0.20 + 0.30 * pressure
+    if random.random() < mutation_chance:
+        mutation_span = 0.004 + 0.012 * pressure
+        child.evolution_speed += random.uniform(-mutation_span, mutation_span)
+    child.evolution_speed = max(
+        evo_speed_range[0],
+        min(evo_speed_range[1], round(child.evolution_speed, 3)),
+    )
     child.size = max(1, parent.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
     child.favored_resource = parent.favored_resource
     '''
