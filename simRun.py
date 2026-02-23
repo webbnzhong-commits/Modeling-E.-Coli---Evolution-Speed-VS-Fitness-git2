@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import select
@@ -563,15 +564,105 @@ def _poll_quit_key() -> bool:
         return False
 
 
-def _make_tee_print(base_print, log_handle):
+def _format_print_text(args, kwargs) -> str:
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    if sep is None:
+        sep = " "
+    if end is None:
+        end = "\n"
+    try:
+        body = sep.join(str(arg) for arg in args)
+    except Exception:
+        body = " ".join(repr(arg) for arg in args)
+    return f"{body}{end}"
+
+
+class _HubCsvPrintLog:
+    def __init__(self) -> None:
+        self._hub_dir: Path | None = None
+        self._handle = None
+        self._writer = None
+        self._buffer: list[str] = []
+
+    def attach_hub(self, hub_dir: Path | None) -> None:
+        current = str(self._hub_dir) if self._hub_dir is not None else None
+        incoming = str(hub_dir) if hub_dir is not None else None
+        if current == incoming:
+            return
+        self.close()
+        if hub_dir is None:
+            return
+        csv_path = Path(hub_dir) / "simrun_print_log.csv"
+        try:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            is_new = (not csv_path.exists()) or csv_path.stat().st_size <= 0
+            handle = csv_path.open("a", encoding="utf-8", newline="")
+            writer = csv.writer(handle)
+            if is_new:
+                writer.writerow(["timestamp", "message"])
+                handle.flush()
+            self._hub_dir = Path(hub_dir)
+            self._handle = handle
+            self._writer = writer
+            if self._buffer:
+                pending = list(self._buffer)
+                self._buffer.clear()
+                for message in pending:
+                    self.write(message)
+        except Exception:
+            self._hub_dir = None
+            self._handle = None
+            self._writer = None
+
+    def write(self, text: str) -> None:
+        if self._writer is None or self._handle is None:
+            self._buffer.append(str(text))
+            if len(self._buffer) > 50000:
+                self._buffer = self._buffer[-50000:]
+            return
+        message = str(text).replace("\r\n", "\n").replace("\r", "\n")
+        lines = message.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+        if not lines:
+            lines = [""]
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        try:
+            for line in lines:
+                self._writer.writerow([stamp, line])
+            self._handle.flush()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.close()
+            except Exception:
+                pass
+        self._hub_dir = None
+        self._handle = None
+        self._writer = None
+
+
+def _make_tee_print(base_print, log_handle, hub_csv_log: _HubCsvPrintLog | None = None):
     def _tee_print(*args, **kwargs):
         base_print(*args, **kwargs)
         if log_handle is None:
+            pass
+        else:
+            log_kwargs = dict(kwargs)
+            log_kwargs["file"] = log_handle
+            log_kwargs["flush"] = True
+            base_print(*args, **log_kwargs)
+
+        if hub_csv_log is None:
             return
-        log_kwargs = dict(kwargs)
-        log_kwargs["file"] = log_handle
-        log_kwargs["flush"] = True
-        base_print(*args, **log_kwargs)
+        target_file = kwargs.get("file", None)
+        if target_file not in (None, sys.stdout, sys.stderr):
+            return
+        hub_csv_log.write(_format_print_text(args, kwargs))
 
     return _tee_print
 
@@ -582,6 +673,7 @@ def main() -> None:
     results_root.mkdir(parents=True, exist_ok=True)
     run_logs_dir = results_root / "run_logs"
     run_logs_dir.mkdir(parents=True, exist_ok=True)
+    hub_csv_log = _HubCsvPrintLog()
 
     original_print = print
     session_log_handle = None
@@ -595,7 +687,7 @@ def main() -> None:
             session_log_path = run_logs_dir / f"simrun_{os.getpid()}_{int(time.time() * 1000)}.log"
         session_log_path.parent.mkdir(parents=True, exist_ok=True)
         session_log_handle = session_log_path.open("a", encoding="utf-8")
-        globals()["print"] = _make_tee_print(original_print, session_log_handle)
+        globals()["print"] = _make_tee_print(original_print, session_log_handle, hub_csv_log)
         try:
             (run_logs_dir / "latest_simrun_log.txt").write_text(str(session_log_path))
         except Exception:
@@ -734,6 +826,7 @@ def main() -> None:
                 if new_candidates:
                     new_candidates.sort(key=lambda p: (_hub_index(p), str(p)))
                     hub_dir = new_candidates[-1]
+                    hub_csv_log.attach_hub(hub_dir)
                     print(f"New hub created: {hub_dir}")
 
             now = time.time()
@@ -768,6 +861,7 @@ def main() -> None:
                 hub_dir = new_candidates[-1]
 
         if hub_dir is not None:
+            hub_csv_log.attach_hub(hub_dir)
             summary = _snapshot_summary(hub_dir)
             if isinstance(summary, dict):
                 if not discovered_once:
@@ -812,6 +906,7 @@ def main() -> None:
                 session_log_handle.close()
             except Exception:
                 pass
+        hub_csv_log.close()
         globals()["print"] = original_print
 
 

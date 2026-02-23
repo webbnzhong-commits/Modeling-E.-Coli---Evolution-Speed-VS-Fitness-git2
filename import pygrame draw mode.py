@@ -339,7 +339,6 @@ while running:
     for evo_val, data in list(species_trackers.items()):
         if data["lifespan"] > 4000:
             #reset simulation
-            print(f"[{time.strftime('%H:%M:%S')}] Resetting simulation due to long-lived species")
             for evo_val, data in list(species_trackers.items()):
                 if data["alive"]:
                     data["alive"] = False
