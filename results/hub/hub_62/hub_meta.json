@@ -1425,6 +1425,50 @@
         "equation": "y=940.923*exp(-(|x-0.163|^0.9)/(2*0.0565552^0.9)) for x<=0.163; y=940.923*exp(-(|x-0.163|^0.9)/(2*0.08619^0.9)) for x>0.163"
       },
       "point_count": 351
+    },
+    {
+      "step_index": 23,
+      "env_rate": 0.73,
+      "env_dir": "results/hub/hub_62/env_0p73",
+      "planned_master_run_num": 7320,
+      "returncode": 0,
+      "finished_at": 1771881235.7370183,
+      "status": "ok",
+      "master_dir": "results/hub/hub_62/env_0p73/master_7320",
+      "master_run_num": 7320,
+      "run_nums": [
+        114804,
+        114805,
+        114806,
+        114807,
+        114808,
+        114809,
+        114810,
+        114811,
+        114812,
+        114813,
+        114814,
+        114815,
+        114816,
+        114817,
+        114818
+      ],
+      "max_species": 567.0,
+      "total_species": 8008.0,
+      "max_frames": 649600.0,
+      "apex_evolution_rate": 0.178,
+      "apex_fitness": 1088.8729957810492,
+      "fit": {
+        "apex_x": 0.178,
+        "apex_y": 1088.8729957810492,
+        "apex_point_y": 1576.109375,
+        "sigma_left": 0.03747697833389567,
+        "sigma_right": 0.04868210220322521,
+        "shape_power": 0.6,
+        "r2": 0.48735213289342083,
+        "equation": "y=1088.87*exp(-(|x-0.178|^0.6)/(2*0.037477^0.6)) for x<=0.178; y=1088.87*exp(-(|x-0.178|^0.6)/(2*0.0486821^0.6)) for x>0.178"
+      },
+      "point_count": 351
     }
   ],
   "status": "running"
