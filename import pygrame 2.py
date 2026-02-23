@@ -363,6 +363,7 @@ class enviorment ():
 
         self.goingToAmnt = random.randint(10, 30)
         self.foodAmnt = 100
+        self.foodUp = bool(float(self.goingToAmnt) >= float(self.foodAmnt))
 
         self.ph_min = 4.0
         self.ph_max = 10.0
@@ -373,6 +374,7 @@ class enviorment ():
         self.temperature = self.tempature
         self.goingToPh = self.ph
         self.goingToTempature = self.tempature
+        self.tempatureUp = bool(float(self.goingToTempature) >= float(self.tempature))
         self._pick_new_ph_target()
         self._pick_new_tempature_target()
         self._sync_condition_globals()
@@ -416,6 +418,14 @@ class enviorment ():
         nxt = val / multiplier
         return tar if nxt <= tar else nxt
 
+    @staticmethod
+    def _hit_or_cross_target(value, target, moving_up):
+        val = float(value)
+        tar = float(target)
+        if bool(moving_up):
+            return val >= tar
+        return val <= tar
+
     def _pick_new_ph_target(self):
         volatility = self._env_volatility_scale()
         pop_scale = self._target_scale_from_population()
@@ -437,6 +447,7 @@ class enviorment ():
         if high <= low:
             high = min(self.tempature_max, low + 0.05)
         self.goingToTempature = random.uniform(low, high)
+        self.tempatureUp = bool(float(self.goingToTempature) >= float(self.tempature))
 
     def _update_conditions(self):
         volatility = self._env_volatility_scale()
@@ -455,7 +466,7 @@ class enviorment ():
         if abs(float(self.ph) - float(self.goingToPh)) <= 1e-3:
             self.ph = float(self.goingToPh)
             self._pick_new_ph_target()
-        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-3:
+        if self._hit_or_cross_target(self.tempature, self.goingToTempature, self.tempatureUp):
             self.tempature = float(self.goingToTempature)
             self._pick_new_tempature_target()
 
@@ -496,7 +507,7 @@ class enviorment ():
             self.goingToAmnt,
             0.25 + (0.25 * food_step),
         )
-        if abs(float(self.foodAmnt) - float(self.goingToAmnt)) <= 0.5:
+        if self._hit_or_cross_target(self.foodAmnt, self.goingToAmnt, self.foodUp):
             self.foodAmnt = float(self.goingToAmnt)
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
@@ -510,6 +521,7 @@ class enviorment ():
             high = int(max(low + 1, min(high, 200)))
 
             self.goingToAmnt = random.randint(low, high)
+            self.foodUp = bool(float(self.goingToAmnt) >= float(self.foodAmnt))
 
         self._update_conditions()
 
@@ -765,7 +777,7 @@ def _spawn_child_from_parent(parent):
 
 
 
-    if random.uniform(0, child.evolution_speed) < 0.10:
+    if random.uniform(0, child.evolution_speed) < 0.9:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")

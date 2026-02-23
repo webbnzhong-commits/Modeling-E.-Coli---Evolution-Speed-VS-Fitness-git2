@@ -130,14 +130,6 @@ def _target_evolution_speed_for_environment() -> float:
     return max(evo_min, min(evo_max, target))
 
 
-def _evolution_speed_selection_penalty(evolution_speed: float, ph_effect: float, temp_effect: float) -> float:
-    # Keep only mutational-load shaping; remove adaptation-lag penalty.
-    evo_min, evo_max = float(evo_speed_range[0]), float(evo_speed_range[1])
-    evo_span = max(1e-6, evo_max - evo_min)
-    evo_norm = max(0.0, min(1.0, (float(evolution_speed) - evo_min) / evo_span))
-    mutational_load = 1.0 + 0.22 * (evo_norm ** 2)
-    return mutational_load
-
 SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
 ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
 SIM_FPS_PATH = os.environ.get("SIM_FPS_PATH")
@@ -381,12 +373,7 @@ class Dot:
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
         ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
         temp_effect = min(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
-        base_debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
-        debuf = base_debuf * _evolution_speed_selection_penalty(
-            self.evolution_speed,
-            ph_effect,
-            temp_effect,
-        )
+        debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
         for r in ["o", "c", "n"]:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
                 reproduce = False
@@ -427,6 +414,7 @@ class enviorment ():
 
         self.goingToAmnt = random.randint(10, 30)
         self.foodAmnt = 100
+        self.foodUp = bool(float(self.goingToAmnt) >= float(self.foodAmnt))
 
         self.ph_min = 4.0
         self.ph_max = 10.0
@@ -437,6 +425,7 @@ class enviorment ():
         self.temperature = self.tempature
         self.goingToPh = self.ph
         self.goingToTempature = self.tempature
+        self.tempatureUp = bool(float(self.goingToTempature) >= float(self.tempature))
         self._pick_new_ph_target()
         self._pick_new_tempature_target()
         self._sync_condition_globals()
@@ -468,6 +457,14 @@ class enviorment ():
         nxt = val / multiplier
         return tar if nxt <= tar else nxt
 
+    @staticmethod
+    def _hit_or_cross_target(value, target, moving_up):
+        val = float(value)
+        tar = float(target)
+        if bool(moving_up):
+            return val >= tar
+        return val <= tar
+
     def _target_scale_from_population(self):
         try:
             pop = max(1, len(dots))
@@ -497,6 +494,7 @@ class enviorment ():
         if high <= low:
             high = min(self.tempature_max, low + 0.05)
         self.goingToTempature = random.uniform(low, high)
+        self.tempatureUp = bool(float(self.goingToTempature) >= float(self.tempature))
 
     def _update_conditions(self, volatility):
         pop_scale = self._target_scale_from_population()
@@ -514,7 +512,7 @@ class enviorment ():
         if abs(float(self.ph) - float(self.goingToPh)) <= 1e-3:
             self.ph = float(self.goingToPh)
             self._pick_new_ph_target()
-        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-3:
+        if self._hit_or_cross_target(self.tempature, self.goingToTempature, self.tempatureUp):
             self.tempature = float(self.goingToTempature)
             self._pick_new_tempature_target()
 
@@ -562,7 +560,7 @@ class enviorment ():
             self.goingToAmnt,
             0.25 + (0.25 * food_step),
         )
-        if abs(float(self.foodAmnt) - float(self.goingToAmnt)) <= 0.5:
+        if self._hit_or_cross_target(self.foodAmnt, self.goingToAmnt, self.foodUp):
             self.foodAmnt = float(self.goingToAmnt)
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
@@ -582,6 +580,7 @@ class enviorment ():
             high = int(max(low + 1, min(high, 200)))
 
             self.goingToAmnt = random.randint(low, high)
+            self.foodUp = bool(float(self.goingToAmnt) >= float(self.foodAmnt))
 
         self._update_conditions(volatility)
 

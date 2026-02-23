@@ -88,17 +88,6 @@ if HAS_NUMBA:
             if debuf < repro_debuf_min:
                 debuf = repro_debuf_min
 
-            evo_span = evo_speed_max - evo_speed_min
-            if evo_span <= 0.0:
-                evo_span = 1e-6
-            evo_norm = (evo_speed[i] - evo_speed_min) / evo_span
-            if evo_norm < 0.0:
-                evo_norm = 0.0
-            if evo_norm > 1.0:
-                evo_norm = 1.0
-            mutational_load = 1.0 + 0.22 * (evo_norm * evo_norm)
-            debuf *= mutational_load
-
             if (res_o[i] / debuf >= repro_o[i]
                 and res_c[i] / debuf >= repro_c[i]
                 and res_n[i] / debuf >= repro_n[i]):
@@ -167,13 +156,6 @@ def _fast_update_np(
     ph_effect = np.minimum(1.0, (np.abs(opt_ph - ph_level) / ph_div) * ph_scale)
     temp_effect = np.minimum(1.0, (np.abs(opt_temp - temp) / temp_div) * temp_scale)
     debuf = np.maximum(repro_debuf_min, ph_effect * temp_effect)
-
-    evo_span = float(evo_speed_max) - float(evo_speed_min)
-    if evo_span <= 0.0:
-        evo_span = 1e-6
-    evo_norm = np.clip((evo_speed - float(evo_speed_min)) / evo_span, 0.0, 1.0)
-    mutational_load = 1.0 + 0.22 * np.square(evo_norm)
-    debuf = debuf * mutational_load
 
     reproduce = (
         (res_o / debuf >= repro_o)

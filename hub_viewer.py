@@ -713,6 +713,9 @@ class HubViewer:
         self._settings_button_rect = None
         self._normalize_button_rect = None
         self._hub_graph_rect = None
+        self._selected_scatter_plot_rect = None
+        self._selected_scatter_point_hits = []
+        self._selected_scatter_selected = None
         self._graph3d_dragging = False
         self._graph3d_last_mouse = None
         self._graph3d_yaw = -0.9
@@ -1507,6 +1510,7 @@ class HubViewer:
         total = len(self.rows)
         if total <= 0:
             self.selected_row_index = None
+            self._selected_scatter_selected = None
             return
         delta_i = int(delta)
         if self.selected_row_index is None:
@@ -1518,6 +1522,7 @@ class HubViewer:
             else:
                 idx = (current + delta_i) % total
         self.selected_row_index = idx
+        self._selected_scatter_selected = None
         self._ensure_selected_visible()
         self._queue_selected_row_load()
 
@@ -2992,6 +2997,8 @@ class HubViewer:
 
     def _draw_selected_scatter(self, rect, row: dict | None) -> None:
         pg = self.pg
+        self._selected_scatter_plot_rect = None
+        self._selected_scatter_point_hits = []
         pg.draw.rect(self.screen, (17, 19, 24), rect)
         pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
         if not isinstance(row, dict):
@@ -3023,15 +3030,15 @@ class HubViewer:
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
-        points = []
-        raw_points = row.get("points")
-        if isinstance(raw_points, list):
-            for pair in raw_points:
+        raw_points = []
+        raw_points_src = row.get("points")
+        if isinstance(raw_points_src, list):
+            for pair in raw_points_src:
                 if not isinstance(pair, (tuple, list)) or len(pair) < 2:
                     continue
                 if hr._is_number(pair[0]) and hr._is_number(pair[1]):
-                    points.append((float(pair[0]), float(pair[1])))
-        if not points:
+                    raw_points.append((float(pair[0]), float(pair[1])))
+        if not raw_points:
             if (
                 row_idx is not None
                 and self._selected_row_loading_idx is not None
@@ -3045,6 +3052,7 @@ class HubViewer:
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
+        points = list(raw_points)
         fit_bounds = None
         if self.normalize_display and points:
             vals = [float(p[1]) for p in points]
@@ -3054,9 +3062,10 @@ class HubViewer:
                 for xv, yv in points
             ]
 
-        plot = pg.Rect(rect.x + 38, rect.y + 30, rect.width - 50, rect.height - 42)
+        plot = pg.Rect(rect.x + 38, rect.y + 30, rect.width - 50, rect.height - 66)
         if plot.width <= 24 or plot.height <= 24:
             return
+        self._selected_scatter_plot_rect = plot
         pg.draw.rect(self.screen, (12, 14, 19), plot)
         pg.draw.rect(self.screen, (60, 66, 78), plot, 1)
 
@@ -3116,14 +3125,39 @@ class HubViewer:
                     for i in range(1, len(curve)):
                         fit_segments.append((curve[i - 1], curve[i]))
 
+        selected_point = self._selected_scatter_selected if isinstance(self._selected_scatter_selected, dict) else None
+        selected_row_idx = _safe_int(selected_point.get("row_idx")) if isinstance(selected_point, dict) else None
+        selected_point_idx = _safe_int(selected_point.get("point_index")) if isinstance(selected_point, dict) else None
         y_min = min(ys)
         y_max = max(ys)
         den = max(1e-9, y_max - y_min)
-        for x_val, y_val in points:
+        for point_idx, ((raw_x, raw_y), (x_val, y_val)) in enumerate(zip(raw_points, points)):
             n = max(0.0, min(1.0, (y_val - y_min) / den))
             radius = 1 + int(round(3 * n))
             color = (42 + int(210 * n), 128 + int(95 * n), 236 - int(166 * n))
-            pg.draw.circle(self.screen, color, _to_px(x_val, y_val), radius)
+            px, py = _to_px(x_val, y_val)
+            pg.draw.circle(self.screen, color, (px, py), radius)
+            is_selected = (
+                row_idx is not None
+                and selected_row_idx is not None
+                and int(selected_row_idx) == int(row_idx)
+                and selected_point_idx is not None
+                and int(selected_point_idx) == int(point_idx)
+            )
+            if is_selected:
+                pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
+            self._selected_scatter_point_hits.append(
+                {
+                    "px": int(px),
+                    "py": int(py),
+                    "hit_radius": max(6, int(radius) + 4),
+                    "row_idx": row_idx,
+                    "point_index": int(point_idx),
+                    "x": float(raw_x),
+                    "y": float(raw_y),
+                    "display_y": float(y_val),
+                }
+            )
         for start, end in fit_segments:
             pg.draw.line(self.screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
 
@@ -3132,6 +3166,61 @@ class HubViewer:
         fit_label = "fitness (norm)" if self.normalize_display else "fitness"
         self.screen.blit(self.tiny.render(fit_label, True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
         self.screen.blit(self.tiny.render("evo speed", True, (155, 155, 155)), (plot.x + 5, plot.y + 4))
+        coord_text = "Click a point to show coordinates."
+        coord_color = (146, 156, 172)
+        if (
+            isinstance(selected_point, dict)
+            and row_idx is not None
+            and selected_row_idx is not None
+            and int(selected_row_idx) == int(row_idx)
+            and hr._is_number(selected_point.get("x"))
+            and hr._is_number(selected_point.get("y"))
+        ):
+            x_val = float(selected_point.get("x"))
+            y_val = float(selected_point.get("y"))
+            coord_text = f"Clicked point: evo={x_val:.6g}, fitness={y_val:.6g}"
+            if self.normalize_display and hr._is_number(selected_point.get("display_y")):
+                coord_text += f" (display y={float(selected_point.get('display_y')):.6g})"
+            coord_color = (196, 214, 236)
+        coord_text = hr._fit_text(self.tiny, coord_text, max(24, plot.width - 4))
+        self.screen.blit(
+            self.tiny.render(coord_text, True, coord_color),
+            (plot.x + 2, plot.bottom + 8),
+        )
+
+    def _handle_selected_scatter_click(self, mx: int, my: int) -> bool:
+        plot = self._selected_scatter_plot_rect
+        if plot is None or (not plot.collidepoint(int(mx), int(my))):
+            return False
+        best_hit = None
+        best_dist_sq = None
+        for hit in self._selected_scatter_point_hits:
+            if not isinstance(hit, dict):
+                continue
+            px = _safe_int(hit.get("px"))
+            py = _safe_int(hit.get("py"))
+            hit_radius = _safe_float(hit.get("hit_radius"))
+            if px is None or py is None or hit_radius is None or hit_radius <= 0:
+                continue
+            dx = float(int(mx) - int(px))
+            dy = float(int(my) - int(py))
+            dist_sq = (dx * dx) + (dy * dy)
+            if dist_sq > (float(hit_radius) * float(hit_radius)):
+                continue
+            if best_dist_sq is None or dist_sq < float(best_dist_sq):
+                best_hit = hit
+                best_dist_sq = float(dist_sq)
+        if isinstance(best_hit, dict):
+            self._selected_scatter_selected = {
+                "row_idx": _safe_int(best_hit.get("row_idx")),
+                "point_index": _safe_int(best_hit.get("point_index")),
+                "x": _safe_float(best_hit.get("x")),
+                "y": _safe_float(best_hit.get("y")),
+                "display_y": _safe_float(best_hit.get("display_y")),
+            }
+        else:
+            self._selected_scatter_selected = None
+        return True
 
     def _draw_timeline(self, rect, row: dict | None) -> None:
         pg = self.pg
@@ -4459,11 +4548,15 @@ class HubViewer:
         if self._table_rect is not None and self._table_rect.collidepoint(mx, my):
             for row_idx, y0, y1 in self.table_row_hits:
                 if y0 <= my < y1:
-                    self.selected_row_index = int(row_idx)
+                    next_idx = int(row_idx)
+                    if self.selected_row_index != next_idx:
+                        self._selected_scatter_selected = None
+                    self.selected_row_index = next_idx
                     self._queue_selected_row_load()
                     return
             # Clicked selector panel but not on a row: clear selection.
             self.selected_row_index = None
+            self._selected_scatter_selected = None
             self._stop_selected_loader(wait=False)
             return
         if self._back_button_rect is not None and self._back_button_rect.collidepoint(mx, my):
@@ -4480,6 +4573,7 @@ class HubViewer:
             return
         if self._normalize_button_rect is not None and self._normalize_button_rect.collidepoint(mx, my):
             self.normalize_display = not self.normalize_display
+            self._selected_scatter_selected = None
             return
         if self._timeline_prev_button_rect is not None and self._timeline_prev_button_rect.collidepoint(mx, my):
             self.timeline_playing = False
@@ -4521,6 +4615,8 @@ class HubViewer:
                 self._env_range_drag_handle = handle
                 self._set_env_slider_from_mouse(mx, handle)
                 return
+        if self._handle_selected_scatter_click(int(mx), int(my)):
+            return
         mode = self._active_graph_mode()
         if self._is_3d_mode(mode) and self._hub_graph_rect is not None and self._hub_graph_rect.collidepoint(mx, my):
             self._graph3d_dragging = True
@@ -4528,6 +4624,7 @@ class HubViewer:
             return
         # Clicked outside selector rows/controls: clear selection.
         self.selected_row_index = None
+        self._selected_scatter_selected = None
         self._stop_selected_loader(wait=False)
 
     def _open_selector(self) -> None:
@@ -4544,6 +4641,7 @@ class HubViewer:
         self.hub_dir = hub_dir
         self.hub_idx = hub_idx
         self.selected_row_index = None
+        self._selected_scatter_selected = None
         self._stop_selected_loader(wait=False)
         self.env_view_min = None
         self.env_view_max = None
