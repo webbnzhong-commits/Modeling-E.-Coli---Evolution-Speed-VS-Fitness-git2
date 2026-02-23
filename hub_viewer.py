@@ -711,6 +711,7 @@ class HubViewer:
         self._next_button_rect = None
         self._export_button_rect = None
         self._settings_button_rect = None
+        self._normalize_button_rect = None
         self._hub_graph_rect = None
         self._graph3d_dragging = False
         self._graph3d_last_mouse = None
@@ -733,6 +734,7 @@ class HubViewer:
         self.timeline_playing = False
         self.timeline_frame_count = 101
         self.timeline_play_frames_per_sec = 12.0
+        self.normalize_display = False
         self.range_top_n = 80
         self._range_top_n_auto_all = True
         self.range_top_n_min = 1
@@ -859,7 +861,7 @@ class HubViewer:
         token = int(self._loader_token)
         self._loader_stop_event = threading.Event()
         self._loader_updates = queue.SimpleQueue()
-        self._loader_total_steps = max(1, int(total_rows) * 2)
+        self._loader_total_steps = max(1, int(total_rows))
         self._loader_done_steps = 0
         self._loader_error = None
         self._loader_rows_total = max(1, int(total_rows))
@@ -867,12 +869,10 @@ class HubViewer:
         self._loader_rows_status = f"Loading simulation rows: 0/{total_rows}"
         self._loader_rows_active = bool(total_rows > 0)
         self._loader_rows_started_at = (now_ts if total_rows > 0 else None)
-        self._loader_timeline_total = max(1, int(total_rows))
-        self._loader_timeline_done = 0 if total_rows > 0 else 1
-        self._loader_timeline_status = (
-            f"Loading timeline cache: 0/{total_rows}" if total_rows > 0 else "Timeline cache loaded"
-        )
-        self._loader_timeline_active = bool(total_rows > 0)
+        self._loader_timeline_total = 1
+        self._loader_timeline_done = 1
+        self._loader_timeline_status = "Timeline cache idle (loads on request)"
+        self._loader_timeline_active = False
         self._loader_timeline_started_at = None
         self._loader_status = self._loader_rows_status
         self._loader_active = bool(total_rows > 0)
@@ -901,7 +901,6 @@ class HubViewer:
             loaded_rows = [dict(row) for row in rows_seed]
             total_rows = len(loaded_rows)
             row_done = 0
-            timeline_done = 0
 
             def _row_task(_idx: int, row_seed: dict) -> dict:
                 row = dict(row_seed)
@@ -936,35 +935,6 @@ class HubViewer:
                     fit_report = hr._fit_hub_models_from_rows(loaded_rows)
                     best_fit = fit_report.get("best_model") if isinstance(fit_report, dict) else None
                     self._loader_updates.put(("models", token, graph_points, fit_report, best_fit))
-
-            if stop_event.is_set():
-                return
-
-            def _timeline_task(_idx: int, row: dict):
-                key = self._timeline_cache_key_for_row(row)
-                payload = self._build_timeline_payload_for_row(row) if key is not None else None
-                return key, payload
-
-            for _, timeline_result in self._loading_pool.run_indexed(
-                loaded_rows,
-                _timeline_task,
-                stop_event=stop_event,
-            ):
-                if stop_event.is_set():
-                    return
-                timeline_done += 1
-                key, payload = timeline_result
-                if key is not None and isinstance(payload, dict):
-                    self._loader_updates.put(("timeline", token, key, payload))
-                self._loader_updates.put(
-                    (
-                        "progress_timeline",
-                        token,
-                        int(timeline_done),
-                        int(total_rows),
-                        f"Loading timeline cache: {timeline_done}/{total_rows}",
-                    )
-                )
 
             graph_points = _compute_hub_graph_points(loaded_rows, include_apex_fallback=True)
             fit_report = hr._fit_hub_models_from_rows(loaded_rows)
@@ -1030,26 +1000,20 @@ class HubViewer:
                 self._loader_status = self._loader_timeline_status
             elif event == "done" and len(item) >= 5:
                 self._loader_rows_done = max(1, int(self._loader_rows_total))
-                self._loader_timeline_done = max(1, int(self._loader_timeline_total))
                 self._loader_rows_active = False
-                self._loader_timeline_active = False
                 self._loader_status = str(item[4])
                 self._loader_active = False
                 self._loader_rows_started_at = None
-                self._loader_timeline_started_at = None
                 rows_changed = True
             elif event == "error" and len(item) >= 3:
                 self._loader_error = str(item[2])
                 self._loader_status = "Background loading failed"
                 self._loader_rows_status = self._loader_status
-                self._loader_timeline_status = self._loader_status
                 self._loader_rows_active = False
-                self._loader_timeline_active = False
                 self._loader_active = False
                 self._loader_rows_started_at = None
-                self._loader_timeline_started_at = None
-            self._loader_total_steps = max(1, int(self._loader_rows_total) + int(self._loader_timeline_total))
-            self._loader_done_steps = max(0, int(self._loader_rows_done) + int(self._loader_timeline_done))
+            self._loader_total_steps = max(1, int(self._loader_rows_total))
+            self._loader_done_steps = max(0, int(self._loader_rows_done))
             if self._loader_done_steps > self._loader_total_steps:
                 self._loader_done_steps = int(self._loader_total_steps)
         if rows_changed:
@@ -1368,9 +1332,7 @@ class HubViewer:
             _refresh_row_from_disk(row, recompute_fit=False)
             if stop_event.is_set():
                 return
-            key = self._timeline_cache_key_for_row(row)
-            payload = self._build_timeline_payload_for_row(row) if key is not None else None
-            self._selected_loader_updates.put(("row", int(token), int(row_idx), row, key, payload))
+            self._selected_loader_updates.put(("row", int(token), int(row_idx), row))
         except Exception as exc:
             self._selected_loader_updates.put(("error", int(token), int(row_idx), str(exc)))
 
@@ -1415,19 +1377,15 @@ class HubViewer:
             if not isinstance(item, tuple) or not item:
                 continue
             event = str(item[0])
-            if event == "row" and len(item) >= 6:
+            if event == "row" and len(item) >= 4:
                 token = int(item[1])
                 row_idx = int(item[2])
                 row = item[3]
-                key = item[4]
-                payload = item[5]
                 if token != int(self._selected_loader_token):
                     continue
                 if 0 <= row_idx < len(self.rows) and isinstance(row, dict):
                     self.rows[row_idx] = row
                     changed = True
-                if key is not None and isinstance(payload, dict):
-                    self.timeline_cache[key] = payload
                 if hr._is_number(self._selected_row_loading_started_at):
                     elapsed = max(0.0, float(time.time()) - float(self._selected_row_loading_started_at))
                     if elapsed > 0.05:
@@ -1483,16 +1441,6 @@ class HubViewer:
                 loaded_rows[int(idx)] = row
             self.rows = loaded_rows
             self.timeline_cache.clear()
-
-            def _full_timeline_task(_idx: int, row: dict):
-                key = self._timeline_cache_key_for_row(row)
-                payload = self._build_timeline_payload_for_row(row) if key is not None else None
-                return key, payload
-
-            for _, timeline_result in self._loading_pool.run_indexed(self.rows, _full_timeline_task):
-                key, payload = timeline_result
-                if key is not None and isinstance(payload, dict):
-                    self.timeline_cache[key] = payload
             self._rebuild_graph_models()
             self._loader_total_steps = 1
             self._loader_done_steps = 1
@@ -1506,7 +1454,7 @@ class HubViewer:
             self._loader_rows_started_at = None
             self._loader_timeline_total = 1
             self._loader_timeline_done = 1
-            self._loader_timeline_status = "Timeline cache loaded"
+            self._loader_timeline_status = "Timeline cache idle (loads on request)"
             self._loader_timeline_active = False
             self._loader_timeline_started_at = None
         else:
@@ -1647,6 +1595,56 @@ class HubViewer:
         zoom = float(self._graph3d_zoom) * (1.12 ** float(steps))
         zoom = max(float(self._graph3d_zoom_min), min(float(self._graph3d_zoom_max), zoom))
         self._graph3d_zoom = float(zoom)
+
+    def _normalize_value_for_display(self, value: float, bounds: tuple[float, float] | None) -> float:
+        if not hr._is_number(value):
+            return 0.0
+        val = float(value)
+        if (not self.normalize_display) or (not isinstance(bounds, tuple)) or len(bounds) < 2:
+            return val
+        low = float(bounds[0])
+        high = float(bounds[1])
+        if high <= low:
+            return 0.5
+        norm = (val - low) / (high - low)
+        return max(0.0, min(1.0, float(norm)))
+
+    def _normalize_graph_points_for_display(
+        self,
+        graph_points: list[dict],
+        group_key: str = "row_index",
+    ) -> tuple[list[dict], dict]:
+        if (not self.normalize_display) or (not isinstance(graph_points, list)):
+            return graph_points, {}
+        bounds: dict = {}
+        for point in graph_points:
+            if not isinstance(point, dict):
+                continue
+            fit_val = point.get("fitness")
+            if not hr._is_number(fit_val):
+                continue
+            group = point.get(group_key)
+            if group not in bounds:
+                bounds[group] = [float(fit_val), float(fit_val)]
+            else:
+                cur = bounds[group]
+                cur[0] = min(float(cur[0]), float(fit_val))
+                cur[1] = max(float(cur[1]), float(fit_val))
+        normalized = []
+        for point in graph_points:
+            if not isinstance(point, dict):
+                continue
+            fit_val = point.get("fitness")
+            if not hr._is_number(fit_val):
+                normalized.append(point)
+                continue
+            group = point.get(group_key)
+            group_bounds = bounds.get(group)
+            norm_fit = self._normalize_value_for_display(float(fit_val), tuple(group_bounds) if isinstance(group_bounds, list) else None)
+            item = dict(point)
+            item["fitness"] = float(norm_fit)
+            normalized.append(item)
+        return normalized, {k: (float(v[0]), float(v[1])) for k, v in bounds.items() if isinstance(v, list) and len(v) >= 2}
 
     def _timeline_cache_key_for_row(self, row: dict | None):
         if not isinstance(row, dict):
@@ -2467,6 +2465,7 @@ class HubViewer:
         graph_points = [
             point for point in self.graph_points if self._env_rate_in_view(point.get("x"))
         ]
+        graph_points, _ = self._normalize_graph_points_for_display(graph_points, group_key="row_index")
         fit_report = self._fit_report_for_graph_points(graph_points, scope="hub_2d")
         best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
         if best and hr._is_number(best.get("r2")):
@@ -2608,6 +2607,10 @@ class HubViewer:
         graph_points = [
             point for point in points_source if self._env_rate_in_view(point.get("x"))
         ]
+        graph_points, display_fit_bounds = self._normalize_graph_points_for_display(
+            graph_points,
+            group_key="row_index",
+        )
         best = best_model
         if best is None:
             fit_report = self._fit_report_for_graph_points(graph_points, scope="hub_3d")
@@ -2665,6 +2668,8 @@ class HubViewer:
         ]
         if draw_bell_curves:
             header_items.insert(3, ("Bell curves: per-master stitched gaussian fits", (168, 226, 196)))
+        if self.normalize_display:
+            header_items.insert(3, ("Display normalization: per-sim fitness mapped to 0..1", (176, 214, 244)))
         header_y = rect.y + 8
         line_h = max(12, int(self.tiny.get_linesize()))
         line_gap = 2
@@ -2798,6 +2803,7 @@ class HubViewer:
                 fit = row_fit.get("fit")
                 if (not hr._is_number(env_rate)) or (not isinstance(fit, dict)):
                     continue
+                row_idx = row_fit.get("row_index")
                 apex_x = fit.get("apex_x")
                 apex_y = fit.get("apex_y")
                 sigma_left = fit.get("sigma_left")
@@ -2823,6 +2829,11 @@ class HubViewer:
                     if not hr._is_number(fit_val):
                         continue
                     fit_float = float(fit_val)
+                    if self.normalize_display:
+                        fit_float = self._normalize_value_for_display(
+                            fit_float,
+                            display_fit_bounds.get(row_idx),
+                        )
                     if fit_float < (min_z - (2.0 * z_span)) or fit_float > (max_z + (2.0 * z_span)):
                         continue
                     nx = _norm(env_float, min_x, den_x)
@@ -3034,6 +3045,15 @@ class HubViewer:
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
+        fit_bounds = None
+        if self.normalize_display and points:
+            vals = [float(p[1]) for p in points]
+            fit_bounds = (float(min(vals)), float(max(vals)))
+            points = [
+                (float(xv), self._normalize_value_for_display(float(yv), fit_bounds))
+                for xv, yv in points
+            ]
+
         plot = pg.Rect(rect.x + 38, rect.y + 30, rect.width - 50, rect.height - 42)
         if plot.width <= 24 or plot.height <= 24:
             return
@@ -3086,7 +3106,12 @@ class HubViewer:
                         float(sigma_right),
                     )
                     if hr._is_number(yv):
-                        curve.append((float(xv), float(yv)))
+                        curve.append(
+                            (
+                                float(xv),
+                                self._normalize_value_for_display(float(yv), fit_bounds),
+                            )
+                        )
                 if len(curve) >= 2:
                     for i in range(1, len(curve)):
                         fit_segments.append((curve[i - 1], curve[i]))
@@ -3104,7 +3129,8 @@ class HubViewer:
 
         self.screen.blit(self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.y - 2))
         self.screen.blit(self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.bottom - 14))
-        self.screen.blit(self.tiny.render("fitness", True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
+        fit_label = "fitness (norm)" if self.normalize_display else "fitness"
+        self.screen.blit(self.tiny.render(fit_label, True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
         self.screen.blit(self.tiny.render("evo speed", True, (155, 155, 155)), (plot.x + 5, plot.y + 4))
 
     def _draw_timeline(self, rect, row: dict | None) -> None:
@@ -3133,6 +3159,44 @@ class HubViewer:
             msg = self.small.render("No timeline data found for this simulation.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 10, rect.y + 28))
             return
+        if self.normalize_display:
+            normalized_series = []
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                pts = item.get("points")
+                if not isinstance(pts, list):
+                    continue
+                numeric_pts = []
+                for pair in pts:
+                    if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+                        continue
+                    xv, yv = pair[0], pair[1]
+                    if hr._is_number(xv) and hr._is_number(yv):
+                        numeric_pts.append((float(xv), float(yv)))
+                if not numeric_pts:
+                    continue
+                y_vals = [p[1] for p in numeric_pts]
+                bounds = (float(min(y_vals)), float(max(y_vals)))
+                norm_pts = [
+                    (float(xv), self._normalize_value_for_display(float(yv), bounds))
+                    for xv, yv in numeric_pts
+                ]
+                norm_item = dict(item)
+                norm_item["points"] = norm_pts
+                normalized_series.append(norm_item)
+            series = normalized_series
+            master_points = _timeline_master_average(series)
+            all_series_points = []
+            for item in series:
+                if isinstance(item, dict) and isinstance(item.get("points"), list):
+                    all_series_points.extend(item.get("points"))
+            fit = _timeline_fit(all_series_points)
+            master_fit = _timeline_fit(master_points)
+            if not series:
+                msg = self.small.render("No timeline data found for this simulation.", True, (170, 170, 170))
+                self.screen.blit(msg, (rect.x + 10, rect.y + 28))
+                return
         series_max_len = max(
             [len(item.get("points", [])) for item in series if isinstance(item, dict) and isinstance(item.get("points"), list)]
             or [2]
@@ -3364,6 +3428,7 @@ class HubViewer:
                 self.screen.blit(note, (rect.x + 10, rect.y + 48))
             return
 
+        graph_points, _ = self._normalize_graph_points_for_display(graph_points, group_key="row_index")
         fit_report = hr._fit_hub_models_from_graph_points(graph_points)
         best = fit_report.get("best_model") if isinstance(fit_report, dict) else None
 
@@ -3375,6 +3440,8 @@ class HubViewer:
         note = f"rows with data: {used_rows}/{candidate_rows} | points: {len(graph_points)}"
         if fallback_count > 0:
             note += f" | fallback rows: {fallback_count}"
+        if self.normalize_display:
+            note += " | normalized"
         self.screen.blit(
             self.tiny.render(hr._fit_text(self.tiny, note, rect.width - 20), True, (160, 175, 195)),
             (rect.x + 10, rect.y + 36),
@@ -3522,7 +3589,7 @@ class HubViewer:
         masters = []
         all_points = []
         env_values = []
-        for row in self.rows:
+        for row_idx, row in enumerate(self.rows):
             if not isinstance(row, dict):
                 continue
             env_rate = row.get("env_rate")
@@ -3541,14 +3608,27 @@ class HubViewer:
             if isinstance(top_n_per_master, int) and top_n_per_master > 0:
                 numeric_points = sorted(numeric_points, key=lambda p: p[1], reverse=True)[: int(top_n_per_master)]
                 numeric_points.sort(key=lambda p: p[0])
+            fit_vals = [float(p[1]) for p in numeric_points]
+            fit_low = min(fit_vals)
+            fit_high = max(fit_vals)
+            fit_bounds = (float(fit_low), float(fit_high))
+            if self.normalize_display:
+                display_points = [
+                    (float(xv), self._normalize_value_for_display(float(yv), fit_bounds))
+                    for xv, yv in numeric_points
+                ]
+            else:
+                display_points = [(float(xv), float(yv)) for xv, yv in numeric_points]
             masters.append(
                 {
+                    "row_index": int(row_idx),
                     "env_rate": float(env_rate),
-                    "points": numeric_points,
+                    "points": display_points,
                     "fit": row.get("fit"),
+                    "fit_bounds": fit_bounds,
                 }
             )
-            all_points.extend((float(env_rate), p[0], p[1]) for p in numeric_points)
+            all_points.extend((float(env_rate), p[0], p[1]) for p in display_points)
             env_values.append(float(env_rate))
         if not all_points:
             msg = self.small.render("No points available.", True, (170, 170, 170))
@@ -3610,7 +3690,6 @@ class HubViewer:
         for master in masters:
             env_rate = float(master.get("env_rate", 0.0))
             env_color = self._env_color(env_rate, env_min, env_max)
-            env_norm = 0.5 if env_max <= env_min else max(0.0, min(1.0, (env_rate - env_min) / (env_max - env_min)))
             for xv, yv in master.get("points", []):
                 fit_norm = max(0.0, min(1.0, (float(yv) - fit_min) / fit_den))
                 if dual_color:
@@ -3647,6 +3726,7 @@ class HubViewer:
                     continue
                 env_rate = float(master.get("env_rate", 0.0))
                 curve_color = self._env_color(env_rate, env_min, env_max)
+                fit_bounds = master.get("fit_bounds")
                 curve = []
                 for i in range(180):
                     xv = min_x + ((max_x - min_x) * float(i) / 179.0)
@@ -3658,7 +3738,15 @@ class HubViewer:
                         float(sigma_right),
                     )
                     if hr._is_number(yv):
-                        curve.append((float(xv), float(yv)))
+                        curve.append(
+                            (
+                                float(xv),
+                                self._normalize_value_for_display(
+                                    float(yv),
+                                    fit_bounds if isinstance(fit_bounds, tuple) else None,
+                                ),
+                            )
+                        )
                 if len(curve) >= 2:
                     for i in range(1, len(curve)):
                         curve_segments.append((curve_color, curve[i - 1], curve[i]))
@@ -3679,7 +3767,8 @@ class HubViewer:
         max_x_txt = self.tiny.render(f"{raw_max_x:.3f}", True, (150, 150, 150))
         self.screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom + 2))
         self.screen.blit(self.tiny.render("evo speed", True, (155, 155, 155)), (plot.x + 4, plot.y + 4))
-        self.screen.blit(self.tiny.render("fitness", True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
+        fit_label = "fitness (norm)" if self.normalize_display else "fitness"
+        self.screen.blit(self.tiny.render(fit_label, True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
 
     def _draw_spectrum_graph(self, rect) -> None:
         self._draw_master_cloud(
@@ -3728,6 +3817,7 @@ class HubViewer:
             filtered_rows.append({"env_rate": float(env_rate), "points": list(numeric_points)})
             bell_curve_rows.append(
                 {
+                    "row_index": int(row_idx),
                     "env_rate": float(env_rate),
                     "fit": row.get("fit"),
                 }
@@ -3879,6 +3969,7 @@ class HubViewer:
         pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
 
         graph_points, best, _ = self._range_hub_graph_data()
+        graph_points, _ = self._normalize_graph_points_for_display(graph_points, group_key="row_index")
 
         header_x = rect.x + 10
         copy_reserved = 0
@@ -4021,6 +4112,7 @@ class HubViewer:
         self._next_button_rect = pg.Rect(self._back_button_rect.right + 8, by, btn_w, btn_h)
         self._export_button_rect = pg.Rect(self._next_button_rect.right + 8, by, btn_w, btn_h)
         self._settings_button_rect = pg.Rect(self._export_button_rect.right + 8, by, btn_w, btn_h)
+        self._normalize_button_rect = pg.Rect(self._settings_button_rect.right + 8, by, 108, btn_h)
         for button_rect, label in (
             (self._back_button_rect, "Back"),
             (self._next_button_rect, "Next"),
@@ -4037,6 +4129,18 @@ class HubViewer:
                     button_rect.y + 5,
                 ),
             )
+        pg.draw.rect(self.screen, (42, 42, 46), self._normalize_button_rect)
+        pg.draw.rect(self.screen, (155, 155, 155), self._normalize_button_rect, 1)
+        normalize_label = "Norm On" if self.normalize_display else "Norm Off"
+        normalize_color = (172, 226, 178) if self.normalize_display else (230, 230, 230)
+        txt = self.small.render(normalize_label, True, normalize_color)
+        self.screen.blit(
+            txt,
+            (
+                self._normalize_button_rect.x + (self._normalize_button_rect.width - txt.get_width()) // 2,
+                self._normalize_button_rect.y + 5,
+            ),
+        )
 
         mode_labels = {
             "normal": "Normal",
@@ -4050,7 +4154,7 @@ class HubViewer:
             "master_fit_lines_3d": "Master Fit Lines 3D",
         }
         mode_text = f"Mode {self.graph_mode_index + 1}/{len(self.graph_modes)}: {mode_labels.get(mode, mode)}"
-        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._settings_button_rect.right + 14, by + 5))
+        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._normalize_button_rect.right + 12, by + 5))
 
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
@@ -4256,8 +4360,7 @@ class HubViewer:
             or (int(self._loader_rows_done) < int(self._loader_rows_total))
         )
         show_loader_timeline = bool(
-            self._loader_error
-            or self._loader_timeline_active
+            self._loader_timeline_active
             or (int(self._loader_timeline_done) < int(self._loader_timeline_total))
         )
         show_refresh = bool(
@@ -4298,7 +4401,7 @@ class HubViewer:
         )
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
-            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
+            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button toggles display normalization, Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
         )
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, subtitle, self.window_w - (2 * margin)), True, (168, 176, 191)), (margin, 44))
         if include_status and self.export_status:
@@ -4374,6 +4477,9 @@ class HubViewer:
             return
         if self._settings_button_rect is not None and self._settings_button_rect.collidepoint(mx, my):
             self._open_settings_dialog()
+            return
+        if self._normalize_button_rect is not None and self._normalize_button_rect.collidepoint(mx, my):
+            self.normalize_display = not self.normalize_display
             return
         if self._timeline_prev_button_rect is not None and self._timeline_prev_button_rect.collidepoint(mx, my):
             self.timeline_playing = False
@@ -4479,6 +4585,8 @@ class HubViewer:
                         self._open_selector()
                     elif event.key == self.pg.K_g:
                         self._open_settings_dialog()
+                    elif event.key == self.pg.K_n:
+                        self.normalize_display = not self.normalize_display
                     elif event.key == self.pg.K_LEFT:
                         self._rotate_graph_mode(-1)
                     elif event.key == self.pg.K_RIGHT:

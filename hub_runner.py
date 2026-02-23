@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -218,6 +219,92 @@ def _allocate_hub_index(results_root: Path) -> int:
 
 def _rate_label(rate: float) -> str:
     return f"env_{rate:.2f}".replace(".", "p")
+
+
+def _timeline_export_match(rel_path: Path) -> bool:
+    if not isinstance(rel_path, Path):
+        return False
+    name = rel_path.name.lower()
+    parts = [str(part).lower() for part in rel_path.parts]
+    if "snapshots" in parts and name.startswith("arith_mean_") and name.endswith(".csv"):
+        return True
+    if name.startswith("parsedarithmeticmean") and name.endswith(".csv"):
+        return True
+    if name.startswith("combinedarithmeticmean") and name.endswith(".csv"):
+        return True
+    if name in {"run_meta.json", "master_meta.json"}:
+        return True
+    return False
+
+
+def _zip_files(zip_path: Path, files: list[Path], root_dir: Path) -> int:
+    if not files:
+        return 0
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with zipfile.ZipFile(
+        zip_path,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+    ) as archive:
+        for src in files:
+            if not src.is_file():
+                continue
+            try:
+                arcname = str(src.relative_to(root_dir))
+            except Exception:
+                arcname = src.name
+            archive.write(src, arcname=arcname)
+            count += 1
+    return int(count)
+
+
+def _export_hub_artifacts(hub_dir: Path) -> dict:
+    export_dir = hub_dir / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    all_files: list[Path] = []
+    timeline_files: list[Path] = []
+    for path in hub_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(hub_dir)
+        except Exception:
+            rel = path
+        top = str(rel.parts[0]).lower() if rel.parts else ""
+        if top in {"exports", ".hub_control"}:
+            continue
+        all_files.append(path)
+        if _timeline_export_match(rel):
+            timeline_files.append(path)
+
+    all_files.sort(key=lambda p: str(p))
+    timeline_files.sort(key=lambda p: str(p))
+
+    full_zip_path = export_dir / f"{hub_dir.name}_all_files_{stamp}.zip"
+    timeline_zip_path = export_dir / f"{hub_dir.name}_timelines_{stamp}.zip"
+    full_count = _zip_files(full_zip_path, all_files, hub_dir)
+    timeline_count = _zip_files(timeline_zip_path, timeline_files, hub_dir)
+
+    manifest = {
+        "hub_dir": str(hub_dir),
+        "created_at_epoch": float(time.time()),
+        "created_at_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_files_archive": str(full_zip_path),
+        "all_files_count": int(full_count),
+        "timeline_archive": str(timeline_zip_path),
+        "timeline_files_count": int(timeline_count),
+        "timeline_file_examples": [
+            str(path.relative_to(hub_dir)) for path in timeline_files[:50]
+        ],
+    }
+    manifest_path = export_dir / f"{hub_dir.name}_export_manifest_{stamp}.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
 
 
 def _parse_hub_id(path: Path):
@@ -4993,6 +5080,23 @@ def main() -> None:
                 _refresh_reopened_processes()
                 dashboard.update(dash_state, force=True)
                 time.sleep(0.1)
+
+    export_manifest = None
+    try:
+        export_manifest = _export_hub_artifacts(hub_dir)
+        print(
+            f"[hub_{hub_idx}] exported full archive: {export_manifest.get('all_files_archive', '')} "
+            f"({int(export_manifest.get('all_files_count', 0))} files)"
+        )
+        print(
+            f"[hub_{hub_idx}] exported timeline archive: {export_manifest.get('timeline_archive', '')} "
+            f"({int(export_manifest.get('timeline_files_count', 0))} files)"
+        )
+        print(
+            f"[hub_{hub_idx}] export manifest: {export_manifest.get('manifest_path', '')}"
+        )
+    except Exception as exc:
+        print(f"[hub_{hub_idx}] final export failed: {exc}")
 
     if abort_requested:
         print(f"Hub aborted by user: {hub_dir}")

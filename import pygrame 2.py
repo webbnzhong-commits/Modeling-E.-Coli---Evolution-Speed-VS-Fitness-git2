@@ -316,8 +316,8 @@ class Dot:
             return
         
         reproduce = True
-        ph_diff = abs(self.optimal_ph - phLevel)
-        temp_diff = abs(self.optimal_temp - temp)
+        ph_diff = abs(self.optimal_ph - nutrient.ph)
+        temp_diff = abs(self.optimal_temp - nutrient.tempature)
         ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
         ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
@@ -355,18 +355,101 @@ class Dot:
 
 
 
-# Initial resource pool
-class nutrients ():
+# Initial enviorment pool + conditions
+class enviorment ():
     def __init__ (self):
         self.resource_pool = {"o": 34, "c": 33, "n": 33}
         self.deadNutreints = {"o": 0, "c": 0, "n": 0}
 
         self.goingToAmnt = random.randint(10, 30)
         self.foodAmnt = 100
-        
-        
 
+        self.ph_min = 4.0
+        self.ph_max = 10.0
+        self.tempature_min = 34.0
+        self.tempature_max = 40.0
+        self.ph = 7.0
+        self.tempature = 37.0
+        self.temperature = self.tempature
+        self.goingToPh = self.ph
+        self.goingToTempature = self.tempature
+        self._pick_new_ph_target()
+        self._pick_new_tempature_target()
+        self._sync_condition_globals()
 
+    def _env_volatility_scale(self):
+        rate = max(0.05, float(enviormentChangeRate))
+        return max(0.7, min(5.0, (rate / 0.1) ** 0.55))
+
+    def _target_scale_from_population(self):
+        try:
+            pop = max(1, len(dots))
+        except Exception:
+            pop = 30
+        scale = 300.0 / float(pop)
+        return max(0.35, min(3.0, scale))
+
+    def _sync_condition_globals(self):
+        global phLevel, temp
+        phLevel = float(self.ph)
+        temp = float(self.tempature)
+        self.temperature = float(self.tempature)
+
+    @staticmethod
+    def _step_toward_target(value, target, step):
+        val = float(value)
+        tar = float(target)
+        stride = max(0.0, float(step))
+        if stride <= 0.0:
+            return val
+        if val < tar:
+            return min(tar, val + stride)
+        if val > tar:
+            return max(tar, val - stride)
+        return val
+
+    def _pick_new_ph_target(self):
+        volatility = self._env_volatility_scale()
+        pop_scale = self._target_scale_from_population()
+        center = 7.0 + random.uniform(-0.6, 0.6) * min(2.0, volatility)
+        half_span = (0.35 + (0.65 * volatility)) * max(0.55, min(1.7, pop_scale ** 0.35))
+        low = max(self.ph_min, center - half_span)
+        high = min(self.ph_max, center + half_span)
+        if high <= low:
+            high = min(self.ph_max, low + 0.05)
+        self.goingToPh = random.uniform(low, high)
+
+    def _pick_new_tempature_target(self):
+        volatility = self._env_volatility_scale()
+        pop_scale = self._target_scale_from_population()
+        center = 37.0 + random.uniform(-1.0, 1.0) * min(2.0, volatility)
+        half_span = (0.55 + (0.90 * volatility)) * max(0.55, min(1.7, pop_scale ** 0.35))
+        low = max(self.tempature_min, center - half_span)
+        high = min(self.tempature_max, center + half_span)
+        if high <= low:
+            high = min(self.tempature_max, low + 0.05)
+        self.goingToTempature = random.uniform(low, high)
+
+    def _update_conditions(self):
+        volatility = self._env_volatility_scale()
+        pop_scale = self._target_scale_from_population()
+        step_scale = max(0.60, min(1.80, pop_scale ** 0.25))
+
+        ph_step = 0.0025 + (0.0045 * volatility * step_scale)
+        temp_step = 0.0090 + (0.0200 * volatility * step_scale)
+
+        self.ph = self._step_toward_target(self.ph, self.goingToPh, ph_step)
+        self.tempature = self._step_toward_target(self.tempature, self.goingToTempature, temp_step)
+
+        self.ph = max(self.ph_min, min(self.ph_max, self.ph))
+        self.tempature = max(self.tempature_min, min(self.tempature_max, self.tempature))
+
+        if abs(float(self.ph) - float(self.goingToPh)) <= 1e-9:
+            self._pick_new_ph_target()
+        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-9:
+            self._pick_new_tempature_target()
+
+        self._sync_condition_globals()
 
     def dead_cell(self, resources):
         for r in ["o", "c", "n"]:
@@ -374,9 +457,13 @@ class nutrients ():
     
 
     def regenerate_resources(self):
-        # Slightly vary each resource value
+        volatility = self._env_volatility_scale()
+        jitter_amp = 0.1 * volatility
+
+        # Slightly vary each resource value with volatility scaling.
         for r in ["o", "c", "n"]:
             self.resource_pool[r] += random.uniform(-0.1, 0.1)
+            self.resource_pool[r] += random.uniform(-jitter_amp, jitter_amp)
 
         # Prevent negative values
         for r in ["o", "c", "n"]:
@@ -384,35 +471,24 @@ class nutrients ():
                 self.resource_pool[r] = 0
             if self.resource_pool[r] > 1:
                 self.resource_pool[r] = 1
-            
-            
-            
 
-        
-
-        # Normalize so that o + c + n ≈ 100
+        # Normalize so that o + c + n ≈ 1
         total = self.resource_pool["o"] + self.resource_pool["c"] + self.resource_pool["n"]
-        for r in ["o", "c", "n"]:
-            self.resource_pool[r] *= 1/ total
-        '''
-        if len(dots) > 300:
-            self.foodAmnt -= 1
+        if total <= 1e-9:
+            self.resource_pool = {"o": 1 / 3, "c": 1 / 3, "n": 1 / 3}
         else:
-            self.foodAmnt += 1
-        '''
-        
-        if self.foodAmnt > self.goingToAmnt:
-            self.foodAmnt -= 1
-        elif self.foodAmnt < self.goingToAmnt:
-            self.foodAmnt += 1
-        else:
+            for r in ["o", "c", "n"]:
+                self.resource_pool[r] *= 1 / total
+
+        self.foodAmnt = self._step_toward_target(self.foodAmnt, self.goingToAmnt, 1.0)
+        self.foodAmnt = int(round(self.foodAmnt))
+        if self.foodAmnt == int(self.goingToAmnt):
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
             scale = 300 / pop
 
             low = int(7 * scale) * (1 - enviormentChangeRate/10)
-            
-            high = low * ((1 + enviormentChangeRate/10) / (1 - enviormentChangeRate/10))
+            high = low * ((1 + enviormentChangeRate/10) / max(1e-6, (1 - enviormentChangeRate/10)))
 
             # Clamp to keep targets reasonable
             low = int(max(1, min(low, 200)))
@@ -420,17 +496,22 @@ class nutrients ():
 
             self.goingToAmnt = random.randint(low, high)
 
-
-        
+        self._update_conditions()
 
     def get_resources(self):
-        const = len(dots)
+        try:
+            const = max(1, len(dots))
+        except Exception:
+            const = 1
         return {"o": (self.resource_pool["o"] * self.foodAmnt + self.deadNutreints["o"])/const,
                 "c": (self.resource_pool["c"] * self.foodAmnt + self.deadNutreints["c"])/const,
                 "n": (self.resource_pool["n"] * self.foodAmnt + self.deadNutreints["n"])/const} 
     
     def update(self):
         self.deadNutreints = {"o": 0, "c": 0, "n": 0}
+
+
+nutrients = enviorment
 
 def reset_simulation():
     
@@ -439,12 +520,12 @@ def reset_simulation():
     for x in range(30):
         dots.append(Dot(random.randint(0, WIDTH), random.randint(0, HEIGHT)))
         dots[-1].evolution_speed = (evo_speed_range[1] - evo_speed_range[0]) / 30 * x + evo_speed_range[0]
-    nutrient = nutrients()
+    nutrient = enviorment()
     #totalSim += 1
     frame_count = 0
     return dots, nutrient
 
-nutrient = nutrients()
+nutrient = enviorment()
 
 # Create dots
 dots = []
@@ -510,16 +591,14 @@ species_trackers            = {}
 arithmetic_points           = []
 arithmetic_graph_error       = ""
 
-temp = 37.0
+temp = float(nutrient.tempature)
 
 
 
 fightChance                 = 5
 
 
-phLevel                     = 7.0
-
-tempDirUp = True
+phLevel                     = float(nutrient.ph)
 
 
 def _update_stats_snapshot():
@@ -637,8 +716,8 @@ def _spawn_child_from_parent(parent):
     child.immune_system = child.immune_system % 5
 
 
-    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
-    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
+    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
     child.color = parent.color.copy()
     '''
 

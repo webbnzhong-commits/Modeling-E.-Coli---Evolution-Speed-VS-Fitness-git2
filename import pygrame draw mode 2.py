@@ -334,19 +334,6 @@ while running:
     # Check for extinct species
     extinct_species = []
     for evo_val, data in list(species_trackers.items()):
-        if data["lifespan"] > 4000:
-            #reset simulation
-            print(f"[{time.strftime('%H:%M:%S')}] Resetting simulation due to long-lived species")
-            for evo_val, data in list(species_trackers.items()):
-                if data["alive"]:
-                    data["alive"] = False
-                    if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                        _log_species(evo_val, data)
-            dots, nutrient = reset_simulation()
-            species_trackers = {}
-            totalSim += 1
-            break
-            
         if evo_val not in active_species and data["alive"]:
             
             data["alive"] = False
@@ -539,23 +526,7 @@ while running:
                     ARITH_OVERLAY_H,
                 )
                 screen.blit(arithmetic_surface, overlay_rect.topleft)
-    if frame_count % _env_event_interval_frames() == 0:
-        phLevel += _env_ph_delta()
-        if phLevel < 4:
-            phLevel = 4
-        if phLevel > 10:
-            phLevel = 10
-    if frame_count % _env_event_interval_frames() == 0:
-        if tempDirUp:
-            temp += _env_temp_delta()
-        else:
-            temp -= _env_temp_delta()
-        if temp > 40:
-            temp = 40
-            tempDirUp = False
-        if temp < 34:
-            temp = 34
-            tempDirUp = True
+    # pH and tempature now update each frame inside the enviorment class.
     '''
     if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         enviormentChangeRate += random.uniform(-0.5, 0.5)

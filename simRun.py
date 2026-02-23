@@ -50,6 +50,14 @@ def _parse_args() -> argparse.Namespace:
         default=10,
         help="Progress print interval in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--session-log",
+        default=None,
+        help=(
+            "Write simRun progress prints to this log file. "
+            "Default: results/run_logs/simrun_<pid>_<timestamp>.log"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -534,10 +542,47 @@ def _poll_quit_key() -> bool:
         return False
 
 
+def _make_tee_print(base_print, log_handle):
+    def _tee_print(*args, **kwargs):
+        base_print(*args, **kwargs)
+        if log_handle is None:
+            return
+        log_kwargs = dict(kwargs)
+        log_kwargs["file"] = log_handle
+        log_kwargs["flush"] = True
+        base_print(*args, **log_kwargs)
+
+    return _tee_print
+
+
 def main() -> None:
     args = _parse_args()
     results_root = Path(args.results_root)
     results_root.mkdir(parents=True, exist_ok=True)
+    run_logs_dir = results_root / "run_logs"
+    run_logs_dir.mkdir(parents=True, exist_ok=True)
+
+    original_print = print
+    session_log_handle = None
+    session_log_path = None
+    try:
+        if args.session_log:
+            session_log_path = Path(str(args.session_log)).expanduser()
+            if not session_log_path.is_absolute():
+                session_log_path = (Path.cwd() / session_log_path).resolve()
+        else:
+            session_log_path = run_logs_dir / f"simrun_{os.getpid()}_{int(time.time() * 1000)}.log"
+        session_log_path.parent.mkdir(parents=True, exist_ok=True)
+        session_log_handle = session_log_path.open("a", encoding="utf-8")
+        globals()["print"] = _make_tee_print(original_print, session_log_handle)
+        try:
+            (run_logs_dir / "latest_simrun_log.txt").write_text(str(session_log_path))
+        except Exception:
+            pass
+        print(f"simRun session log: {session_log_path}")
+    except Exception as exc:
+        globals()["print"] = original_print
+        original_print(f"[WARN] failed to start simRun session log: {exc}")
 
     before = _discover_hub_dirs(results_root)
     before_keys = set()
@@ -593,12 +638,11 @@ def main() -> None:
         runner_stdout = None
         runner_stderr = None
     else:
-        runner_log_path = (
-            Path(tempfile.gettempdir()) / f"hub_runner_{os.getpid()}_{int(time.time() * 1000)}.log"
-        )
+        runner_log_path = run_logs_dir / f"hub_runner_{os.getpid()}_{int(time.time() * 1000)}.log"
         runner_log_handle = runner_log_path.open("wb")
         runner_stdout = runner_log_handle
         runner_stderr = subprocess.STDOUT
+        print(f"hub_runner raw log: {runner_log_path}")
     proc = subprocess.Popen(
         cmd,
         cwd=str(repo_root),
@@ -741,6 +785,13 @@ def main() -> None:
         except Exception:
             pass
         _terminate_process_group(pgid)
+        if session_log_handle is not None:
+            try:
+                session_log_handle.flush()
+                session_log_handle.close()
+            except Exception:
+                pass
+        globals()["print"] = original_print
 
 
 if __name__ == "__main__":
