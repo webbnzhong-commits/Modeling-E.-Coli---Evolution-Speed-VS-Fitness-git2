@@ -889,6 +889,50 @@
         "equation": "y=252.931*exp(-(|x-0.397|^4)/(2*3.5^4)) for x<=0.397; y=252.931*exp(-(|x-0.397|^4)/(2*0.00237834^4)) for x>0.397"
       },
       "point_count": 351
+    },
+    {
+      "step_index": 9,
+      "env_rate": 0.19,
+      "env_dir": "results/hub/hub_59/env_0p19",
+      "planned_master_run_num": 6583,
+      "returncode": 0,
+      "finished_at": 1771865799.468796,
+      "status": "ok",
+      "master_dir": "results/hub/hub_59/env_0p19/master_6583",
+      "master_run_num": 6583,
+      "run_nums": [
+        104079,
+        104080,
+        104081,
+        104082,
+        104083,
+        104084,
+        104085,
+        104086,
+        104087,
+        104088,
+        104089,
+        104090,
+        104091,
+        104092,
+        104093
+      ],
+      "max_species": 817.0,
+      "total_species": 8031.0,
+      "max_frames": 830000.0,
+      "apex_evolution_rate": 0.05,
+      "apex_fitness": 799.9044376150499,
+      "fit": {
+        "apex_x": 0.05,
+        "apex_y": 799.9044376150499,
+        "apex_point_y": 982.4666666666667,
+        "sigma_left": 0.041999999999999996,
+        "sigma_right": 4.039677642555092e-05,
+        "shape_power": 0.1,
+        "r2": 0.14589559461213064,
+        "equation": "y=799.904*exp(-(|x-0.05|^0.1)/(2*0.042^0.1)) for x<=0.05; y=799.904*exp(-(|x-0.05|^0.1)/(2*4.03968e-05^0.1)) for x>0.05"
+      },
+      "point_count": 350
     }
   ],
   "status": "running"
