@@ -337,6 +337,19 @@ while running:
     # Check for extinct species
     extinct_species = []
     for evo_val, data in list(species_trackers.items()):
+        if data["lifespan"] > 4000:
+            #reset simulation
+            print(f"[{time.strftime('%H:%M:%S')}] Resetting simulation due to long-lived species")
+            for evo_val, data in list(species_trackers.items()):
+                if data["alive"]:
+                    data["alive"] = False
+                    if data["lifespan"] != data["pop_time"]: #they reproduced at least once
+                        _log_species(evo_val, data)
+            dots, nutrient = reset_simulation()
+            species_trackers = {}
+            totalSim += 1
+            break
+            
         if evo_val not in active_species and data["alive"]:
             
             data["alive"] = False
@@ -348,22 +361,10 @@ while running:
     # Remove extinct species after recording
     for evo_val in extinct_species:
         del species_trackers[evo_val]
-
-    # Hard lineage cap: force-log all active species and reset simulation.
-    if longestAlive > 4000:
-        for evo_val, data in list(species_trackers.items()):
-            if not data.get("alive"):
-                continue
-            data["alive"] = False
-            _log_species(evo_val, data)
-        _update_all_stats_snapshot()
-        dots, nutrient = reset_simulation()
-        species_trackers = {}
-        totalSim += 1
-        continue
+    
 
 
-    if frame_count % _env_event_interval_frames() == 0:
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         # Find the most common immune_system value among all dots
         immune_counts = Counter(dot.immune_system for dot in dots)
         if immune_counts:
@@ -417,7 +418,6 @@ while running:
             repro_n = np.array([dot.reproduction_resource["n"] for dot in dots], dtype=np.float32)
             opt_ph = np.array([dot.optimal_ph for dot in dots], dtype=np.float32)
             opt_temp = np.array([dot.optimal_temp for dot in dots], dtype=np.float32)
-            evo_speed = np.array([dot.evolution_speed for dot in dots], dtype=np.float32)
 
             dead_mask, reproduce_mask = fast_update(
                 realx,
@@ -434,10 +434,6 @@ while running:
                 repro_n,
                 opt_ph,
                 opt_temp,
-                evo_speed,
-                _target_evolution_speed_for_environment(),
-                evo_speed_range[0],
-                evo_speed_range[1],
                 phLevel,
                 temp,
                 PH_EFFECT_SCALE,
@@ -541,7 +537,23 @@ while running:
                     ARITH_OVERLAY_H,
                 )
                 screen.blit(arithmetic_surface, overlay_rect.topleft)
-    # pH and tempature now update each frame inside the enviorment class.
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
+        phLevel += random.uniform(-2, 2)
+        if phLevel < 4:
+            phLevel = 4
+        if phLevel > 10:
+            phLevel = 10
+    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
+        if tempDirUp:
+            temp += random.uniform(0, 1)
+        else:
+            temp -= random.uniform(0, 1)
+        if temp > 40:
+            temp = 40
+            tempDirUp = False
+        if temp < 34:
+            temp = 34
+            tempDirUp = True
     '''
     if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         enviormentChangeRate += random.uniform(-0.5, 0.5)
