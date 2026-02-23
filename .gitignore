@@ -1,1 +1,18 @@
 .DS_Store
+# Python venv
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local logs / outputs
+results/run_logs/
+*.log
+
+# OS
+.DS_Store
+.venv/
+venv/
+__pycache__/
+.pyc
+.DS_Store
