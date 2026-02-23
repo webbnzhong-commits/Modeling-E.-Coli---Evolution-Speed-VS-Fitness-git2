@@ -131,19 +131,12 @@ def _target_evolution_speed_for_environment() -> float:
 
 
 def _evolution_speed_selection_penalty(evolution_speed: float, ph_effect: float, temp_effect: float) -> float:
-    # Biology model:
-    # 1) adaptation lag cost when evolution speed is below the environment-dependent target
-    # 2) mutational load cost at high evolution speed (keeps the curve bell-shaped)
-    target_speed = _target_evolution_speed_for_environment()
-    lag = max(0.0, target_speed - float(evolution_speed))
-    mismatch = max(0.0, min(1.0, 0.5 * (float(ph_effect) + float(temp_effect))))
-    lag_penalty = 1.0 + lag * (8.0 + 6.0 * mismatch)
-
+    # Keep only mutational-load shaping; remove adaptation-lag penalty.
     evo_min, evo_max = float(evo_speed_range[0]), float(evo_speed_range[1])
     evo_span = max(1e-6, evo_max - evo_min)
     evo_norm = max(0.0, min(1.0, (float(evolution_speed) - evo_min) / evo_span))
     mutational_load = 1.0 + 0.22 * (evo_norm ** 2)
-    return lag_penalty * mutational_load
+    return mutational_load
 
 SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
 ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
@@ -458,14 +451,22 @@ class enviorment ():
     def _step_toward_target(value, target, step):
         val = float(value)
         tar = float(target)
-        stride = max(0.0, float(step))
-        if stride <= 0.0:
+        rate = max(0.0, float(step))
+        if rate <= 0.0:
             return val
+        if abs(val - tar) <= 1e-12:
+            return tar
+        # Quadratic nonlinear approach using multiplicative updates.
+        # Larger distance => larger multiplier; near target => very small movement.
+        scale = max(abs(tar), abs(val), 1e-6)
+        norm_gap = abs(tar - val) / scale
+        rate = min(0.85, rate)
+        multiplier = 1.0 + (rate * (norm_gap ** 2))
         if val < tar:
-            return min(tar, val + stride)
-        if val > tar:
-            return max(tar, val - stride)
-        return val
+            nxt = val * multiplier
+            return tar if nxt >= tar else nxt
+        nxt = val / multiplier
+        return tar if nxt <= tar else nxt
 
     def _target_scale_from_population(self):
         try:
@@ -501,8 +502,8 @@ class enviorment ():
         pop_scale = self._target_scale_from_population()
         step_scale = max(0.60, min(1.80, pop_scale ** 0.25))
 
-        ph_step = 0.0025 + (0.0045 * volatility * step_scale)
-        temp_step = 0.0090 + (0.0200 * volatility * step_scale)
+        ph_step = 0.25 + (0.30 * volatility * step_scale)
+        temp_step = 0.30 + (0.45 * volatility * step_scale)
 
         self.ph = self._step_toward_target(self.ph, self.goingToPh, ph_step)
         self.tempature = self._step_toward_target(self.tempature, self.goingToTempature, temp_step)
@@ -510,9 +511,11 @@ class enviorment ():
         self.ph = max(self.ph_min, min(self.ph_max, self.ph))
         self.tempature = max(self.tempature_min, min(self.tempature_max, self.tempature))
 
-        if abs(float(self.ph) - float(self.goingToPh)) <= 1e-9:
+        if abs(float(self.ph) - float(self.goingToPh)) <= 1e-3:
+            self.ph = float(self.goingToPh)
             self._pick_new_ph_target()
-        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-9:
+        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-3:
+            self.tempature = float(self.goingToTempature)
             self._pick_new_tempature_target()
 
         self._sync_condition_globals()
@@ -557,10 +560,10 @@ class enviorment ():
         self.foodAmnt = self._step_toward_target(
             self.foodAmnt,
             self.goingToAmnt,
-            1 + food_step,
+            0.25 + (0.25 * food_step),
         )
-        self.foodAmnt = int(round(self.foodAmnt))
-        if self.foodAmnt == int(self.goingToAmnt):
+        if abs(float(self.foodAmnt) - float(self.goingToAmnt)) <= 0.5:
+            self.foodAmnt = float(self.goingToAmnt)
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
             scale = 300 / pop
@@ -860,7 +863,7 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
-    if random.uniform(0, child.evolution_speed) < 0.09:
+    if random.uniform(0, child.evolution_speed) < 0.10:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")

@@ -399,14 +399,22 @@ class enviorment ():
     def _step_toward_target(value, target, step):
         val = float(value)
         tar = float(target)
-        stride = max(0.0, float(step))
-        if stride <= 0.0:
+        rate = max(0.0, float(step))
+        if rate <= 0.0:
             return val
+        if abs(val - tar) <= 1e-12:
+            return tar
+        # Quadratic nonlinear approach using multiplicative updates.
+        # Larger distance => larger multiplier; near target => very small movement.
+        scale = max(abs(tar), abs(val), 1e-6)
+        norm_gap = abs(tar - val) / scale
+        rate = min(0.85, rate)
+        multiplier = 1.0 + (rate * (norm_gap ** 2))
         if val < tar:
-            return min(tar, val + stride)
-        if val > tar:
-            return max(tar, val - stride)
-        return val
+            nxt = val * multiplier
+            return tar if nxt >= tar else nxt
+        nxt = val / multiplier
+        return tar if nxt <= tar else nxt
 
     def _pick_new_ph_target(self):
         volatility = self._env_volatility_scale()
@@ -435,8 +443,8 @@ class enviorment ():
         pop_scale = self._target_scale_from_population()
         step_scale = max(0.60, min(1.80, pop_scale ** 0.25))
 
-        ph_step = 0.0025 + (0.0045 * volatility * step_scale)
-        temp_step = 0.0090 + (0.0200 * volatility * step_scale)
+        ph_step = 0.25 + (0.30 * volatility * step_scale)
+        temp_step = 0.30 + (0.45 * volatility * step_scale)
 
         self.ph = self._step_toward_target(self.ph, self.goingToPh, ph_step)
         self.tempature = self._step_toward_target(self.tempature, self.goingToTempature, temp_step)
@@ -444,9 +452,11 @@ class enviorment ():
         self.ph = max(self.ph_min, min(self.ph_max, self.ph))
         self.tempature = max(self.tempature_min, min(self.tempature_max, self.tempature))
 
-        if abs(float(self.ph) - float(self.goingToPh)) <= 1e-9:
+        if abs(float(self.ph) - float(self.goingToPh)) <= 1e-3:
+            self.ph = float(self.goingToPh)
             self._pick_new_ph_target()
-        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-9:
+        if abs(float(self.tempature) - float(self.goingToTempature)) <= 1e-3:
+            self.tempature = float(self.goingToTempature)
             self._pick_new_tempature_target()
 
         self._sync_condition_globals()
@@ -480,9 +490,14 @@ class enviorment ():
             for r in ["o", "c", "n"]:
                 self.resource_pool[r] *= 1 / total
 
-        self.foodAmnt = self._step_toward_target(self.foodAmnt, self.goingToAmnt, 1.0)
-        self.foodAmnt = int(round(self.foodAmnt))
-        if self.foodAmnt == int(self.goingToAmnt):
+        food_step = max(1, int(round(volatility)))
+        self.foodAmnt = self._step_toward_target(
+            self.foodAmnt,
+            self.goingToAmnt,
+            0.25 + (0.25 * food_step),
+        )
+        if abs(float(self.foodAmnt) - float(self.goingToAmnt)) <= 0.5:
+            self.foodAmnt = float(self.goingToAmnt)
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
             scale = 300 / pop
@@ -750,7 +765,7 @@ def _spawn_child_from_parent(parent):
 
 
 
-    if random.uniform(0, child.evolution_speed) < 0.09:
+    if random.uniform(0, child.evolution_speed) < 0.10:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
