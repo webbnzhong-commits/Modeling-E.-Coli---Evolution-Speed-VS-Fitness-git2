@@ -101,7 +101,19 @@ while running:
     # Remove extinct species after recording
     for evo_val in extinct_species:
         del species_trackers[evo_val]
-    
+
+    # Hard lineage cap: force-log all active species and reset simulation.
+    if longestAlive > 4000:
+        for evo_val, data in list(species_trackers.items()):
+            if not data.get("alive"):
+                continue
+            data["alive"] = False
+            _log_species(evo_val, data)
+        _update_all_stats_snapshot()
+        dots, nutrient = reset_simulation()
+        species_trackers = {}
+        totalSim += 1
+        continue
 
 
     if frame_count % _env_event_interval_frames() == 0:
