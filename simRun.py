@@ -357,6 +357,32 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
     current_env_rate = None
     if next_step_idx is not None and isinstance(rates, list) and (0 <= (next_step_idx - 1) < len(rates)):
         current_env_rate = _safe_float(rates[next_step_idx - 1])
+    species_threshold = _safe_int(meta.get("species_threshold"), 0)
+    running_metrics: dict | None = None
+    running_step_fraction = 0.0
+    if status == "running":
+        running_metrics = _running_master_metrics(
+            {
+                "status": status,
+                "next_step_idx": next_step_idx,
+                "current_env_rate": current_env_rate,
+                "hub_dir": hub_dir,
+            }
+        )
+        if species_threshold > 0 and isinstance(running_metrics, dict):
+            species_measure = _safe_float(running_metrics.get("species_measure"))
+            if species_measure is not None:
+                running_step_fraction = max(
+                    0.0,
+                    min(1.0, float(species_measure) / float(species_threshold)),
+                )
+
+    progress_units = max(
+        0.0,
+        min(float(total), float(done) + float(running_step_fraction)),
+    )
+    progress_pct = (progress_units / float(total) * 100.0) if total > 0 else None
+
     prediction = _runtime_prediction_from_steps(
         steps=steps,
         total_steps=total,
@@ -364,8 +390,22 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         now_ts=now_ts,
         is_running=(status == "running"),
     )
-    progress_pct = (float(done) / float(total) * 100.0) if total > 0 else None
-    species_threshold = _safe_int(meta.get("species_threshold"), 0)
+    remaining_s = _safe_float(prediction.get("remaining_s"))
+    predicted_total_s = _safe_float(prediction.get("predicted_total_s"))
+    eta_ts = _safe_float(prediction.get("eta_ts"))
+    if (
+        total > 0
+        and progress_units > 0
+        and (
+            remaining_s is None
+            or predicted_total_s is None
+            or eta_ts is None
+        )
+    ):
+        completion_ratio = progress_units / float(total)
+        predicted_total_s = float(elapsed / completion_ratio)
+        remaining_s = max(0.0, float(predicted_total_s) - float(elapsed))
+        eta_ts = float(now_ts + float(remaining_s))
 
     last_step = None
     valid_steps: list[dict] = []
@@ -386,11 +426,12 @@ def _snapshot_summary(hub_dir: Path) -> dict | None:
         "species_threshold": max(0, int(species_threshold)),
         "counts": counts,
         "elapsed_s": float(elapsed),
-        "remaining_s": prediction.get("remaining_s"),
-        "predicted_total_s": prediction.get("predicted_total_s"),
-        "eta_ts": prediction.get("eta_ts"),
+        "remaining_s": remaining_s,
+        "predicted_total_s": predicted_total_s,
+        "eta_ts": eta_ts,
         "next_step_idx": next_step_idx,
         "current_env_rate": current_env_rate,
+        "running_metrics": running_metrics,
         "last_step": last_step,
     }
 
@@ -432,7 +473,9 @@ def _print_snapshot(summary: dict, final: bool = False) -> None:
     current_rate = summary.get("current_env_rate")
     if isinstance(next_idx, int) and _safe_float(current_rate) is not None:
         print(f"  running step={next_idx} env_rate={float(current_rate):.6g}")
-        running_metrics = _running_master_metrics(summary)
+        running_metrics = summary.get("running_metrics")
+        if not isinstance(running_metrics, dict):
+            running_metrics = _running_master_metrics(summary)
         if isinstance(running_metrics, dict):
             master_num = running_metrics.get("master_run_num")
             run_count = _safe_int(running_metrics.get("run_count"), 0)

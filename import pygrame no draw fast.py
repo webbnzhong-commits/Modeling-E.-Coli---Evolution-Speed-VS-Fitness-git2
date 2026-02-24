@@ -59,9 +59,9 @@ while running:
         
 
     
-    nutrient.regenerate_resources()
-    resource_pool = nutrient.get_resources()
-    nutrient.update()
+    enviorment_state.regenerate_resources()
+    resource_pool = enviorment_state.get_resources()
+    enviorment_state.update()
     
 
     # --- Multi-species tracking system ---
@@ -98,7 +98,7 @@ while running:
                     data["alive"] = False
                     if data["lifespan"] != data["pop_time"]: #they reproduced at least once
                         _log_species(evo_val, data)
-            dots, nutrient = reset_simulation()
+            dots, enviorment_state = reset_simulation()
             species_trackers = {}
             totalSim += 1
             break
@@ -117,18 +117,7 @@ while running:
     
 
 
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
-        # Find the most common immune_system value among all dots
-        immune_counts = Counter(dot.immune_system for dot in dots)
-        if immune_counts:
-            # Choose the most common immune_system type as the antiBiotic target
-            antiBiotic = immune_counts.most_common(1)[0][0]
-            # Pick a random new immune_system different from the most common one for the antiBiotic type
-            
-            # Infect all dots that do not match the new antiBiotic type
-            for dot in list(dots):
-                if abs(antiBiotic - dot.immune_system) <= 1:
-                    dot.death()
+    enviorment_state.update_antibiotic(dots, frame_count)
 
     # --- Population Cap by Species ---
     if frame_count % 5 == 0:
@@ -187,8 +176,8 @@ while running:
                 repro_n,
                 opt_ph,
                 opt_temp,
-                phLevel,
-                temp,
+                enviorment_state.ph,
+                enviorment_state.temp,
                 PH_EFFECT_SCALE,
                 PH_EFFECT_DIVISOR,
                 TEMP_EFFECT_SCALE,
@@ -205,9 +194,9 @@ while running:
                 dead_o = float(res_o[dead_mask].sum())
                 dead_c = float(res_c[dead_mask].sum())
                 dead_n = float(res_n[dead_mask].sum())
-                nutrient.deadNutreints["o"] += dead_o
-                nutrient.deadNutreints["c"] += dead_c
-                nutrient.deadNutreints["n"] += dead_n
+                enviorment_state.deadNutreints["o"] += dead_o
+                enviorment_state.deadNutreints["c"] += dead_c
+                enviorment_state.deadNutreints["n"] += dead_n
 
             alive_mask = ~dead_mask
             if not np.all(alive_mask):
@@ -243,23 +232,7 @@ while running:
     else:
         for dot in list(dots):
             dot.update()
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
-        phLevel += random.uniform(-2, 2)
-        if phLevel < 4:
-            phLevel = 4
-        if phLevel > 10:
-            phLevel = 10
-    if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
-        if tempDirUp:
-            temp += random.uniform(0, 1)
-        else:
-            temp -= random.uniform(0, 1)
-        if temp > 40:
-            temp = 40
-            tempDirUp = False
-        if temp < 34:
-            temp = 34
-            tempDirUp = True
+    enviorment_state.update_climate(frame_count)
     '''
     if frame_count % max(1, round(500 / enviormentChangeRate)) == 0:
         enviormentChangeRate += random.uniform(-0.5, 0.5)
@@ -287,8 +260,8 @@ while running:
         print(f"amount of species: {tracker.amntOfSpecies}")
         print(tracker.amntOfSpeciesEach)
 
-        print(f"resource pool: {nutrient.get_resources()}")
-        print(f"food amnt {nutrient.foodAmnt}")
+        print(f"resource pool: {enviorment_state.get_resources()}")
+        print(f"food amnt {enviorment_state.foodAmnt}")
         
     
     

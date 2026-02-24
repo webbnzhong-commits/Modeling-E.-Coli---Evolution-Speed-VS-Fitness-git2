@@ -4560,17 +4560,7 @@ def main() -> None:
             has_existing_master = (
                 row.get("master_run_num") is not None and bool(row.get("master_dir"))
             )
-            max_species = row.get("max_species")
-            total_species = row.get("total_species")
-            species_measure = (
-                float(total_species)
-                if _is_number(total_species)
-                else (float(max_species) if _is_number(max_species) else None)
-            )
-            step_complete = (
-                species_threshold <= 0
-                or (_is_number(species_measure) and float(species_measure) >= float(species_threshold))
-            )
+            step_complete = has_existing_master
             if has_existing_master:
                 if step_complete:
                     row["status"] = "ok"
@@ -4920,27 +4910,6 @@ def main() -> None:
         hub_all_points_weighted_by_fitness = _hub_all_points_weighted_by_fitness(step_rows)
         _write_hub_all_points_csv(all_points_csv_path, step_rows)
         _write_hub_stats_csv(hub_stats_path, step_rows)
-
-        species_measure = (
-            float(total_species)
-            if _is_number(total_species)
-            else (float(max_species) if _is_number(max_species) else None)
-        )
-        if species_threshold > 0 and (
-            (not _is_number(species_measure))
-            or float(species_measure) < float(species_threshold)
-        ):
-            step_info["status"] = "stopped"
-            step_info["stopped_threshold_not_reached"] = True
-            hub_meta["status"] = "stopped_threshold_not_reached"
-            row_ref["status"] = "stopped"
-            row_ref["resume_existing"] = True
-            dash_state["status"] = hub_meta["status"]
-            hub_meta["stopped_step"] = int(step_idx)
-            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
-            break
         _refresh_reopened_processes()
         dashboard.update(dash_state, force=True)
     else:

@@ -325,12 +325,12 @@ class Dot:
             return
         
         reproduce = True
-        ph_diff = abs(self.optimal_ph - phLevel)
-        temp_diff = abs(self.optimal_temp - temp)
+        ph_diff = abs(self.optimal_ph - enviorment_state.ph)
+        temp_diff = abs(self.optimal_temp - enviorment_state.temp)
         ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
-        ph_effect = max(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
-        temp_effect = max(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
+        ph_effect = max(1.0, (ph_diff) * PH_EFFECT_SCALE)
+        temp_effect = max(1.0, (temp_diff) * TEMP_EFFECT_SCALE)
         debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
         for r in ["o", "c", "n"]:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
@@ -345,12 +345,12 @@ class Dot:
 
     def death (self):
 
-        nutrient.dead_cell(self.resources)
+        enviorment_state.dead_cell(self.resources)
         dots.remove(self)
         return
     
     def collect_resources(self):
-        resource_pool = nutrient.get_resources()
+        resource_pool = enviorment_state.get_resources()
         total = 0
         for r in ["o", "c", "n"]:
             if resource_pool[r] > 0:
@@ -364,11 +364,15 @@ class Dot:
 
 
 
-# Initial resource pool
-class nutrients ():
+# Initial resource pool and changing conditions
+class enviorment():
     def __init__ (self):
         self.resource_pool = {"o": 34, "c": 33, "n": 33}
         self.deadNutreints = {"o": 0, "c": 0, "n": 0}
+        self.antiBiotic = 0
+        self.ph = 7.0
+        self.temp = 37.0
+        self.tempDirUp = True
 
         self.goingToAmnt = random.randint(10, 30)
         self.foodAmnt = 100
@@ -441,6 +445,40 @@ class nutrients ():
     def update(self):
         self.deadNutreints = {"o": 0, "c": 0, "n": 0}
 
+    def _change_interval(self):
+        return max(1, round(500 / max(enviormentChangeRate, 1e-6)))
+
+    def update_antibiotic(self, dots, frame_count):
+        if frame_count % self._change_interval() != 0:
+            return
+        immune_counts = Counter(dot.immune_system for dot in dots)
+        if not immune_counts:
+            return
+        self.antiBiotic = immune_counts.most_common(1)[0][0]
+        for dot in list(dots):
+            if self.antiBiotic != dot.immune_system:
+                dot.death()
+
+    def update_climate(self, frame_count):
+        if frame_count % self._change_interval() != 0:
+            return
+        self.ph += random.uniform(-2, 2)
+        if self.ph < 4:
+            self.ph = 4
+        if self.ph > 10:
+            self.ph = 10
+
+        if self.tempDirUp:
+            self.temp += random.uniform(0, 1)
+        else:
+            self.temp -= random.uniform(0, 1)
+        if self.temp > 40:
+            self.temp = 40
+            self.tempDirUp = False
+        if self.temp < 34:
+            self.temp = 34
+            self.tempDirUp = True
+
 def reset_simulation():
     
     #dots = [Dot(random.randint(0, WIDTH), random.randint(0, HEIGHT)) for x in range(30)]
@@ -448,16 +486,16 @@ def reset_simulation():
     for x in range(30):
         dots.append(Dot(random.randint(0, WIDTH), random.randint(0, HEIGHT)))
         dots[-1].evolution_speed = (evo_speed_range[1] - evo_speed_range[0]) / 30 * x + evo_speed_range[0]
-    nutrient = nutrients()
+    enviorment_state = enviorment()
     #totalSim += 1
     frame_count = 0
-    return dots, nutrient
+    return dots, enviorment_state
 
-nutrient = nutrients()
+enviorment_state = enviorment()
 
 # Create dots
 dots = []
-dots, nutrient = reset_simulation()
+dots, enviorment_state = reset_simulation()
 
 
 
@@ -502,7 +540,6 @@ if existing_meta:
 
 
 #time.sleep(10)  # Give user time to switch to pygame window
-antiBiotics = 0
 totalSim = 0
 pause = False
 info = ""
@@ -521,17 +558,7 @@ species_trackers            = {}
 arithmetic_points           = []
 arithmetic_graph_error       = ""
 
-temp = 37.0
-
-
-
 fightChance                 = 5
-
-
-phLevel                     = 7.0
-
-tempDirUp = True
-
 
 def _update_stats_snapshot():
     global info, info2, info3, info4, info5, info6, info7, info8, info9
@@ -697,7 +724,7 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
-    if random.uniform(0, child.evolution_speed/2 + 0.055) < 0.11:
+    if random.uniform(0, child.evolution_speed/4 + 0.0275) < 0.11:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
