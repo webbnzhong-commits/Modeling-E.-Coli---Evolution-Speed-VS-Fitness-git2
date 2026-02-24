@@ -316,8 +316,8 @@ class Dot:
             return
         
         reproduce = True
-        ph_diff = abs(self.optimal_ph - phLevel)
-        temp_diff = abs(self.optimal_temp - temp)
+        ph_diff = abs(self.optimal_ph - enviorment_state.ph)
+        temp_diff = abs(self.optimal_temp - enviorment_state.temp)
         ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
         ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
@@ -336,12 +336,12 @@ class Dot:
 
     def death (self):
 
-        nutrient.dead_cell(self.resources)
+        enviorment_state.dead_cell(self.resources)
         dots.remove(self)
         return
     
     def collect_resources(self):
-        resource_pool = nutrient.get_resources()
+        resource_pool = enviorment_state.get_resources()
         total = 0
         for r in ["o", "c", "n"]:
             if resource_pool[r] > 0:
@@ -356,17 +356,25 @@ class Dot:
 
 
 # Initial resource pool
-class nutrients ():
+class enviorment ():
     def __init__ (self):
         self.resource_pool = {"o": 34, "c": 33, "n": 33}
         self.deadNutreints = {"o": 0, "c": 0, "n": 0}
 
         self.goingToAmnt = random.randint(10, 30)
         self.foodAmnt = 100
+        self.ph = 7.0
+        self.temp = 37.0
+        self._set_new_ph_target()
         
         
 
 
+
+    def _set_new_ph_target(self):
+        self.ph_target = random.uniform(4.0, 10.0)
+        self.ph_mult_up = random.uniform(1.0005, 1.0050)
+        self.ph_mult_down = random.uniform(0.9950, 0.9995)
 
     def dead_cell(self, resources):
         for r in ["o", "c", "n"]:
@@ -377,6 +385,17 @@ class nutrients ():
         # Slightly vary each resource value
         for r in ["o", "c", "n"]:
             self.resource_pool[r] += random.uniform(-0.1, 0.1)
+        if self.ph < self.ph_target:
+            self.ph *= self.ph_mult_up
+            if self.ph >= self.ph_target:
+                self._set_new_ph_target()
+        elif self.ph > self.ph_target:
+            self.ph *= self.ph_mult_down
+            if self.ph <= self.ph_target:
+                self._set_new_ph_target()
+        else:
+            self._set_new_ph_target()
+        self.temp += random.uniform(-0.1, 0.1)
 
         # Prevent negative values
         for r in ["o", "c", "n"]:
@@ -384,6 +403,14 @@ class nutrients ():
                 self.resource_pool[r] = 0
             if self.resource_pool[r] > 1:
                 self.resource_pool[r] = 1
+        if self.ph < 4:
+            self.ph = 4
+        if self.ph > 10:
+            self.ph = 10
+        if self.temp < 34:
+            self.temp = 34
+        if self.temp > 40:
+            self.temp = 40
             
             
             
@@ -439,16 +466,16 @@ def reset_simulation():
     for x in range(30):
         dots.append(Dot(random.randint(0, WIDTH), random.randint(0, HEIGHT)))
         dots[-1].evolution_speed = (evo_speed_range[1] - evo_speed_range[0]) / 30 * x + evo_speed_range[0]
-    nutrient = nutrients()
+    enviorment_state = enviorment()
     #totalSim += 1
     frame_count = 0
-    return dots, nutrient
+    return dots, enviorment_state
 
-nutrient = nutrients()
+enviorment_state = enviorment()
 
 # Create dots
 dots = []
-dots, nutrient = reset_simulation()
+dots, enviorment_state = reset_simulation()
 
 
 
@@ -510,14 +537,8 @@ species_trackers            = {}
 arithmetic_points           = []
 arithmetic_graph_error       = ""
 
-temp = 37.0
-
-
-
 fightChance                 = 5
 
-
-phLevel                     = 7.0
 
 tempDirUp = True
 
