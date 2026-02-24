@@ -329,8 +329,8 @@ class Dot:
         temp_diff = abs(self.optimal_temp - temp)
         ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
         temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
-        ph_effect = min(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
-        temp_effect = min(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
+        ph_effect = max(1.0, (ph_diff / ph_div) * PH_EFFECT_SCALE)
+        temp_effect = max(1.0, (temp_diff / temp_div) * TEMP_EFFECT_SCALE)
         debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
         for r in ["o", "c", "n"]:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
@@ -697,7 +697,7 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
-    if random.uniform(0, child.evolution_speed) < 0.09:
+    if random.uniform(0, child.evolution_speed/2 + 0.055) < 0.11:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
