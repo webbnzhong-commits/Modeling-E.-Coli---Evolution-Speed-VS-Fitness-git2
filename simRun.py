@@ -583,6 +583,36 @@ def _tail_text_file(path: Path, max_lines: int = 80, max_bytes: int = 262144) ->
     return "\n".join(lines).strip()
 
 
+def _recent_simrun_print_log_lines(hub_dir: Path, max_lines: int = 100) -> list[str]:
+    csv_path = Path(hub_dir) / "simrun_print_log.csv"
+    if not csv_path.exists():
+        return []
+    tail = _tail_text_file(csv_path, max_lines=max(1, int(max_lines)) + 8, max_bytes=1048576)
+    if not tail:
+        return []
+
+    raw_lines = [line for line in tail.splitlines() if line.strip()]
+    if raw_lines and str(raw_lines[0]).strip().lower() == "timestamp,message":
+        raw_lines = raw_lines[1:]
+    if len(raw_lines) > max_lines:
+        raw_lines = raw_lines[-max_lines:]
+
+    out: list[str] = []
+    for line in raw_lines:
+        try:
+            row = next(csv.reader([line]))
+        except Exception:
+            out.append(str(line))
+            continue
+        if len(row) >= 2:
+            stamp = str(row[0]).strip()
+            message = str(row[1])
+            out.append(f"{stamp} {message}".strip())
+        elif len(row) == 1:
+            out.append(str(row[0]))
+    return out
+
+
 def _can_read_quit_key() -> bool:
     if termios is None or tty is None:
         return False
@@ -691,6 +721,7 @@ class _HubCsvPrintLog:
 
 def _make_tee_print(base_print, log_handle, hub_csv_log: _HubCsvPrintLog | None = None):
     def _tee_print(*args, **kwargs):
+        skip_hub_csv = bool(kwargs.pop("_skip_hub_csv", False))
         base_print(*args, **kwargs)
         if log_handle is None:
             pass
@@ -700,7 +731,7 @@ def _make_tee_print(base_print, log_handle, hub_csv_log: _HubCsvPrintLog | None 
             log_kwargs["flush"] = True
             base_print(*args, **log_kwargs)
 
-        if hub_csv_log is None:
+        if hub_csv_log is None or skip_hub_csv:
             return
         target_file = kwargs.get("file", None)
         if target_file not in (None, sys.stdout, sys.stderr):
@@ -811,10 +842,30 @@ def main() -> None:
 
     hub_dir: Path | None = None
     discovered_once = False
+    recent_history_printed = False
+    recent_history_cache: list[str] | None = None
     interval = max(1, int(args.print_every_seconds))
     next_print = time.time() + interval
     quit_requested = False
     quit_requested_at = None
+
+    def _print_recent_history_if_available() -> None:
+        nonlocal recent_history_printed, recent_history_cache
+        if recent_history_printed or hub_dir is None:
+            return
+        recent_history_printed = True
+        if recent_history_cache is None:
+            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
+        recent = recent_history_cache
+        recent_history_cache = None
+        if not recent:
+            return
+        print(
+            f"Recent simrun_print_log history (last {len(recent)} lines):",
+            _skip_hub_csv=True,
+        )
+        for line in recent:
+            print(f"  {line}", _skip_hub_csv=True)
 
     use_keypoll = _can_read_quit_key()
     stdin_fd = None
@@ -869,7 +920,9 @@ def main() -> None:
                 if new_candidates:
                     new_candidates.sort(key=lambda p: (_hub_index(p), str(p)))
                     hub_dir = new_candidates[-1]
+                    recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
                     hub_csv_log.attach_hub(hub_dir)
+                    _print_recent_history_if_available()
                     print(f"New hub created: {hub_dir}")
 
             now = time.time()
@@ -904,7 +957,9 @@ def main() -> None:
                 hub_dir = new_candidates[-1]
 
         if hub_dir is not None:
+            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
             hub_csv_log.attach_hub(hub_dir)
+            _print_recent_history_if_available()
             summary = _snapshot_summary(hub_dir)
             if isinstance(summary, dict):
                 if not discovered_once:
