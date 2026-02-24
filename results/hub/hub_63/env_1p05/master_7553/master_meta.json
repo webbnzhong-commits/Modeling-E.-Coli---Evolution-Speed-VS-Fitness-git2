@@ -1,0 +1,83 @@
+{
+  "run_nums": [
+    122516,
+    122517,
+    122518,
+    122519,
+    122520,
+    122521,
+    122522,
+    122523,
+    122524,
+    122525,
+    122526,
+    122527,
+    122528,
+    122529,
+    122530,
+    122531,
+    122532,
+    122533,
+    122534,
+    122535,
+    122536,
+    122537,
+    122538,
+    122539,
+    122540,
+    122541,
+    122542,
+    122543,
+    122544,
+    122545
+  ],
+  "settings": {
+    "screen": {
+      "width": 1280,
+      "height": 832
+    },
+    "display_mode": 2,
+    "draw": false,
+    "drawSometimes": true,
+    "drawAmnt": 500,
+    "population_cap": 0.5,
+    "enviormentChangeRate": 1.05,
+    "ph_effect": {
+      "scale": 10.0,
+      "divisor": 2.0
+    },
+    "temp_effect": {
+      "scale": 10.0,
+      "divisor": 4.0
+    },
+    "reproduction_debuf_min": 0.001,
+    "quan": 2.0,
+    "immune_system_quan_factor": 0.15,
+    "num_tries_hub": 64,
+    "simulations": {
+      "count": 30
+    },
+    "master_graph": {
+      "dot_alpha": 50,
+      "dot_radius": 3
+    },
+    "hub": {
+      "start_rate": 0.5,
+      "end_rate": 2.5,
+      "step": 0.01,
+      "species_threshold": 8000,
+      "max_masters": 241
+    },
+    "stop_conditions": {
+      "runtime_enabled": false,
+      "max_runtime_hours": 0.0,
+      "frames_enabled": false,
+      "max_frames": 0,
+      "species_enabled": true,
+      "max_species": 8000,
+      "datetime_enabled": false,
+      "stop_at_datetime": ""
+    }
+  },
+  "updated_at": 1771891556.9746668
+}
