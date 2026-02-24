@@ -327,8 +327,6 @@ class Dot:
         reproduce = True
         ph_diff = abs(self.optimal_ph - enviorment_state.ph)
         temp_diff = abs(self.optimal_temp - enviorment_state.temp)
-        ph_div = max(PH_EFFECT_DIVISOR, 1e-6)
-        temp_div = max(TEMP_EFFECT_DIVISOR, 1e-6)
         ph_effect = max(1.0, (ph_diff) * PH_EFFECT_SCALE)
         temp_effect = max(1.0, (temp_diff) * TEMP_EFFECT_SCALE)
         debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
