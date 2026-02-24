@@ -1,0 +1,410 @@
+timestamp,message
+2026-02-24 21:12:32,simRun session log: results/run_logs/simrun_2538_1771967551482.log
+2026-02-24 21:12:32,Starting new hub run: /home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/venv/bin/python3 /home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/hub_runner.py --results-root results --script simulation_entry.py --no-screen --screen-hold-seconds 0
+2026-02-24 21:12:32,hub_runner raw log: results/run_logs/hub_runner_2538_1771967551484.log
+2026-02-24 21:12:32,Press q to gracefully stop this hub run.
+2026-02-24 21:12:32,New hub created: results/hub/hub_68
+2026-02-24 21:12:41,[2026-02-24 21:12:41] [UPDATE] hub_68 status=running progress=0/201 (0.00%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:08
+2026-02-24 21:12:41,  estimate remaining=55:43:51 total=55:43:59 finish_at=2026-02-27 04:56:32
+2026-02-24 21:12:41,  running step=1 env_rate=0.5
+2026-02-24 21:12:41,  running master=master_8503 sims=94 avg_1000_iter=0.81s avg_fps=1237.91 species_progress=174.0/20000 (0.87%) species_total=174.0 species_max=4.0 frames_max=6000
+2026-02-24 21:12:51,[2026-02-24 21:12:51] [UPDATE] hub_68 status=running progress=0/201 (0.02%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:18
+2026-02-24 21:12:51,  estimate remaining=26:47:25 total=26:47:44 finish_at=2026-02-26 00:00:17
+2026-02-24 21:12:51,  running step=1 env_rate=0.5
+2026-02-24 21:12:51,  running master=master_8503 sims=94 avg_1000_iter=0.88s avg_fps=1135.67 species_progress=779.0/20000 (3.90%) species_total=779.0 species_max=16.0 frames_max=24000
+2026-02-24 21:13:01,[2026-02-24 21:13:01] [UPDATE] hub_68 status=running progress=0/201 (0.03%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:28
+2026-02-24 21:13:01,  estimate remaining=23:50:22 total=23:50:51 finish_at=2026-02-25 21:03:24
+2026-02-24 21:13:01,  running step=1 env_rate=0.5
+2026-02-24 21:13:01,  running master=master_8503 sims=94 avg_1000_iter=0.89s avg_fps=1117.67 species_progress=1344.0/20000 (6.72%) species_total=1344.0 species_max=23.0 frames_max=39000
+2026-02-24 21:13:11,[2026-02-24 21:13:11] [UPDATE] hub_68 status=running progress=0/201 (0.05%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:38
+2026-02-24 21:13:11,  estimate remaining=22:36:38 total=22:37:17 finish_at=2026-02-25 19:49:50
+2026-02-24 21:13:11,  running step=1 env_rate=0.5
+2026-02-24 21:13:11,  running master=master_8503 sims=94 avg_1000_iter=0.90s avg_fps=1115.23 species_progress=1911.0/20000 (9.55%) species_total=1911.0 species_max=29.0 frames_max=52000
+2026-02-24 21:13:21,[2026-02-24 21:13:21] [UPDATE] hub_68 status=running progress=0/201 (0.06%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:48
+2026-02-24 21:13:21,  estimate remaining=21:59:16 total=22:00:05 finish_at=2026-02-25 19:12:38
+2026-02-24 21:13:21,  running step=1 env_rate=0.5
+2026-02-24 21:13:21,  running master=master_8503 sims=94 avg_1000_iter=0.90s avg_fps=1109.57 species_progress=2473.0/20000 (12.37%) species_total=2473.0 species_max=36.0 frames_max=62000
+2026-02-24 21:13:31,[2026-02-24 21:13:31] [UPDATE] hub_68 status=running progress=0/201 (0.08%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:58
+2026-02-24 21:13:31,  estimate remaining=21:26:22 total=21:27:21 finish_at=2026-02-25 18:39:53
+2026-02-24 21:13:31,  running step=1 env_rate=0.5
+2026-02-24 21:13:31,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1104.73 species_progress=3057.0/20000 (15.29%) species_total=3057.0 species_max=43.0 frames_max=76000
+2026-02-24 21:13:41,[2026-02-24 21:13:41] [UPDATE] hub_68 status=running progress=0/201 (0.09%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:08
+2026-02-24 21:13:41,  estimate remaining=21:11:37 total=21:12:46 finish_at=2026-02-25 18:25:19
+2026-02-24 21:13:41,  running step=1 env_rate=0.5
+2026-02-24 21:13:41,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1102.48 species_progress=3620.0/20000 (18.10%) species_total=3620.0 species_max=49.0 frames_max=88000
+2026-02-24 21:13:51,[2026-02-24 21:13:51] [UPDATE] hub_68 status=running progress=0/201 (0.10%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:18
+2026-02-24 21:13:51,  estimate remaining=21:00:34 total=21:01:52 finish_at=2026-02-25 18:14:25
+2026-02-24 21:13:51,  running step=1 env_rate=0.5
+2026-02-24 21:13:51,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1101.19 species_progress=4183.0/20000 (20.91%) species_total=4183.0 species_max=55.0 frames_max=98000
+2026-02-24 21:14:01,[2026-02-24 21:14:01] [UPDATE] hub_68 status=running progress=0/201 (0.12%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:28
+2026-02-24 21:14:01,  estimate remaining=20:49:12 total=20:50:41 finish_at=2026-02-25 18:03:14
+2026-02-24 21:14:01,  running step=1 env_rate=0.5
+2026-02-24 21:14:01,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1099.23 species_progress=4757.0/20000 (23.79%) species_total=4757.0 species_max=62.0 frames_max=110000
+2026-02-24 21:14:11,[2026-02-24 21:14:11] [UPDATE] hub_68 status=running progress=0/201 (0.13%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:38
+2026-02-24 21:14:11,  estimate remaining=20:43:54 total=20:45:33 finish_at=2026-02-25 17:58:06
+2026-02-24 21:14:11,  running step=1 env_rate=0.5
+2026-02-24 21:14:11,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1097.52 species_progress=5316.0/20000 (26.58%) species_total=5316.0 species_max=71.0 frames_max=129000
+2026-02-24 21:14:21,[2026-02-24 21:14:21] [UPDATE] hub_68 status=running progress=0/201 (0.15%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:48
+2026-02-24 21:14:21,  estimate remaining=20:40:01 total=20:41:50 finish_at=2026-02-25 17:54:23
+2026-02-24 21:14:21,  running step=1 env_rate=0.5
+2026-02-24 21:14:21,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1097.01 species_progress=5873.0/20000 (29.36%) species_total=5873.0 species_max=85.0 frames_max=150000
+2026-02-24 21:14:31,[2026-02-24 21:14:31] [UPDATE] hub_68 status=running progress=0/201 (0.16%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:01:58
+2026-02-24 21:14:31,  estimate remaining=20:34:32 total=20:36:31 finish_at=2026-02-25 17:49:04
+2026-02-24 21:14:31,  running step=1 env_rate=0.5
+2026-02-24 21:14:31,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1096.47 species_progress=6441.0/20000 (32.20%) species_total=6441.0 species_max=97.0 frames_max=170000
+2026-02-24 21:14:41,[2026-02-24 21:14:41] [UPDATE] hub_68 status=running progress=0/201 (0.17%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:08
+2026-02-24 21:14:41,  estimate remaining=20:28:22 total=20:30:31 finish_at=2026-02-25 17:43:04
+2026-02-24 21:14:41,  running step=1 env_rate=0.5
+2026-02-24 21:14:41,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1095.80 species_progress=7018.0/20000 (35.09%) species_total=7018.0 species_max=107.0 frames_max=186000
+2026-02-24 21:14:51,[2026-02-24 21:14:51] [UPDATE] hub_68 status=running progress=0/201 (0.19%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:18
+2026-02-24 21:14:51,  estimate remaining=20:26:11 total=20:28:30 finish_at=2026-02-25 17:41:02
+2026-02-24 21:14:51,  running step=1 env_rate=0.5
+2026-02-24 21:14:51,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1094.80 species_progress=7576.0/20000 (37.88%) species_total=7576.0 species_max=111.0 frames_max=197000
+2026-02-24 21:15:01,[2026-02-24 21:15:01] [UPDATE] hub_68 status=running progress=0/201 (0.20%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:28
+2026-02-24 21:15:01,  estimate remaining=20:24:51 total=20:27:19 finish_at=2026-02-25 17:39:52
+2026-02-24 21:15:01,  running step=1 env_rate=0.5
+2026-02-24 21:15:01,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1094.74 species_progress=8130.0/20000 (40.65%) species_total=8130.0 species_max=114.0 frames_max=208000
+2026-02-24 21:15:11,[2026-02-24 21:15:11] [UPDATE] hub_68 status=running progress=0/201 (0.22%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:38
+2026-02-24 21:15:11,  estimate remaining=20:20:36 total=20:23:15 finish_at=2026-02-25 17:35:48
+2026-02-24 21:15:11,  running step=1 env_rate=0.5
+2026-02-24 21:15:11,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1094.06 species_progress=8706.0/20000 (43.53%) species_total=8706.0 species_max=119.0 frames_max=219000
+2026-02-24 21:15:21,[2026-02-24 21:15:21] [UPDATE] hub_68 status=running progress=0/201 (0.23%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:48
+2026-02-24 21:15:21,  estimate remaining=20:15:50 total=20:18:39 finish_at=2026-02-25 17:31:12
+2026-02-24 21:15:21,  running step=1 env_rate=0.5
+2026-02-24 21:15:21,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1093.71 species_progress=9290.0/20000 (46.45%) species_total=9290.0 species_max=126.0 frames_max=229000
+2026-02-24 21:15:31,[2026-02-24 21:15:31] [UPDATE] hub_68 status=running progress=0/201 (0.25%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:58
+2026-02-24 21:15:31,  estimate remaining=20:13:57 total=20:16:56 finish_at=2026-02-25 17:29:28
+2026-02-24 21:15:31,  running step=1 env_rate=0.5
+2026-02-24 21:15:31,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1093.56 species_progress=9855.0/20000 (49.27%) species_total=9855.0 species_max=132.0 frames_max=240000
+2026-02-24 21:15:41,[2026-02-24 21:15:41] [UPDATE] hub_68 status=running progress=0/201 (0.26%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:09
+2026-02-24 21:15:41,  estimate remaining=20:10:52 total=20:14:01 finish_at=2026-02-25 17:26:34
+2026-02-24 21:15:41,  running step=1 env_rate=0.5
+2026-02-24 21:15:41,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1093.44 species_progress=10432.0/20000 (52.16%) species_total=10432.0 species_max=138.0 frames_max=251000
+2026-02-24 21:15:51,[2026-02-24 21:15:51] [UPDATE] hub_68 status=running progress=0/201 (0.27%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:19
+2026-02-24 21:15:51,  estimate remaining=20:08:05 total=20:11:24 finish_at=2026-02-25 17:23:57
+2026-02-24 21:15:51,  running step=1 env_rate=0.5
+2026-02-24 21:15:51,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1093.31 species_progress=11009.0/20000 (55.05%) species_total=11009.0 species_max=145.0 frames_max=261000
+2026-02-24 21:16:01,[2026-02-24 21:16:01] [UPDATE] hub_68 status=running progress=0/201 (0.29%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:29
+2026-02-24 21:16:01,  estimate remaining=20:06:17 total=20:09:46 finish_at=2026-02-25 17:22:18
+2026-02-24 21:16:01,  running step=1 env_rate=0.5
+2026-02-24 21:16:01,  running master=master_8503 sims=94 avg_1000_iter=0.91s avg_fps=1093.16 species_progress=11579.0/20000 (57.90%) species_total=11579.0 species_max=151.0 frames_max=272000
+2026-02-24 21:16:11,[2026-02-24 21:16:11] [UPDATE] hub_68 status=running progress=0/201 (0.30%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:39
+2026-02-24 21:16:11,  estimate remaining=20:05:45 total=20:09:24 finish_at=2026-02-25 17:21:57
+2026-02-24 21:16:11,  running step=1 env_rate=0.5
+2026-02-24 21:16:11,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1092.75 species_progress=12138.0/20000 (60.69%) species_total=12138.0 species_max=158.0 frames_max=283000
+2026-02-24 21:16:21,[2026-02-24 21:16:21] [UPDATE] hub_68 status=running progress=0/201 (0.32%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:49
+2026-02-24 21:16:21,  estimate remaining=20:05:15 total=20:09:04 finish_at=2026-02-25 17:21:37
+2026-02-24 21:16:21,  running step=1 env_rate=0.5
+2026-02-24 21:16:21,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1092.61 species_progress=12697.0/20000 (63.48%) species_total=12697.0 species_max=165.0 frames_max=294000
+2026-02-24 21:16:31,[2026-02-24 21:16:31] [UPDATE] hub_68 status=running progress=0/201 (0.33%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:03:59
+2026-02-24 21:16:31,  estimate remaining=20:04:31 total=20:08:30 finish_at=2026-02-25 17:21:03
+2026-02-24 21:16:31,  running step=1 env_rate=0.5
+2026-02-24 21:16:31,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.93 species_progress=13259.0/20000 (66.30%) species_total=13259.0 species_max=171.0 frames_max=305000
+2026-02-24 21:16:42,[2026-02-24 21:16:42] [UPDATE] hub_68 status=running progress=0/201 (0.34%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:09
+2026-02-24 21:16:42,  estimate remaining=20:02:32 total=20:06:42 finish_at=2026-02-25 17:19:14
+2026-02-24 21:16:42,  running step=1 env_rate=0.5
+2026-02-24 21:16:42,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.96 species_progress=13836.0/20000 (69.18%) species_total=13836.0 species_max=178.0 frames_max=315000
+2026-02-24 21:16:52,[2026-02-24 21:16:52] [UPDATE] hub_68 status=running progress=0/201 (0.36%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:19
+2026-02-24 21:16:52,  estimate remaining=20:00:12 total=20:04:31 finish_at=2026-02-25 17:17:04
+2026-02-24 21:16:52,  running step=1 env_rate=0.5
+2026-02-24 21:16:52,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.86 species_progress=14419.0/20000 (72.09%) species_total=14419.0 species_max=184.0 frames_max=326000
+2026-02-24 21:17:02,[2026-02-24 21:17:02] [UPDATE] hub_68 status=running progress=0/201 (0.37%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:29
+2026-02-24 21:17:02,  estimate remaining=20:00:12 total=20:04:41 finish_at=2026-02-25 17:17:14
+2026-02-24 21:17:02,  running step=1 env_rate=0.5
+2026-02-24 21:17:02,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.76 species_progress=14975.0/20000 (74.88%) species_total=14975.0 species_max=188.0 frames_max=337000
+2026-02-24 21:17:12,[2026-02-24 21:17:12] [UPDATE] hub_68 status=running progress=0/201 (0.39%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:39
+2026-02-24 21:17:12,  estimate remaining=19:58:39 total=20:03:18 finish_at=2026-02-25 17:15:51
+2026-02-24 21:17:12,  running step=1 env_rate=0.5
+2026-02-24 21:17:12,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.80 species_progress=15551.0/20000 (77.75%) species_total=15551.0 species_max=192.0 frames_max=347000
+2026-02-24 21:17:22,[2026-02-24 21:17:22] [UPDATE] hub_68 status=running progress=0/201 (0.40%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:49
+2026-02-24 21:17:22,  estimate remaining=19:58:23 total=20:03:13 finish_at=2026-02-25 17:15:46
+2026-02-24 21:17:22,  running step=1 env_rate=0.5
+2026-02-24 21:17:22,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.41 species_progress=16111.0/20000 (80.56%) species_total=16111.0 species_max=205.0 frames_max=358000
+2026-02-24 21:17:32,[2026-02-24 21:17:32] [UPDATE] hub_68 status=running progress=0/201 (0.41%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:04:59
+2026-02-24 21:17:32,  estimate remaining=19:59:09 total=20:04:09 finish_at=2026-02-25 17:16:42
+2026-02-24 21:17:32,  running step=1 env_rate=0.5
+2026-02-24 21:17:32,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.35 species_progress=16657.0/20000 (83.28%) species_total=16657.0 species_max=215.0 frames_max=378000
+2026-02-24 21:17:42,[2026-02-24 21:17:42] [UPDATE] hub_68 status=running progress=0/201 (0.43%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:09
+2026-02-24 21:17:42,  estimate remaining=19:57:34 total=20:02:43 finish_at=2026-02-25 17:15:16
+2026-02-24 21:17:42,  running step=1 env_rate=0.5
+2026-02-24 21:17:42,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.32 species_progress=17236.0/20000 (86.18%) species_total=17236.0 species_max=229.0 frames_max=398000
+2026-02-24 21:17:52,[2026-02-24 21:17:52] [UPDATE] hub_68 status=running progress=0/201 (0.44%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:19
+2026-02-24 21:17:52,  estimate remaining=19:57:32 total=20:02:52 finish_at=2026-02-25 17:15:25
+2026-02-24 21:17:52,  running step=1 env_rate=0.5
+2026-02-24 21:17:52,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.17 species_progress=17793.0/20000 (88.97%) species_total=17793.0 species_max=241.0 frames_max=419000
+2026-02-24 21:18:02,[2026-02-24 21:18:02] [UPDATE] hub_68 status=running progress=0/201 (0.46%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:29
+2026-02-24 21:18:02,  estimate remaining=19:57:54 total=20:03:23 finish_at=2026-02-25 17:15:56
+2026-02-24 21:18:02,  running step=1 env_rate=0.5
+2026-02-24 21:18:02,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.10 species_progress=18344.0/20000 (91.72%) species_total=18344.0 species_max=253.0 frames_max=439000
+2026-02-24 21:18:12,[2026-02-24 21:18:12] [UPDATE] hub_68 status=running progress=0/201 (0.47%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:39
+2026-02-24 21:18:12,  estimate remaining=19:57:28 total=20:03:08 finish_at=2026-02-25 17:15:40
+2026-02-24 21:18:12,  running step=1 env_rate=0.5
+2026-02-24 21:18:12,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1091.18 species_progress=18907.0/20000 (94.53%) species_total=18907.0 species_max=265.0 frames_max=461000
+2026-02-24 21:18:22,[2026-02-24 21:18:22] [UPDATE] hub_68 status=running progress=0/201 (0.48%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:49
+2026-02-24 21:18:22,  estimate remaining=19:57:11 total=20:03:01 finish_at=2026-02-25 17:15:34
+2026-02-24 21:18:22,  running step=1 env_rate=0.5
+2026-02-24 21:18:22,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1090.91 species_progress=19468.0/20000 (97.34%) species_total=19468.0 species_max=276.0 frames_max=482000
+2026-02-24 21:18:32,[2026-02-24 21:18:32] [UPDATE] hub_68 status=running progress=0/201 (0.50%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:05:59
+2026-02-24 21:18:32,  estimate remaining=19:58:39 total=20:04:38 finish_at=2026-02-25 17:17:11
+2026-02-24 21:18:32,  running step=1 env_rate=0.5
+2026-02-24 21:18:32,  running master=master_8503 sims=94 avg_1000_iter=0.92s avg_fps=1090.67 species_progress=20037.0/20000 (100.19%) species_total=20037.0 species_max=287.0 frames_max=502000
+2026-02-24 21:18:42,[2026-02-24 21:18:42] [UPDATE] hub_68 status=running progress=1/201 (0.50%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:09
+2026-02-24 21:18:42,  estimate remaining=20:24:31 total=20:30:41 finish_at=2026-02-25 17:43:14
+2026-02-24 21:18:42,  running step=2 env_rate=0.51
+2026-02-24 21:18:42,  running master=master_8504 sims=94 avg_1000_iter=0.81s avg_fps=1229.35 species_progress=123.0/20000 (0.61%) species_total=123.0 species_max=3.0 frames_max=4000
+2026-02-24 21:18:42,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:18:52,[2026-02-24 21:18:52] [UPDATE] hub_68 status=running progress=1/201 (0.51%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:19
+2026-02-24 21:18:52,  estimate remaining=20:26:26 total=20:32:46 finish_at=2026-02-25 17:45:18
+2026-02-24 21:18:52,  running step=2 env_rate=0.51
+2026-02-24 21:18:52,  running master=master_8504 sims=94 avg_1000_iter=0.88s avg_fps=1135.85 species_progress=633.0/20000 (3.17%) species_total=633.0 species_max=11.0 frames_max=21000
+2026-02-24 21:18:52,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:02,[2026-02-24 21:19:02] [UPDATE] hub_68 status=running progress=1/201 (0.53%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:29
+2026-02-24 21:19:02,  estimate remaining=20:26:54 total=20:33:24 finish_at=2026-02-25 17:45:57
+2026-02-24 21:19:02,  running step=2 env_rate=0.51
+2026-02-24 21:19:02,  running master=master_8504 sims=94 avg_1000_iter=0.89s avg_fps=1120.14 species_progress=1166.0/20000 (5.83%) species_total=1166.0 species_max=20.0 frames_max=40000
+2026-02-24 21:19:02,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:12,[2026-02-24 21:19:12] [UPDATE] hub_68 status=running progress=1/201 (0.54%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:39
+2026-02-24 21:19:12,  estimate remaining=20:28:19 total=20:34:59 finish_at=2026-02-25 17:47:32
+2026-02-24 21:19:12,  running step=2 env_rate=0.51
+2026-02-24 21:19:12,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1109.89 species_progress=1682.0/20000 (8.41%) species_total=1682.0 species_max=31.0 frames_max=60000
+2026-02-24 21:19:12,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:22,[2026-02-24 21:19:22] [UPDATE] hub_68 status=running progress=1/201 (0.55%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:49
+2026-02-24 21:19:22,  estimate remaining=20:29:53 total=20:36:43 finish_at=2026-02-25 17:49:16
+2026-02-24 21:19:22,  running step=2 env_rate=0.51
+2026-02-24 21:19:22,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1108.79 species_progress=2194.0/20000 (10.97%) species_total=2194.0 species_max=39.0 frames_max=78000
+2026-02-24 21:19:22,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:32,[2026-02-24 21:19:32] [UPDATE] hub_68 status=running progress=1/201 (0.56%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:06:59
+2026-02-24 21:19:32,  estimate remaining=20:31:55 total=20:38:55 finish_at=2026-02-25 17:51:28
+2026-02-24 21:19:32,  running step=2 env_rate=0.51
+2026-02-24 21:19:32,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1111.15 species_progress=2696.0/20000 (13.48%) species_total=2696.0 species_max=48.0 frames_max=99000
+2026-02-24 21:19:32,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:42,[2026-02-24 21:19:42] [UPDATE] hub_68 status=running progress=1/201 (0.58%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:09
+2026-02-24 21:19:42,  estimate remaining=20:32:12 total=20:39:22 finish_at=2026-02-25 17:51:55
+2026-02-24 21:19:42,  running step=2 env_rate=0.51
+2026-02-24 21:19:42,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1108.73 species_progress=3229.0/20000 (16.14%) species_total=3229.0 species_max=57.0 frames_max=115000
+2026-02-24 21:19:42,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:19:52,[2026-02-24 21:19:52] [UPDATE] hub_68 status=running progress=1/201 (0.59%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:19
+2026-02-24 21:19:52,  estimate remaining=20:32:57 total=20:40:16 finish_at=2026-02-25 17:52:49
+2026-02-24 21:19:52,  running step=2 env_rate=0.51
+2026-02-24 21:19:52,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1106.58 species_progress=3753.0/20000 (18.77%) species_total=3753.0 species_max=63.0 frames_max=126000
+2026-02-24 21:19:52,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:20:02,[2026-02-24 21:20:02] [UPDATE] hub_68 status=running progress=1/201 (0.60%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:29
+2026-02-24 21:20:02,  estimate remaining=20:33:55 total=20:41:25 finish_at=2026-02-25 17:53:57
+2026-02-24 21:20:02,  running step=2 env_rate=0.51
+2026-02-24 21:20:02,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1105.80 species_progress=4272.0/20000 (21.36%) species_total=4272.0 species_max=67.0 frames_max=137000
+2026-02-24 21:20:02,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:20:12,[2026-02-24 21:20:12] [UPDATE] hub_68 status=running progress=1/201 (0.62%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:39
+2026-02-24 21:20:12,  estimate remaining=20:34:53 total=20:42:33 finish_at=2026-02-25 17:55:06
+2026-02-24 21:20:12,  running step=2 env_rate=0.51
+2026-02-24 21:20:12,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1106.98 species_progress=4790.0/20000 (23.95%) species_total=4790.0 species_max=73.0 frames_max=149000
+2026-02-24 21:20:12,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:20:22,[2026-02-24 21:20:22] [UPDATE] hub_68 status=running progress=1/201 (0.63%) ok=1 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:49
+2026-02-24 21:20:22,  estimate remaining=20:34:55 total=20:42:45 finish_at=2026-02-25 17:55:18
+2026-02-24 21:20:22,  running step=2 env_rate=0.51
+2026-02-24 21:20:22,  running master=master_8504 sims=94 avg_1000_iter=0.90s avg_fps=1105.79 species_progress=5327.0/20000 (26.64%) species_total=5327.0 species_max=79.0 frames_max=159000
+2026-02-24 21:20:22,"  last step=1 status=ok env_rate=0.5 master=8503 r2=0.1139 apex=(0.108,2166)"
+2026-02-24 21:20:32,[2026-02-24 21:20:32] [UPDATE] hub_68 status=running progress=2/201 (1.00%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:59
+2026-02-24 21:20:32,  estimate remaining=13:15:41 total=13:23:41 finish_at=2026-02-25 10:36:14
+2026-02-24 21:20:32,  running step=3 env_rate=0.52
+2026-02-24 21:20:32,  running master=-- sims=0 avg_1000_iter=-- avg_fps=-- species_progress=--/20000 species_total=-- species_max=-- frames_max=--
+2026-02-24 21:20:32,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:20:42,[2026-02-24 21:20:42] [UPDATE] hub_68 status=running progress=2/201 (1.00%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:09
+2026-02-24 21:20:42,  estimate remaining=13:25:00 total=13:33:10 finish_at=2026-02-25 10:45:42
+2026-02-24 21:20:42,  running step=3 env_rate=0.52
+2026-02-24 21:20:42,  running master=master_8505 sims=94 avg_1000_iter=0.85s avg_fps=1171.23 species_progress=358.0/20000 (1.79%) species_total=358.0 species_max=7.0 frames_max=12000
+2026-02-24 21:20:42,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:20:52,[2026-02-24 21:20:52] [UPDATE] hub_68 status=running progress=2/201 (1.02%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:19
+2026-02-24 21:20:52,  estimate remaining=13:30:33 total=13:38:53 finish_at=2026-02-25 10:51:26
+2026-02-24 21:20:52,  running step=3 env_rate=0.52
+2026-02-24 21:20:52,  running master=master_8505 sims=94 avg_1000_iter=0.89s avg_fps=1123.57 species_progress=895.0/20000 (4.47%) species_total=895.0 species_max=16.0 frames_max=33000
+2026-02-24 21:20:52,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:02,[2026-02-24 21:21:02] [UPDATE] hub_68 status=running progress=2/201 (1.03%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:29
+2026-02-24 21:21:02,  estimate remaining=13:36:26 total=13:44:56 finish_at=2026-02-25 10:57:29
+2026-02-24 21:21:02,  running step=3 env_rate=0.52
+2026-02-24 21:21:02,  running master=master_8505 sims=94 avg_1000_iter=0.89s avg_fps=1117.78 species_progress=1408.0/20000 (7.04%) species_total=1408.0 species_max=23.0 frames_max=51000
+2026-02-24 21:21:02,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:12,[2026-02-24 21:21:12] [UPDATE] hub_68 status=running progress=2/201 (1.04%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:39
+2026-02-24 21:21:12,  estimate remaining=13:42:01 total=13:50:41 finish_at=2026-02-25 11:03:13
+2026-02-24 21:21:12,  running step=3 env_rate=0.52
+2026-02-24 21:21:12,  running master=master_8505 sims=94 avg_1000_iter=0.90s avg_fps=1114.39 species_progress=1929.0/20000 (9.64%) species_total=1929.0 species_max=32.0 frames_max=69000
+2026-02-24 21:21:12,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:22,[2026-02-24 21:21:22] [UPDATE] hub_68 status=running progress=2/201 (1.06%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:49
+2026-02-24 21:21:22,  estimate remaining=13:47:50 total=13:56:40 finish_at=2026-02-25 11:09:12
+2026-02-24 21:21:22,  running step=3 env_rate=0.52
+2026-02-24 21:21:22,  running master=master_8505 sims=94 avg_1000_iter=0.90s avg_fps=1113.00 species_progress=2431.0/20000 (12.15%) species_total=2431.0 species_max=37.0 frames_max=84000
+2026-02-24 21:21:22,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:32,[2026-02-24 21:21:32] [UPDATE] hub_68 status=running progress=2/201 (1.07%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:08:59
+2026-02-24 21:21:32,  estimate remaining=13:52:27 total=14:01:27 finish_at=2026-02-25 11:14:00
+2026-02-24 21:21:32,  running step=3 env_rate=0.52
+2026-02-24 21:21:32,  running master=master_8505 sims=94 avg_1000_iter=0.90s avg_fps=1108.87 species_progress=2987.0/20000 (14.94%) species_total=2987.0 species_max=47.0 frames_max=102000
+2026-02-24 21:21:32,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:42,[2026-02-24 21:21:42] [UPDATE] hub_68 status=running progress=2/201 (1.08%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:09:09
+2026-02-24 21:21:42,  estimate remaining=13:58:06 total=14:07:15 finish_at=2026-02-25 11:19:48
+2026-02-24 21:21:42,  running step=3 env_rate=0.52
+2026-02-24 21:21:42,  running master=master_8505 sims=94 avg_1000_iter=0.90s avg_fps=1106.85 species_progress=3484.0/20000 (17.42%) species_total=3484.0 species_max=52.0 frames_max=113000
+2026-02-24 21:21:42,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:21:52,[2026-02-24 21:21:52] [UPDATE] hub_68 status=running progress=2/201 (1.10%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:09:19
+2026-02-24 21:21:52,  estimate remaining=14:02:48 total=14:12:08 finish_at=2026-02-25 11:24:40
+2026-02-24 21:21:52,  running step=3 env_rate=0.52
+2026-02-24 21:21:52,  running master=master_8505 sims=94 avg_1000_iter=0.90s avg_fps=1105.49 species_progress=4023.0/20000 (20.11%) species_total=4023.0 species_max=58.0 frames_max=124000
+2026-02-24 21:21:52,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:02,[2026-02-24 21:22:02] [UPDATE] hub_68 status=running progress=2/201 (1.11%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:09:29
+2026-02-24 21:22:02,  estimate remaining=14:07:31 total=14:17:01 finish_at=2026-02-25 11:29:34
+2026-02-24 21:22:02,  running step=3 env_rate=0.52
+2026-02-24 21:22:02,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1104.02 species_progress=4556.0/20000 (22.78%) species_total=4556.0 species_max=66.0 frames_max=135000
+2026-02-24 21:22:02,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:12,[2026-02-24 21:22:12] [UPDATE] hub_68 status=running progress=2/201 (1.12%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:09:39
+2026-02-24 21:22:12,  estimate remaining=14:12:31 total=14:22:11 finish_at=2026-02-25 11:34:43
+2026-02-24 21:22:12,  running step=3 env_rate=0.52
+2026-02-24 21:22:12,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1104.90 species_progress=5068.0/20000 (25.34%) species_total=5068.0 species_max=77.0 frames_max=148000
+2026-02-24 21:22:12,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:22,[2026-02-24 21:22:22] [UPDATE] hub_68 status=running progress=2/201 (1.13%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:09:49
+2026-02-24 21:22:22,  estimate remaining=14:17:19 total=14:27:09 finish_at=2026-02-25 11:39:42
+2026-02-24 21:22:22,  running step=3 env_rate=0.52
+2026-02-24 21:22:22,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1103.89 species_progress=5585.0/20000 (27.93%) species_total=5585.0 species_max=91.0 frames_max=170000
+2026-02-24 21:22:22,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:32,[2026-02-24 21:22:32] [UPDATE] hub_68 status=running progress=2/201 (1.15%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:00
+2026-02-24 21:22:32,  estimate remaining=14:21:39 total=14:31:39 finish_at=2026-02-25 11:44:12
+2026-02-24 21:22:32,  running step=3 env_rate=0.52
+2026-02-24 21:22:32,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1103.82 species_progress=6121.0/20000 (30.61%) species_total=6121.0 species_max=103.0 frames_max=191000
+2026-02-24 21:22:32,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:42,[2026-02-24 21:22:42] [UPDATE] hub_68 status=running progress=2/201 (1.16%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:10
+2026-02-24 21:22:42,  estimate remaining=14:25:54 total=14:36:04 finish_at=2026-02-25 11:48:37
+2026-02-24 21:22:42,  running step=3 env_rate=0.52
+2026-02-24 21:22:42,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1103.17 species_progress=6656.0/20000 (33.28%) species_total=6656.0 species_max=111.0 frames_max=212000
+2026-02-24 21:22:42,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:22:52,[2026-02-24 21:22:52] [UPDATE] hub_68 status=running progress=2/201 (1.17%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:20
+2026-02-24 21:22:52,  estimate remaining=14:30:01 total=14:40:22 finish_at=2026-02-25 11:52:54
+2026-02-24 21:22:52,  running step=3 env_rate=0.52
+2026-02-24 21:22:52,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1102.17 species_progress=7192.0/20000 (35.96%) species_total=7192.0 species_max=123.0 frames_max=235000
+2026-02-24 21:22:52,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:02,[2026-02-24 21:23:02] [UPDATE] hub_68 status=running progress=2/201 (1.19%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:30
+2026-02-24 21:23:02,  estimate remaining=14:34:26 total=14:44:56 finish_at=2026-02-25 11:57:29
+2026-02-24 21:23:02,  running step=3 env_rate=0.52
+2026-02-24 21:23:02,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1102.10 species_progress=7708.0/20000 (38.54%) species_total=7708.0 species_max=134.0 frames_max=256000
+2026-02-24 21:23:02,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:13,[2026-02-24 21:23:13] [UPDATE] hub_68 status=running progress=2/201 (1.20%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:40
+2026-02-24 21:23:13,  estimate remaining=14:38:41 total=14:49:21 finish_at=2026-02-25 12:01:54
+2026-02-24 21:23:13,  running step=3 env_rate=0.52
+2026-02-24 21:23:13,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1101.67 species_progress=8227.0/20000 (41.13%) species_total=8227.0 species_max=147.0 frames_max=278000
+2026-02-24 21:23:13,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:23,[2026-02-24 21:23:23] [UPDATE] hub_68 status=running progress=2/201 (1.21%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:10:50
+2026-02-24 21:23:23,  estimate remaining=14:42:43 total=14:53:34 finish_at=2026-02-25 12:06:06
+2026-02-24 21:23:23,  running step=3 env_rate=0.52
+2026-02-24 21:23:23,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1101.31 species_progress=8753.0/20000 (43.77%) species_total=8753.0 species_max=159.0 frames_max=299000
+2026-02-24 21:23:23,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:33,[2026-02-24 21:23:33] [UPDATE] hub_68 status=running progress=2/201 (1.23%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:00
+2026-02-24 21:23:33,  estimate remaining=14:46:50 total=14:57:50 finish_at=2026-02-25 12:10:23
+2026-02-24 21:23:33,  running step=3 env_rate=0.52
+2026-02-24 21:23:33,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1100.54 species_progress=9270.0/20000 (46.35%) species_total=9270.0 species_max=174.0 frames_max=321000
+2026-02-24 21:23:33,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:43,[2026-02-24 21:23:43] [UPDATE] hub_68 status=running progress=2/201 (1.24%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:10
+2026-02-24 21:23:43,  estimate remaining=14:50:39 total=15:01:49 finish_at=2026-02-25 12:14:22
+2026-02-24 21:23:43,  running step=3 env_rate=0.52
+2026-02-24 21:23:43,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1100.63 species_progress=9798.0/20000 (48.99%) species_total=9798.0 species_max=182.0 frames_max=342000
+2026-02-24 21:23:43,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:23:53,[2026-02-24 21:23:53] [UPDATE] hub_68 status=running progress=2/201 (1.25%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:20
+2026-02-24 21:23:53,  estimate remaining=14:54:27 total=15:05:48 finish_at=2026-02-25 12:18:20
+2026-02-24 21:23:53,  running step=3 env_rate=0.52
+2026-02-24 21:23:53,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1100.03 species_progress=10321.0/20000 (51.60%) species_total=10321.0 species_max=193.0 frames_max=363000
+2026-02-24 21:23:53,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:03,[2026-02-24 21:24:03] [UPDATE] hub_68 status=running progress=2/201 (1.26%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:30
+2026-02-24 21:24:03,  estimate remaining=14:58:12 total=15:09:43 finish_at=2026-02-25 12:22:15
+2026-02-24 21:24:03,  running step=3 env_rate=0.52
+2026-02-24 21:24:03,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1099.38 species_progress=10843.0/20000 (54.22%) species_total=10843.0 species_max=204.0 frames_max=384000
+2026-02-24 21:24:03,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:13,[2026-02-24 21:24:13] [UPDATE] hub_68 status=running progress=2/201 (1.28%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:40
+2026-02-24 21:24:13,  estimate remaining=15:01:33 total=15:13:14 finish_at=2026-02-25 12:25:47
+2026-02-24 21:24:13,  running step=3 env_rate=0.52
+2026-02-24 21:24:13,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1098.89 species_progress=11383.0/20000 (56.91%) species_total=11383.0 species_max=214.0 frames_max=406000
+2026-02-24 21:24:13,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:23,[2026-02-24 21:24:23] [UPDATE] hub_68 status=running progress=2/201 (1.29%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:11:50
+2026-02-24 21:24:23,  estimate remaining=15:05:29 total=15:17:20 finish_at=2026-02-25 12:29:53
+2026-02-24 21:24:23,  running step=3 env_rate=0.52
+2026-02-24 21:24:23,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1098.42 species_progress=11886.0/20000 (59.43%) species_total=11886.0 species_max=224.0 frames_max=428000
+2026-02-24 21:24:23,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:33,[2026-02-24 21:24:33] [UPDATE] hub_68 status=running progress=2/201 (1.30%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:00
+2026-02-24 21:24:33,  estimate remaining=15:09:10 total=15:21:11 finish_at=2026-02-25 12:33:43
+2026-02-24 21:24:33,  running step=3 env_rate=0.52
+2026-02-24 21:24:33,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1098.23 species_progress=12399.0/20000 (61.99%) species_total=12399.0 species_max=236.0 frames_max=449000
+2026-02-24 21:24:33,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:43,[2026-02-24 21:24:43] [UPDATE] hub_68 status=running progress=2/201 (1.32%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:10
+2026-02-24 21:24:43,  estimate remaining=15:12:52 total=15:25:02 finish_at=2026-02-25 12:37:35
+2026-02-24 21:24:43,  running step=3 env_rate=0.52
+2026-02-24 21:24:43,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.56 species_progress=12907.0/20000 (64.53%) species_total=12907.0 species_max=246.0 frames_max=470000
+2026-02-24 21:24:43,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:24:53,[2026-02-24 21:24:53] [UPDATE] hub_68 status=running progress=2/201 (1.33%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:20
+2026-02-24 21:24:53,  estimate remaining=15:16:21 total=15:28:41 finish_at=2026-02-25 12:41:14
+2026-02-24 21:24:53,  running step=3 env_rate=0.52
+2026-02-24 21:24:53,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.47 species_progress=13423.0/20000 (67.11%) species_total=13423.0 species_max=255.0 frames_max=491000
+2026-02-24 21:24:53,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:03,[2026-02-24 21:25:03] [UPDATE] hub_68 status=running progress=2/201 (1.34%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:30
+2026-02-24 21:25:03,  estimate remaining=15:19:19 total=15:31:49 finish_at=2026-02-25 12:44:22
+2026-02-24 21:25:03,  running step=3 env_rate=0.52
+2026-02-24 21:25:03,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.24 species_progress=13965.0/20000 (69.83%) species_total=13965.0 species_max=266.0 frames_max=512000
+2026-02-24 21:25:03,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:13,[2026-02-24 21:25:13] [UPDATE] hub_68 status=running progress=2/201 (1.36%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:40
+2026-02-24 21:25:13,  estimate remaining=15:22:31 total=15:35:12 finish_at=2026-02-25 12:47:45
+2026-02-24 21:25:13,  running step=3 env_rate=0.52
+2026-02-24 21:25:13,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.40 species_progress=14489.0/20000 (72.44%) species_total=14489.0 species_max=275.0 frames_max=534000
+2026-02-24 21:25:13,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:23,[2026-02-24 21:25:23] [UPDATE] hub_68 status=running progress=2/201 (1.37%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:12:50
+2026-02-24 21:25:23,  estimate remaining=15:25:33 total=15:38:24 finish_at=2026-02-25 12:50:57
+2026-02-24 21:25:23,  running step=3 env_rate=0.52
+2026-02-24 21:25:23,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.22 species_progress=15020.0/20000 (75.10%) species_total=15020.0 species_max=285.0 frames_max=555000
+2026-02-24 21:25:23,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:33,[2026-02-24 21:25:33] [UPDATE] hub_68 status=running progress=2/201 (1.38%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:00
+2026-02-24 21:25:33,  estimate remaining=15:28:46 total=15:41:46 finish_at=2026-02-25 12:54:19
+2026-02-24 21:25:33,  running step=3 env_rate=0.52
+2026-02-24 21:25:33,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1097.04 species_progress=15537.0/20000 (77.69%) species_total=15537.0 species_max=293.0 frames_max=575000
+2026-02-24 21:25:33,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:43,[2026-02-24 21:25:43] [UPDATE] hub_68 status=running progress=2/201 (1.40%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:10
+2026-02-24 21:25:43,  estimate remaining=15:31:24 total=15:44:35 finish_at=2026-02-25 12:57:08
+2026-02-24 21:25:43,  running step=3 env_rate=0.52
+2026-02-24 21:25:43,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.75 species_progress=16084.0/20000 (80.42%) species_total=16084.0 species_max=303.0 frames_max=595000
+2026-02-24 21:25:43,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:25:53,[2026-02-24 21:25:53] [UPDATE] hub_68 status=running progress=2/201 (1.41%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:20
+2026-02-24 21:25:53,  estimate remaining=15:34:33 total=15:47:54 finish_at=2026-02-25 13:00:27
+2026-02-24 21:25:53,  running step=3 env_rate=0.52
+2026-02-24 21:25:53,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.57 species_progress=16597.0/20000 (82.98%) species_total=16597.0 species_max=311.0 frames_max=617000
+2026-02-24 21:25:53,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:03,[2026-02-24 21:26:03] [UPDATE] hub_68 status=running progress=2/201 (1.42%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:30
+2026-02-24 21:26:03,  estimate remaining=15:37:38 total=15:51:09 finish_at=2026-02-25 13:03:42
+2026-02-24 21:26:03,  running step=3 env_rate=0.52
+2026-02-24 21:26:03,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.48 species_progress=17111.0/20000 (85.56%) species_total=17111.0 species_max=321.0 frames_max=638000
+2026-02-24 21:26:03,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:13,[2026-02-24 21:26:13] [UPDATE] hub_68 status=running progress=2/201 (1.43%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:40
+2026-02-24 21:26:13,  estimate remaining=15:40:23 total=15:54:04 finish_at=2026-02-25 13:06:36
+2026-02-24 21:26:13,  running step=3 env_rate=0.52
+2026-02-24 21:26:13,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.46 species_progress=17642.0/20000 (88.21%) species_total=17642.0 species_max=332.0 frames_max=660000
+2026-02-24 21:26:13,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:23,[2026-02-24 21:26:23] [UPDATE] hub_68 status=running progress=2/201 (1.45%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:13:50
+2026-02-24 21:26:23,  estimate remaining=15:43:11 total=15:57:02 finish_at=2026-02-25 13:09:35
+2026-02-24 21:26:23,  running step=3 env_rate=0.52
+2026-02-24 21:26:23,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.44 species_progress=18166.0/20000 (90.83%) species_total=18166.0 species_max=345.0 frames_max=682000
+2026-02-24 21:26:23,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:33,[2026-02-24 21:26:33] [UPDATE] hub_68 status=running progress=2/201 (1.46%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:14:00
+2026-02-24 21:26:33,  estimate remaining=15:45:59 total=16:00:00 finish_at=2026-02-25 13:12:33
+2026-02-24 21:26:33,  running step=3 env_rate=0.52
+2026-02-24 21:26:33,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.39 species_progress=18687.0/20000 (93.44%) species_total=18687.0 species_max=357.0 frames_max=703000
+2026-02-24 21:26:33,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:43,[2026-02-24 21:26:43] [UPDATE] hub_68 status=running progress=2/201 (1.47%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:14:10
+2026-02-24 21:26:43,  estimate remaining=15:48:41 total=16:02:52 finish_at=2026-02-25 13:15:25
+2026-02-24 21:26:43,  running step=3 env_rate=0.52
+2026-02-24 21:26:43,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.38 species_progress=19211.0/20000 (96.06%) species_total=19211.0 species_max=362.0 frames_max=717000
+2026-02-24 21:26:43,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:26:53,[2026-02-24 21:26:53] [UPDATE] hub_68 status=running progress=2/201 (1.49%) ok=2 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:14:21
+2026-02-24 21:26:53,  estimate remaining=15:51:09 total=16:05:30 finish_at=2026-02-25 13:18:03
+2026-02-24 21:26:53,  running step=3 env_rate=0.52
+2026-02-24 21:26:53,  running master=master_8505 sims=94 avg_1000_iter=0.91s avg_fps=1096.11 species_progress=19749.0/20000 (98.75%) species_total=19749.0 species_max=369.0 frames_max=729000
+2026-02-24 21:26:53,"  last step=2 status=ok env_rate=0.51 master=8504 r2=0.0609 apex=(0.108,2217)"
+2026-02-24 21:27:03,[2026-02-24 21:27:03] [UPDATE] hub_68 status=running progress=3/201 (1.49%) ok=3 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:14:31
+2026-02-24 21:27:03,  estimate remaining=15:58:10 total=16:12:41 finish_at=2026-02-25 13:25:14
+2026-02-24 21:27:03,  running step=4 env_rate=0.53
+2026-02-24 21:27:03,  running master=-- sims=0 avg_1000_iter=-- avg_fps=-- species_progress=--/20000 species_total=-- species_max=-- frames_max=--
+2026-02-24 21:27:03,"  last step=3 status=ok env_rate=0.52 master=8505 r2=0.0763 apex=(0.12,1744)"
+2026-02-24 21:27:13,[2026-02-24 21:27:13] [UPDATE] hub_68 status=running progress=3/201 (1.50%) ok=3 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:14:41
+2026-02-24 21:27:13,  estimate remaining=16:04:32 total=16:19:13 finish_at=2026-02-25 13:31:46
+2026-02-24 21:27:13,  running step=4 env_rate=0.53
+2026-02-24 21:27:13,  running master=master_8506 sims=94 avg_1000_iter=0.87s avg_fps=1149.24 species_progress=284.0/20000 (1.42%) species_total=284.0 species_max=9.0 frames_max=13000
+2026-02-24 21:27:13,"  last step=3 status=ok env_rate=0.52 master=8505 r2=0.0763 apex=(0.12,1744)"

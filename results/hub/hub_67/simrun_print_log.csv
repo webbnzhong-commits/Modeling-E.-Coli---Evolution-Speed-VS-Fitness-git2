@@ -1,0 +1,25 @@
+timestamp,message
+2026-02-24 21:12:11,simRun session log: results/run_logs/simrun_2512_1771967530245.log
+2026-02-24 21:12:11,Starting new hub run: /usr/bin/python3 /home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/hub_runner.py --results-root results --script simulation_entry.py --no-screen --screen-hold-seconds 0
+2026-02-24 21:12:11,hub_runner raw log: results/run_logs/hub_runner_2512_1771967530249.log
+2026-02-24 21:12:11,Press q to gracefully stop this hub run.
+2026-02-24 21:12:11,New hub created: results/hub/hub_67
+2026-02-24 21:12:12,[2026-02-24 21:12:12] [UPDATE] hub_67 status=failed progress=1/201 (0.50%) ok=0 failed=1 stopped=0 no_master=0 aborted=0 elapsed=00:00:00
+2026-02-24 21:12:12,  estimate remaining=00:02:14 total=00:02:14 finish_at=2026-02-24 21:14:26
+2026-02-24 21:12:12,  last step=1 status=failed env_rate=0.5
+2026-02-24 21:12:12,[2026-02-24 21:12:12] [FINAL] hub_67 status=failed progress=1/201 (0.50%) ok=0 failed=1 stopped=0 no_master=0 aborted=0 elapsed=00:00:00
+2026-02-24 21:12:12,  estimate remaining=00:02:14 total=00:02:14 finish_at=2026-02-24 21:14:26
+2026-02-24 21:12:12,  last step=1 status=failed env_rate=0.5
+2026-02-24 21:12:12,Hub directory: results/hub/hub_67
+2026-02-24 21:12:12,[2026-02-24 21:12:12] hub_runner exited with code 1.
+2026-02-24 21:12:12,Last hub_runner output:
+2026-02-24 21:12:12,Traceback (most recent call last):
+2026-02-24 21:12:12,"  File ""/home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/master_simulations.py"", line 16, in <module>"
+2026-02-24 21:12:12,    import pygame
+2026-02-24 21:12:12,ModuleNotFoundError: No module named 'pygame'
+2026-02-24 21:12:12,"[hub_67] reserved counters: num_tries_master += 201, num_tries += 18894 -> master=8503, sim=184564"
+2026-02-24 21:12:12,[hub_67] creating hub run at results/hub/hub_67
+2026-02-24 21:12:12,[hub_67] planned master ids for this hub: 8302-8502
+2026-02-24 21:12:12,[hub_67] manual update refreshed hub dashboard data (0/201 rows with graph points)
+2026-02-24 21:12:12,[hub_67] step 1/201 rate=0.50 planned_master=8302
+2026-02-24 21:12:12,hub_runner log: results/run_logs/hub_runner_2512_1771967530249.log
