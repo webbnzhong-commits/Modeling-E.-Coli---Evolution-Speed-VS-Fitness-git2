@@ -1,0 +1,22 @@
+timestamp,message
+2026-02-24 04:31:52,simRun session log: results/run_logs/simrun_4431_1771907511408.log
+2026-02-24 04:31:52,Starting new hub run: /usr/bin/python3 /home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/hub_runner.py --results-root results --script simulation_entry.py --no-screen --screen-hold-seconds 0
+2026-02-24 04:31:52,hub_runner raw log: results/run_logs/hub_runner_4431_1771907511411.log
+2026-02-24 04:31:52,Press q to gracefully stop this hub run.
+2026-02-24 04:31:52,[2026-02-24 04:31:52] [UPDATE] hub_64 status=failed progress=1/201 (0.50%) ok=0 failed=1 stopped=0 no_master=0 aborted=0 elapsed=00:00:00
+2026-02-24 04:31:52,  last step=1 status=failed env_rate=0.5
+2026-02-24 04:31:52,[2026-02-24 04:31:52] [FINAL] hub_64 status=failed progress=1/201 (0.50%) ok=0 failed=1 stopped=0 no_master=0 aborted=0 elapsed=00:00:00
+2026-02-24 04:31:52,  last step=1 status=failed env_rate=0.5
+2026-02-24 04:31:52,Hub directory: results/hub/hub_64
+2026-02-24 04:31:52,[2026-02-24 04:31:52] hub_runner exited with code 1.
+2026-02-24 04:31:52,Last hub_runner output:
+2026-02-24 04:31:52,Traceback (most recent call last):
+2026-02-24 04:31:52,"  File ""/home/webbnzhong/Modeling-E.-Coli---Evolution-Speed-VS-Fitness-git2/master_simulations.py"", line 16, in <module>"
+2026-02-24 04:31:52,    import pygame
+2026-02-24 04:31:52,ModuleNotFoundError: No module named 'pygame'
+2026-02-24 04:31:52,"[hub_64] reserved counters: num_tries_master += 201, num_tries += 6030 -> master=7900, sim=129446"
+2026-02-24 04:31:52,[hub_64] creating hub run at results/hub/hub_64
+2026-02-24 04:31:52,[hub_64] planned master ids for this hub: 7699-7899
+2026-02-24 04:31:52,[hub_64] manual update refreshed hub dashboard data (0/201 rows with graph points)
+2026-02-24 04:31:52,[hub_64] step 1/201 rate=0.50 planned_master=7699
+2026-02-24 04:31:52,hub_runner log: results/run_logs/hub_runner_4431_1771907511411.log
