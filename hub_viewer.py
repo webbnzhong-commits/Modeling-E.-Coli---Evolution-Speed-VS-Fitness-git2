@@ -737,6 +737,9 @@ class HubViewer:
         self.timeline_playing = False
         self.timeline_frame_count = 101
         self.timeline_play_frames_per_sec = 12.0
+        self.normalize_modes = ["none", "range", "sum"]
+        self.normalize_mode_index = 0
+        self.normalize_mode = "none"
         self.normalize_display = False
         self.range_top_n = 80
         self._range_top_n_auto_all = True
@@ -1601,11 +1604,72 @@ class HubViewer:
         zoom = max(float(self._graph3d_zoom_min), min(float(self._graph3d_zoom_max), zoom))
         self._graph3d_zoom = float(zoom)
 
-    def _normalize_value_for_display(self, value: float, bounds: tuple[float, float] | None) -> float:
+    def _active_normalize_mode(self) -> str:
+        modes = self.normalize_modes if isinstance(self.normalize_modes, list) and self.normalize_modes else ["none", "range", "sum"]
+        idx = int(self.normalize_mode_index) % len(modes)
+        self.normalize_mode_index = idx
+        mode = str(modes[idx])
+        self.normalize_mode = mode
+        self.normalize_display = mode != "none"
+        return mode
+
+    def _normalize_mode_label(self) -> str:
+        mode = self._active_normalize_mode()
+        if mode == "range":
+            return "Range"
+        if mode == "sum":
+            return "Sum"
+        return "None"
+
+    def _normalize_mode_description(self) -> str:
+        mode = self._active_normalize_mode()
+        if mode == "range":
+            return "Display normalization: range (min-max mapped to 0..1)"
+        if mode == "sum":
+            return "Display normalization: sum (fitness divided by total fitness in set)"
+        return "Display normalization: none"
+
+    def _cycle_normalize_mode(self) -> None:
+        modes = self.normalize_modes if isinstance(self.normalize_modes, list) and self.normalize_modes else ["none", "range", "sum"]
+        self.normalize_mode_index = (int(self.normalize_mode_index) + 1) % len(modes)
+        self._active_normalize_mode()
+
+    def _normalization_context_for_values(self, values: list[float]) -> dict | None:
+        numeric = [float(v) for v in values if hr._is_number(v)]
+        if not numeric:
+            return None
+        return {
+            "range": (float(min(numeric)), float(max(numeric))),
+            "sum": float(sum(numeric)),
+        }
+
+    def _normalize_value_for_display(self, value: float, context: tuple[float, float] | dict | float | None) -> float:
         if not hr._is_number(value):
             return 0.0
         val = float(value)
-        if (not self.normalize_display) or (not isinstance(bounds, tuple)) or len(bounds) < 2:
+        mode = self._active_normalize_mode()
+        if mode == "none":
+            return val
+        if mode == "sum":
+            total = None
+            if isinstance(context, dict):
+                total_val = context.get("sum")
+                if hr._is_number(total_val):
+                    total = float(total_val)
+            elif hr._is_number(context):
+                total = float(context)
+            if total is None or abs(float(total)) <= 1e-12:
+                return 0.0
+            norm = val / float(total)
+            return max(0.0, min(1.0, float(norm)))
+        bounds = None
+        if isinstance(context, dict):
+            range_val = context.get("range")
+            if isinstance(range_val, (tuple, list)) and len(range_val) >= 2:
+                bounds = (float(range_val[0]), float(range_val[1]))
+        elif isinstance(context, (tuple, list)) and len(context) >= 2:
+            bounds = (float(context[0]), float(context[1]))
+        if bounds is None:
             return val
         low = float(bounds[0])
         high = float(bounds[1])
@@ -1621,20 +1685,27 @@ class HubViewer:
     ) -> tuple[list[dict], dict]:
         if (not self.normalize_display) or (not isinstance(graph_points, list)):
             return graph_points, {}
-        bounds: dict = {}
+        mode = self._active_normalize_mode()
+        contexts: dict = {}
         for point in graph_points:
             if not isinstance(point, dict):
                 continue
             fit_val = point.get("fitness")
             if not hr._is_number(fit_val):
                 continue
-            group = point.get(group_key)
-            if group not in bounds:
-                bounds[group] = [float(fit_val), float(fit_val)]
+            group = "__all__" if mode == "sum" else point.get(group_key)
+            if group not in contexts:
+                contexts[group] = {
+                    "range": [float(fit_val), float(fit_val)],
+                    "sum": float(fit_val),
+                }
             else:
-                cur = bounds[group]
-                cur[0] = min(float(cur[0]), float(fit_val))
-                cur[1] = max(float(cur[1]), float(fit_val))
+                cur = contexts[group]
+                range_cur = cur.get("range")
+                if isinstance(range_cur, list) and len(range_cur) >= 2:
+                    range_cur[0] = min(float(range_cur[0]), float(fit_val))
+                    range_cur[1] = max(float(range_cur[1]), float(fit_val))
+                cur["sum"] = float(cur.get("sum", 0.0)) + float(fit_val)
         normalized = []
         for point in graph_points:
             if not isinstance(point, dict):
@@ -1643,13 +1714,28 @@ class HubViewer:
             if not hr._is_number(fit_val):
                 normalized.append(point)
                 continue
-            group = point.get(group_key)
-            group_bounds = bounds.get(group)
-            norm_fit = self._normalize_value_for_display(float(fit_val), tuple(group_bounds) if isinstance(group_bounds, list) else None)
+            group = "__all__" if mode == "sum" else point.get(group_key)
+            group_context = contexts.get(group)
+            norm_fit = self._normalize_value_for_display(float(fit_val), group_context if isinstance(group_context, dict) else None)
             item = dict(point)
             item["fitness"] = float(norm_fit)
             normalized.append(item)
-        return normalized, {k: (float(v[0]), float(v[1])) for k, v in bounds.items() if isinstance(v, list) and len(v) >= 2}
+        final_contexts = {}
+        for key, payload in contexts.items():
+            if not isinstance(payload, dict):
+                continue
+            range_payload = payload.get("range")
+            if isinstance(range_payload, list) and len(range_payload) >= 2:
+                range_tuple = (float(range_payload[0]), float(range_payload[1]))
+            elif isinstance(range_payload, tuple) and len(range_payload) >= 2:
+                range_tuple = (float(range_payload[0]), float(range_payload[1]))
+            else:
+                range_tuple = None
+            final_contexts[key] = {
+                "range": range_tuple,
+                "sum": float(payload.get("sum", 0.0)),
+            }
+        return normalized, final_contexts
 
     def _timeline_cache_key_for_row(self, row: dict | None):
         if not isinstance(row, dict):
@@ -2674,7 +2760,7 @@ class HubViewer:
         if draw_bell_curves:
             header_items.insert(3, ("Bell curves: per-master stitched gaussian fits", (168, 226, 196)))
         if self.normalize_display:
-            header_items.insert(3, ("Display normalization: per-sim fitness mapped to 0..1", (176, 214, 244)))
+            header_items.insert(3, (self._normalize_mode_description(), (176, 214, 244)))
         header_y = rect.y + 8
         line_h = max(12, int(self.tiny.get_linesize()))
         line_gap = 2
@@ -3053,12 +3139,12 @@ class HubViewer:
             return
 
         points = list(raw_points)
-        fit_bounds = None
+        fit_norm_context = None
         if self.normalize_display and points:
             vals = [float(p[1]) for p in points]
-            fit_bounds = (float(min(vals)), float(max(vals)))
+            fit_norm_context = self._normalization_context_for_values(vals)
             points = [
-                (float(xv), self._normalize_value_for_display(float(yv), fit_bounds))
+                (float(xv), self._normalize_value_for_display(float(yv), fit_norm_context))
                 for xv, yv in points
             ]
 
@@ -3118,7 +3204,7 @@ class HubViewer:
                         curve.append(
                             (
                                 float(xv),
-                                self._normalize_value_for_display(float(yv), fit_bounds),
+                                self._normalize_value_for_display(float(yv), fit_norm_context),
                             )
                         )
                 if len(curve) >= 2:
@@ -3163,7 +3249,7 @@ class HubViewer:
 
         self.screen.blit(self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.y - 2))
         self.screen.blit(self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.bottom - 14))
-        fit_label = "fitness (norm)" if self.normalize_display else "fitness"
+        fit_label = f"fitness ({self._normalize_mode_label().lower()})" if self.normalize_display else "fitness"
         self.screen.blit(self.tiny.render(fit_label, True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
         self.screen.blit(self.tiny.render("evo speed", True, (155, 155, 155)), (plot.x + 5, plot.y + 4))
         coord_text = "Click a point to show coordinates."
@@ -3266,9 +3352,9 @@ class HubViewer:
                 if not numeric_pts:
                     continue
                 y_vals = [p[1] for p in numeric_pts]
-                bounds = (float(min(y_vals)), float(max(y_vals)))
+                fit_norm_context = self._normalization_context_for_values(y_vals)
                 norm_pts = [
-                    (float(xv), self._normalize_value_for_display(float(yv), bounds))
+                    (float(xv), self._normalize_value_for_display(float(yv), fit_norm_context))
                     for xv, yv in numeric_pts
                 ]
                 norm_item = dict(item)
@@ -3530,7 +3616,7 @@ class HubViewer:
         if fallback_count > 0:
             note += f" | fallback rows: {fallback_count}"
         if self.normalize_display:
-            note += " | normalized"
+            note += f" | norm={self._normalize_mode_label().lower()}"
         self.screen.blit(
             self.tiny.render(hr._fit_text(self.tiny, note, rect.width - 20), True, (160, 175, 195)),
             (rect.x + 10, rect.y + 36),
@@ -3698,12 +3784,10 @@ class HubViewer:
                 numeric_points = sorted(numeric_points, key=lambda p: p[1], reverse=True)[: int(top_n_per_master)]
                 numeric_points.sort(key=lambda p: p[0])
             fit_vals = [float(p[1]) for p in numeric_points]
-            fit_low = min(fit_vals)
-            fit_high = max(fit_vals)
-            fit_bounds = (float(fit_low), float(fit_high))
+            fit_norm_context = self._normalization_context_for_values(fit_vals)
             if self.normalize_display:
                 display_points = [
-                    (float(xv), self._normalize_value_for_display(float(yv), fit_bounds))
+                    (float(xv), self._normalize_value_for_display(float(yv), fit_norm_context))
                     for xv, yv in numeric_points
                 ]
             else:
@@ -3714,7 +3798,7 @@ class HubViewer:
                     "env_rate": float(env_rate),
                     "points": display_points,
                     "fit": row.get("fit"),
-                    "fit_bounds": fit_bounds,
+                    "fit_norm_context": fit_norm_context,
                 }
             )
             all_points.extend((float(env_rate), p[0], p[1]) for p in display_points)
@@ -3815,7 +3899,7 @@ class HubViewer:
                     continue
                 env_rate = float(master.get("env_rate", 0.0))
                 curve_color = self._env_color(env_rate, env_min, env_max)
-                fit_bounds = master.get("fit_bounds")
+                fit_norm_context = master.get("fit_norm_context")
                 curve = []
                 for i in range(180):
                     xv = min_x + ((max_x - min_x) * float(i) / 179.0)
@@ -3832,7 +3916,7 @@ class HubViewer:
                                 float(xv),
                                 self._normalize_value_for_display(
                                     float(yv),
-                                    fit_bounds if isinstance(fit_bounds, tuple) else None,
+                                    fit_norm_context if isinstance(fit_norm_context, dict) else None,
                                 ),
                             )
                         )
@@ -3856,7 +3940,7 @@ class HubViewer:
         max_x_txt = self.tiny.render(f"{raw_max_x:.3f}", True, (150, 150, 150))
         self.screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom + 2))
         self.screen.blit(self.tiny.render("evo speed", True, (155, 155, 155)), (plot.x + 4, plot.y + 4))
-        fit_label = "fitness (norm)" if self.normalize_display else "fitness"
+        fit_label = f"fitness ({self._normalize_mode_label().lower()})" if self.normalize_display else "fitness"
         self.screen.blit(self.tiny.render(fit_label, True, (155, 155, 155)), (plot.x - 34, plot.y + 14))
 
     def _draw_spectrum_graph(self, rect) -> None:
@@ -4201,7 +4285,7 @@ class HubViewer:
         self._next_button_rect = pg.Rect(self._back_button_rect.right + 8, by, btn_w, btn_h)
         self._export_button_rect = pg.Rect(self._next_button_rect.right + 8, by, btn_w, btn_h)
         self._settings_button_rect = pg.Rect(self._export_button_rect.right + 8, by, btn_w, btn_h)
-        self._normalize_button_rect = pg.Rect(self._settings_button_rect.right + 8, by, 108, btn_h)
+        self._normalize_button_rect = pg.Rect(self._settings_button_rect.right + 8, by, 132, btn_h)
         for button_rect, label in (
             (self._back_button_rect, "Back"),
             (self._next_button_rect, "Next"),
@@ -4220,7 +4304,7 @@ class HubViewer:
             )
         pg.draw.rect(self.screen, (42, 42, 46), self._normalize_button_rect)
         pg.draw.rect(self.screen, (155, 155, 155), self._normalize_button_rect, 1)
-        normalize_label = "Norm On" if self.normalize_display else "Norm Off"
+        normalize_label = f"Norm: {self._normalize_mode_label()}"
         normalize_color = (172, 226, 178) if self.normalize_display else (230, 230, 230)
         txt = self.small.render(normalize_label, True, normalize_color)
         self.screen.blit(
@@ -4490,7 +4574,7 @@ class HubViewer:
         )
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
-            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button toggles display normalization, Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
+            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button cycles normalization (None/Range/Sum), Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
         )
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, subtitle, self.window_w - (2 * margin)), True, (168, 176, 191)), (margin, 44))
         if include_status and self.export_status:
@@ -4572,7 +4656,7 @@ class HubViewer:
             self._open_settings_dialog()
             return
         if self._normalize_button_rect is not None and self._normalize_button_rect.collidepoint(mx, my):
-            self.normalize_display = not self.normalize_display
+            self._cycle_normalize_mode()
             self._selected_scatter_selected = None
             return
         if self._timeline_prev_button_rect is not None and self._timeline_prev_button_rect.collidepoint(mx, my):
@@ -4684,7 +4768,7 @@ class HubViewer:
                     elif event.key == self.pg.K_g:
                         self._open_settings_dialog()
                     elif event.key == self.pg.K_n:
-                        self.normalize_display = not self.normalize_display
+                        self._cycle_normalize_mode()
                     elif event.key == self.pg.K_LEFT:
                         self._rotate_graph_mode(-1)
                     elif event.key == self.pg.K_RIGHT:
