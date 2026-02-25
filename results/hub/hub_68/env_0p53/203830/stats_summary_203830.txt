@@ -1,33 +1,33 @@
 Estimated time for 1000 iterations at 60.00 FPS: 16.67 seconds
 --- Geometric mean ---
-Pearson correlation coefficient (r): -0.9196141199105341
-P-value: 0.0803858800894659
-Coefficient of determination (r^2): 0.8456901295388262
-Linear equation: y = -20080.4216 * x + 5810.8902
-Linear model R^2: 0.8457
-Quadratic equation: y = -30540.5425 * x^2 + -8907.6876 * x + 4971.8752
-Quadratic model R^2: 0.8547
+Pearson correlation coefficient (r): -0.4853201037256814
+P-value: 7.693152142488933e-06
+Coefficient of determination (r^2): 0.23553560308030616
+Linear equation: y = -5229.1746 * x + 2071.4311
+Linear model R^2: 0.2355
+Quadratic equation: y = 20319.0696 * x^2 + -14497.7225 * x + 2932.2645
+Quadratic model R^2: 0.2671
 --- Arithmetic mean ---
-Pearson correlation coefficient (r): -0.9196141199105341
-P-value: 0.0803858800894659
-Coefficient of determination (r^2): 0.8456901295388262
-Linear equation: y = -20080.4216 * x + 5810.8902
-Linear model R^2: 0.8457
-Quadratic equation: y = -30540.5425 * x^2 + -8907.6876 * x + 4971.8752
-Quadratic model R^2: 0.8547
+Pearson correlation coefficient (r): -0.47189144612829076
+P-value: 1.4746880921279672e-05
+Coefficient of determination (r^2): 0.22268153692904954
+Linear equation: y = -5665.5125 * x + 2321.0181
+Linear model R^2: 0.2227
+Quadratic equation: y = 14735.2851 * x^2 + -12387.0160 * x + 2945.2901
+Quadratic model R^2: 0.2360
 Parsed geometric-mean data saved to results/hub/hub_68/env_0p53/203830/parsedGeometricMeanSimulatino203830_Log.csv
 Parsed arithmetic-mean data saved to results/hub/hub_68/env_0p53/203830/parsedArithmeticMeanSimulatino203830_Log.csv
 
 --- Species Summary (from logs) ---
-Species count: 4
-Medium species count: 1
-Big species count: 2
+Species count: 215
+Medium species count: 57
+Big species count: 99
 
 --- Run Summary ---
-Total frames: 10000
+Total frames: 419400
 Start time: 2026-02-24 01:27:09 PM PST
-End time: 2026-02-24 01:27:18 PM PST
-Total runtime: 00:00:08.86 (h:m:s)
-Species count: 4
-Medium species count: 1
-Big species count: 2
+End time: 2026-02-24 01:33:37 PM PST
+Total runtime: 00:06:28.19 (h:m:s)
+Species count: 215
+Medium species count: 57
+Big species count: 99

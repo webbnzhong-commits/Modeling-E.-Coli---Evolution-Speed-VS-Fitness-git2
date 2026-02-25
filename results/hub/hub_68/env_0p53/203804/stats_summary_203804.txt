@@ -1,33 +1,33 @@
 Estimated time for 1000 iterations at 60.00 FPS: 16.67 seconds
 --- Geometric mean ---
-Pearson correlation coefficient (r): 1.0
-P-value: 1.0
-Coefficient of determination (r^2): 1.0
-Linear equation: y = 289949.8850 * x + -24124.1388
-Linear model R^2: 1.0000
-Quadratic equation: y = 1541182.8453 * x^2 + 9454.6071 * x + -11417.0863
-Quadratic model R^2: 1.0000
+Pearson correlation coefficient (r): -0.37275369036578937
+P-value: 0.001163261963246071
+Coefficient of determination (r^2): 0.13894531368131477
+Linear equation: y = -4124.5872 * x + 1769.1458
+Linear model R^2: 0.1389
+Quadratic equation: y = 7955.3484 * x^2 + -7591.4078 * x + 2075.8714
+Quadratic model R^2: 0.1430
 --- Arithmetic mean ---
-Pearson correlation coefficient (r): 1.0
-P-value: 1.0
-Coefficient of determination (r^2): 1.0
-Linear equation: y = 163875.0000 * x + -11894.8750
-Linear model R^2: 1.0000
-Quadratic equation: y = 836391.1623 * x^2 + 11651.8085 * x + -4998.8299
-Quadratic model R^2: 1.0000
+Pearson correlation coefficient (r): -0.3790002504374349
+P-value: 0.0009444516217768949
+Coefficient of determination (r^2): 0.14364118983163837
+Linear equation: y = -4857.1519 * x + 2065.1505
+Linear model R^2: 0.1436
+Quadratic equation: y = 6590.0759 * x^2 + -7729.0074 * x + 2319.2368
+Quadratic model R^2: 0.1457
 Parsed geometric-mean data saved to results/hub/hub_68/env_0p53/203804/parsedGeometricMeanSimulatino203804_Log.csv
 Parsed arithmetic-mean data saved to results/hub/hub_68/env_0p53/203804/parsedArithmeticMeanSimulatino203804_Log.csv
 
 --- Species Summary (from logs) ---
-Species count: 3
-Medium species count: 0
-Big species count: 2
+Species count: 212
+Medium species count: 50
+Big species count: 105
 
 --- Run Summary ---
-Total frames: 10000
+Total frames: 421950
 Start time: 2026-02-24 01:27:07 PM PST
-End time: 2026-02-24 01:27:16 PM PST
-Total runtime: 00:00:09.13 (h:m:s)
-Species count: 3
-Medium species count: 0
-Big species count: 2
+End time: 2026-02-24 01:33:37 PM PST
+Total runtime: 00:06:29.91 (h:m:s)
+Species count: 212
+Medium species count: 50
+Big species count: 105

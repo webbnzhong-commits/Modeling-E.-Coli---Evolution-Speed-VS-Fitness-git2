@@ -1,0 +1,31 @@
+Estimated time for 1000 iterations at 60.00 FPS: 16.67 seconds
+--- Geometric mean ---
+Pearson correlation coefficient (r): -0.7828112008317041
+P-value: 1.6867343340733027e-08
+Coefficient of determination (r^2): 0.6127933761475746
+Linear equation: y = -6041.0179 * x + 2379.0601
+Linear model R^2: 0.6128
+Stitched normal equation: y=2430.58*exp(-((x-0.12)^2)/(2*0.0718635^2)) for x<=0.12; y=2430.58*exp(-((x-0.12)^2)/(2*0.108571^2)) for x>0.12
+Stitched normal model R^2: 0.2079
+Quadratic equation: y = 7862.4079 * x^2 + -9579.1015 * x + 2692.2460
+Quadratic model R^2: 0.6217
+--- Arithmetic mean ---
+Pearson correlation coefficient (r): -0.763531551061834
+P-value: 6.089490329185139e-08
+Coefficient of determination (r^2): 0.58298042946689
+Linear equation: y = -8072.2985 * x + 3389.4582
+Linear model R^2: 0.5830
+Stitched normal equation: y=3314.12*exp(-((x-0.12)^2)/(2*0.0790887^2)) for x<=0.12; y=3314.12*exp(-((x-0.12)^2)/(2*0.116336^2)) for x>0.12
+Stitched normal model R^2: 0.2907
+Quadratic equation: y = 2962.1974 * x^2 + -9405.2873 * x + 3507.4524
+Quadratic model R^2: 0.5837
+Parsed geometric-mean data saved to results/hub/hub_68/env_0p54/master_8507/parsedGeometricMeanSimulatinomaster_8507_step0p01_Log.csv
+Parsed arithmetic-mean data saved to results/hub/hub_68/env_0p54/master_8507/parsedArithmeticMeanSimulatinomaster_8507_step0p01_Log.csv
+
+--- Species Summary (from logs) ---
+Species count: 20036
+Medium species count: 5076
+Big species count: 10116
+
+--- Run Summary ---
+Run metadata not found (run_meta.json missing).
