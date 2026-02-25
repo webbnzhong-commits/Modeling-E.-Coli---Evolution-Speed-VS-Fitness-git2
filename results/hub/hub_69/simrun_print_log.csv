@@ -1,0 +1,11 @@
+timestamp,message
+2026-02-25 14:07:56,[2026-02-25 14:07:56] [UPDATE] hub_69 status=running progress=0/201 (0.00%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:46
+2026-02-25 14:07:56,  running step=1 env_rate=0.5
+2026-02-25 14:07:56,  running master=-- sims=0 avg_1000_iter=-- avg_fps=-- species_progress=--/20000 species_total=-- species_max=-- frames_max=--
+2026-02-25 14:08:06,[2026-02-25 14:08:06] [UPDATE] hub_69 status=running progress=0/201 (0.00%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:00:56
+2026-02-25 14:08:06,  running step=1 env_rate=0.5
+2026-02-25 14:08:06,  running master=master_8704 sims=0 avg_1000_iter=-- avg_fps=-- species_progress=--/20000 species_total=-- species_max=-- frames_max=--
+2026-02-25 14:08:12,[2026-02-25 14:08:12] [FINAL] hub_69 status=aborted_by_user progress=1/201 (0.50%) ok=0 failed=0 stopped=0 no_master=0 aborted=1 elapsed=00:01:02
+2026-02-25 14:08:12,  estimate remaining=03:29:09 total=03:30:11 finish_at=2026-02-25 17:37:21
+2026-02-25 14:08:12,  last step=1 status=aborted env_rate=0.5
+2026-02-25 14:08:12,Hub directory: results/hub/hub_69
