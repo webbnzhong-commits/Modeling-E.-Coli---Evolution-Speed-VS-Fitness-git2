@@ -1,0 +1,33 @@
+Estimated time for 1000 iterations at 60.00 FPS: 16.67 seconds
+--- Geometric mean ---
+Pearson correlation coefficient (r): -0.28143005298617757
+P-value: 0.018268302400202607
+Coefficient of determination (r^2): 0.07920287472380272
+Linear equation: y = -3513.0024 * x + 1800.4576
+Linear model R^2: 0.0792
+Quadratic equation: y = -7058.1917 * x^2 + -334.2780 * x + 1515.8243
+Quadratic model R^2: 0.0816
+--- Arithmetic mean ---
+Pearson correlation coefficient (r): -0.29500623245534874
+P-value: 0.013167663787680558
+Coefficient of determination (r^2): 0.08702867718749925
+Linear equation: y = -4045.6290 * x + 2068.8861
+Linear model R^2: 0.0870
+Quadratic equation: y = -6333.1526 * x^2 + -1193.4329 * x + 1813.4913
+Quadratic model R^2: 0.0886
+Parsed geometric-mean data saved to results/hub/hub_68/env_1p49/212820/parsedGeometricMeanSimulatino212820_Log.csv
+Parsed arithmetic-mean data saved to results/hub/hub_68/env_1p49/212820/parsedArithmeticMeanSimulatino212820_Log.csv
+
+--- Species Summary (from logs) ---
+Species count: 160
+Medium species count: 24
+Big species count: 79
+
+--- Run Summary ---
+Total frames: 405650
+Start time: 2026-02-25 12:18:13 AM PST
+End time: 2026-02-25 12:24:17 AM PST
+Total runtime: 00:06:04.87 (h:m:s)
+Species count: 160
+Medium species count: 24
+Big species count: 79
