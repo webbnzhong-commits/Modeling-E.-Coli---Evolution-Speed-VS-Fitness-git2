@@ -19,6 +19,41 @@ def _latest_simrun_log(run_logs_dir: Path) -> Path | None:
     return files[0] if files else None
 
 
+def _latest_hub_num(results_root: Path) -> int | None:
+    latest: int | None = None
+    for root in (results_root / "hub", results_root):
+        if not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            name = str(entry.name)
+            if not name.startswith("hub_"):
+                continue
+            suffix = name[4:]
+            if not suffix.isdigit():
+                continue
+            num = int(suffix)
+            if latest is None or num > latest:
+                latest = num
+    return latest
+
+
+def _hub_simrun_log_path(results_root: Path, hub_num: int) -> Path:
+    candidate_paths = [
+        results_root / "hub" / f"hub_{hub_num}" / "simrun_print_log.csv",
+        results_root / f"hub_{hub_num}" / "simrun_print_log.csv",
+    ]
+    for path in candidate_paths:
+        if path.exists():
+            return path
+    return candidate_paths[0]
+
+
 def _positive_float(value: float, label: str) -> float:
     try:
         out = float(value)
@@ -30,18 +65,29 @@ def _positive_float(value: float, label: str) -> float:
 
 
 def _read_hub_log_and_minutes(repo_root: Path) -> tuple[float, Path]:
+    results_root = repo_root / "results"
+    latest_hub = _latest_hub_num(results_root)
+    latest_label = str(latest_hub) if latest_hub is not None else "none found"
+    print(f"Latest simRun (hub) number: {latest_label}")
     while True:
-        hub_raw = input("Hub number for simRun log: ").strip()
+        hub_raw = input("simNum for simRun log (empty = latest): ").strip()
+        if not hub_raw:
+            if latest_hub is None:
+                print("No existing simRun hubs found yet. Enter a simNum.")
+                continue
+            hub_num = int(latest_hub)
+            print(f"Using latest simNum: {hub_num}")
+            break
         try:
             hub_num = int(hub_raw)
         except Exception:
-            print("Enter a whole number.")
+            print("Enter a whole number (or leave empty for latest).")
             continue
         if hub_num < 0:
-            print("Hub number must be >= 0.")
+            print("simNum must be >= 0.")
             continue
         break
-    sim_log_path = repo_root / "results" / "hub" / f"hub_{hub_num}" / "simrun_print_log.csv"
+    sim_log_path = _hub_simrun_log_path(results_root, hub_num)
     while True:
         mins_raw = input("Watch for how many minutes? ").strip()
         try:

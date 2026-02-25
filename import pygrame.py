@@ -92,6 +92,13 @@ SIM_CONTROL_FILE = os.environ.get("SIM_CONTROL_FILE")
 ALL_ACTIVE = os.environ.get("SIM_ALL_ACTIVE") == "1"
 SIM_FPS_PATH = os.environ.get("SIM_FPS_PATH")
 FAST_MODE = os.environ.get("FAST_MODE") == "1" and HAS_NUMPY and fast_update is not None
+SIMRUN_LAUNCH = str(os.environ.get("HUB_RUNNER_FROM_SIMRUN", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TIMELINE_SNAPSHOT_LOGGING_ENABLED = not SIMRUN_LAUNCH
 try:
     SIM_INDEX = int(os.environ.get("SIM_INDEX", "0"))
 except ValueError:
@@ -652,7 +659,7 @@ def _update_all_stats_snapshot():
 
 
 def _snapshot_arithmetic_mean(frame_count: int) -> None:
-    if frame_count <= 0:
+    if frame_count <= 0 or not TIMELINE_SNAPSHOT_LOGGING_ENABLED:
         return
     _update_all_stats_snapshot()
     run_dir = tracker.results_dir / str(tracker.run_num)

@@ -100,12 +100,18 @@ def _hub_index(path: Path) -> int:
 
 def _read_hub_meta(hub_dir: Path) -> dict | None:
     hub_meta_path = hub_dir / "hub_meta.json"
-    try:
-        payload = json.loads(hub_meta_path.read_text())
-    except Exception:
+    # hub_runner rewrites this file frequently; retry briefly if we read mid-write.
+    for attempt in range(4):
+        try:
+            payload = json.loads(hub_meta_path.read_text())
+        except Exception:
+            if attempt < 3:
+                time.sleep(0.05)
+                continue
+            return None
+        if isinstance(payload, dict):
+            return payload
         return None
-    if isinstance(payload, dict):
-        return payload
     return None
 
 
@@ -583,7 +589,7 @@ def _tail_text_file(path: Path, max_lines: int = 80, max_bytes: int = 262144) ->
     return "\n".join(lines).strip()
 
 
-def _recent_simrun_print_log_lines(hub_dir: Path, max_lines: int = 100) -> list[str]:
+def _recent_simrun_print_log_lines(hub_dir: Path, max_lines: int = 10) -> list[str]:
     csv_path = Path(hub_dir) / "simrun_print_log.csv"
     if not csv_path.exists():
         return []
@@ -652,11 +658,55 @@ def _format_print_text(args, kwargs) -> str:
 
 
 class _HubCsvPrintLog:
-    def __init__(self) -> None:
+    def __init__(self, max_rows: int = 10) -> None:
         self._hub_dir: Path | None = None
-        self._handle = None
-        self._writer = None
+        self._csv_path: Path | None = None
+        self._rows: list[tuple[str, str]] = []
+        self._max_rows = max(1, int(max_rows))
         self._buffer: list[str] = []
+
+    def _load_existing_rows(self, csv_path: Path) -> list[tuple[str, str]]:
+        if not csv_path.exists():
+            return []
+        tail = _tail_text_file(
+            csv_path,
+            max_lines=self._max_rows + 20,
+            max_bytes=2097152,
+        )
+        if not tail:
+            return []
+        raw_lines = [line for line in tail.splitlines() if line.strip()]
+        if raw_lines and str(raw_lines[0]).strip().lower() == "timestamp,message":
+            raw_lines = raw_lines[1:]
+        rows: list[tuple[str, str]] = []
+        for line in raw_lines:
+            try:
+                row = next(csv.reader([line]))
+            except Exception:
+                continue
+            if not row:
+                continue
+            stamp = str(row[0]).strip()
+            message = str(row[1]) if len(row) >= 2 else ""
+            rows.append((stamp, message))
+        if len(rows) > self._max_rows:
+            rows = rows[-self._max_rows:]
+        return rows
+
+    def _persist_rows(self) -> None:
+        if self._csv_path is None:
+            return
+        if len(self._rows) > self._max_rows:
+            self._rows = self._rows[-self._max_rows:]
+        try:
+            self._csv_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["timestamp", "message"])
+                for stamp, message in self._rows:
+                    writer.writerow([stamp, message])
+        except Exception:
+            pass
 
     def attach_hub(self, hub_dir: Path | None) -> None:
         current = str(self._hub_dir) if self._hub_dir is not None else None
@@ -668,16 +718,11 @@ class _HubCsvPrintLog:
             return
         csv_path = Path(hub_dir) / "simrun_print_log.csv"
         try:
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            is_new = (not csv_path.exists()) or csv_path.stat().st_size <= 0
-            handle = csv_path.open("a", encoding="utf-8", newline="")
-            writer = csv.writer(handle)
-            if is_new:
-                writer.writerow(["timestamp", "message"])
-                handle.flush()
             self._hub_dir = Path(hub_dir)
-            self._handle = handle
-            self._writer = writer
+            self._csv_path = csv_path
+            self._rows = self._load_existing_rows(csv_path)
+            # Enforce truncation as soon as this hub is attached.
+            self._persist_rows()
             if self._buffer:
                 pending = list(self._buffer)
                 self._buffer.clear()
@@ -685,11 +730,11 @@ class _HubCsvPrintLog:
                     self.write(message)
         except Exception:
             self._hub_dir = None
-            self._handle = None
-            self._writer = None
+            self._csv_path = None
+            self._rows = []
 
     def write(self, text: str) -> None:
-        if self._writer is None or self._handle is None:
+        if self._csv_path is None:
             self._buffer.append(str(text))
             if len(self._buffer) > 50000:
                 self._buffer = self._buffer[-50000:]
@@ -703,20 +748,17 @@ class _HubCsvPrintLog:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         try:
             for line in lines:
-                self._writer.writerow([stamp, line])
-            self._handle.flush()
+                self._rows.append((stamp, line))
+            if len(self._rows) > self._max_rows:
+                self._rows = self._rows[-self._max_rows:]
+            self._persist_rows()
         except Exception:
             pass
 
     def close(self) -> None:
-        if self._handle is not None:
-            try:
-                self._handle.close()
-            except Exception:
-                pass
         self._hub_dir = None
-        self._handle = None
-        self._writer = None
+        self._csv_path = None
+        self._rows = []
 
 
 def _make_tee_print(base_print, log_handle, hub_csv_log: _HubCsvPrintLog | None = None):
@@ -747,7 +789,7 @@ def main() -> None:
     results_root.mkdir(parents=True, exist_ok=True)
     run_logs_dir = results_root / "run_logs"
     run_logs_dir.mkdir(parents=True, exist_ok=True)
-    hub_csv_log = _HubCsvPrintLog()
+    hub_csv_log = _HubCsvPrintLog(max_rows=10)
 
     original_print = print
     session_log_handle = None
@@ -848,6 +890,7 @@ def main() -> None:
     next_print = time.time() + interval
     quit_requested = False
     quit_requested_at = None
+    waiting_for_hub_meta_notified = False
 
     def _print_recent_history_if_available() -> None:
         nonlocal recent_history_printed, recent_history_cache
@@ -855,7 +898,7 @@ def main() -> None:
             return
         recent_history_printed = True
         if recent_history_cache is None:
-            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
+            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=10)
         recent = recent_history_cache
         recent_history_cache = None
         if not recent:
@@ -920,7 +963,7 @@ def main() -> None:
                 if new_candidates:
                     new_candidates.sort(key=lambda p: (_hub_index(p), str(p)))
                     hub_dir = new_candidates[-1]
-                    recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
+                    recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=10)
                     hub_csv_log.attach_hub(hub_dir)
                     _print_recent_history_if_available()
                     print(f"New hub created: {hub_dir}")
@@ -932,8 +975,14 @@ def main() -> None:
                     if isinstance(summary, dict):
                         _print_snapshot(summary, final=False)
                         discovered_once = True
+                        waiting_for_hub_meta_notified = False
                     else:
-                        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [UPDATE] waiting for hub metadata...")
+                        if not waiting_for_hub_meta_notified:
+                            print(
+                                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [UPDATE] "
+                                "waiting for hub metadata (hub is being initialized)."
+                            )
+                            waiting_for_hub_meta_notified = True
                 else:
                     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [UPDATE] waiting for new hub directory...")
                 next_print = now + interval
@@ -957,7 +1006,7 @@ def main() -> None:
                 hub_dir = new_candidates[-1]
 
         if hub_dir is not None:
-            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=100)
+            recent_history_cache = _recent_simrun_print_log_lines(hub_dir, max_lines=10)
             hub_csv_log.attach_hub(hub_dir)
             _print_recent_history_if_available()
             summary = _snapshot_summary(hub_dir)

@@ -330,6 +330,25 @@ def _ensure_csv_with_header(path: Path, header_line: str) -> None:
         pass
 
 
+def _write_json_file(path: Path, payload: dict) -> None:
+    text = json.dumps(payload, indent=2)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)
+        return
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    path.write_text(text, encoding="utf-8")
+
+
 def _hub_point_triples_from_rows(rows: list[dict]) -> list[tuple[float, float, float]]:
     flattened: list[tuple[float, float, float]] = []
     for row in rows:
@@ -4154,7 +4173,7 @@ def main() -> None:
             "steps": [],
             "status": "running",
         }
-    hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+    _write_json_file(hub_meta_path, hub_meta)
     _ensure_csv_with_header(
         hub_summary_path,
         "enviorment change rate,planned master run,master run,apex evolution rate,fitness,max species,fit sigma left,fit sigma right,fit r2\n",
@@ -4431,7 +4450,7 @@ def main() -> None:
         _write_hub_stats_csv(hub_stats_path, step_rows)
         if _sync_hub_meta_steps_from_rows(hub_meta, step_rows):
             try:
-                hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+                _write_json_file(hub_meta_path, hub_meta)
             except Exception:
                 pass
         rows_with_master = [
@@ -4777,7 +4796,7 @@ def main() -> None:
             hub_meta["aborted_at"] = time.time()
             dash_state["status"] = hub_meta["status"]
             dash_state["running_row"] = None
-            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            _write_json_file(hub_meta_path, hub_meta)
             _refresh_reopened_processes()
             dashboard.update(dash_state, force=True)
             break
@@ -4788,7 +4807,7 @@ def main() -> None:
             hub_meta["status"] = "failed"
             dash_state["status"] = hub_meta["status"]
             dash_state["running_row"] = None
-            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            _write_json_file(hub_meta_path, hub_meta)
             _refresh_reopened_processes()
             dashboard.update(dash_state, force=True)
             raise SystemExit(returncode)
@@ -4801,7 +4820,7 @@ def main() -> None:
             hub_meta["status"] = "stopped_no_master"
             dash_state["status"] = hub_meta["status"]
             dash_state["running_row"] = None
-            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            _write_json_file(hub_meta_path, hub_meta)
             _refresh_reopened_processes()
             dashboard.update(dash_state, force=True)
             break
@@ -4896,7 +4915,7 @@ def main() -> None:
                 f"expected master_{planned_master_run}, got master_{master_run_num}"
             )
         hub_meta["steps"].append(step_info)
-        hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+        _write_json_file(hub_meta_path, hub_meta)
 
         hub_rows.append(
             {
@@ -4916,7 +4935,7 @@ def main() -> None:
         hub_meta["status"] = "completed"
         hub_meta["completed_at"] = time.time()
         dash_state["status"] = hub_meta["status"]
-        hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+        _write_json_file(hub_meta_path, hub_meta)
         _refresh_reopened_processes()
         dashboard.update(dash_state, force=True)
 
@@ -4925,7 +4944,7 @@ def main() -> None:
         hub_meta["aborted_at"] = time.time()
         dash_state["status"] = hub_meta["status"]
         dash_state["running_row"] = None
-        hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+        _write_json_file(hub_meta_path, hub_meta)
         _refresh_reopened_processes()
         dashboard.update(dash_state, force=True)
 
@@ -4942,7 +4961,7 @@ def main() -> None:
             plotted.append(ratio_path.name)
         if plotted:
             hub_meta["plots"] = plotted
-            hub_meta_path.write_text(json.dumps(hub_meta, indent=2))
+            _write_json_file(hub_meta_path, hub_meta)
             dash_state["status"] = hub_meta["status"]
             _refresh_reopened_processes()
             dashboard.update(dash_state, force=True)
