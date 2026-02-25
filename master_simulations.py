@@ -1495,9 +1495,18 @@ def _select_master_run_ui(
     )
     choose_rect = pygame.Rect(0, 0, 0, 0)
     delete_rect = pygame.Rect(0, 0, 0, 0)
+    increment_rect = pygame.Rect(0, 0, 0, 0)
     delete_yes_rect = pygame.Rect(0, 0, 0, 0)
     delete_no_rect = pygame.Rect(0, 0, 0, 0)
     exit_rect = pygame.Rect(screen_w - 90, 16, 70, 26)
+    scrollbar_gap = 6
+    scrollbar_w = 10
+    scrollbar_track_rect = pygame.Rect(0, 0, 0, 0)
+    scrollbar_thumb_rect = pygame.Rect(0, 0, 0, 0)
+    scrollbar_dragging = False
+    scrollbar_drag_offset = 0
+    scrollbar_anchor_offset = 0
+    preview_increment_mode = "default"
 
     hub_masters: dict[int, list[tuple[int, Path]]] = {}
     standalone_masters: list[tuple[int, Path]] = []
@@ -1578,6 +1587,45 @@ def _select_master_run_ui(
             scroll = selected - visible_count + 1
         scroll = max(0, min(scroll, max(0, count - visible_count)))
 
+    def _scrollbar_geometry(entries_count: int):
+        track_h = max(1, int(list_bottom - list_top))
+        track_x = int(list_left + list_width + scrollbar_gap)
+        track = pygame.Rect(track_x, int(list_top), int(scrollbar_w), int(track_h))
+        max_scroll_rows = max(0, int(entries_count) - int(visible_count))
+        if entries_count <= 0 or max_scroll_rows <= 0:
+            thumb = pygame.Rect(track.x, track.y, track.width, track.height)
+            return track, thumb, int(max_scroll_rows)
+        thumb_h = int(round((float(visible_count) / float(max(1, entries_count))) * float(track.height)))
+        thumb_h = max(24, min(track.height, thumb_h))
+        travel = max(1, track.height - thumb_h)
+        ratio = float(scroll) / float(max_scroll_rows)
+        thumb_y = track.y + int(round(ratio * float(travel)))
+        thumb = pygame.Rect(track.x, thumb_y, track.width, thumb_h)
+        return track, thumb, int(max_scroll_rows)
+
+    def _set_scroll_from_thumb_mouse(mouse_y: int) -> None:
+        nonlocal scroll, selected
+        entries = _current_entries()
+        count = len(entries)
+        if count <= 0:
+            scroll = 0
+            selected = 0
+            return
+        track, thumb, max_scroll_rows = _scrollbar_geometry(count)
+        if max_scroll_rows <= 0:
+            scroll = 0
+            selected = max(0, min(selected, count - 1))
+            return
+        travel = max(1, track.height - thumb.height)
+        thumb_top = int(mouse_y) - int(scrollbar_drag_offset)
+        thumb_top = max(track.y, min(track.bottom - thumb.height, thumb_top))
+        ratio = float(thumb_top - track.y) / float(travel)
+        new_scroll = int(round(ratio * float(max_scroll_rows)))
+        scroll = max(0, min(max_scroll_rows, new_scroll))
+        anchor = max(0, int(scrollbar_anchor_offset))
+        anchor = min(anchor, max(0, int(visible_count) - 1))
+        selected = max(0, min(count - 1, int(scroll) + int(anchor)))
+
     def _selected_entry():
         entries = _current_entries()
         if not entries:
@@ -1611,6 +1659,32 @@ def _select_master_run_ui(
             meta = _load_master_meta(path)
             settings_snapshot = meta.get("settings") if isinstance(meta, dict) else None
         return settings_snapshot
+
+    def _preview_increment_label() -> str:
+        if str(preview_increment_mode) == "step0p01":
+            return "0.01"
+        return "0.001"
+
+    def _toggle_preview_increment() -> None:
+        nonlocal preview_increment_mode
+        if str(preview_increment_mode) == "step0p01":
+            preview_increment_mode = "default"
+        else:
+            preview_increment_mode = "step0p01"
+
+    def _preview_mean_candidates(master_path: Path, master_label: str) -> list[Path]:
+        suffix = "_step0p01" if str(preview_increment_mode) == "step0p01" else ""
+        return [
+            master_path / f"combinedArithmeticMeanSimulatino{master_label}{suffix}_Log.csv",
+            master_path / f"parsedArithmeticMeanSimulatino{master_label}{suffix}_Log.csv",
+        ]
+
+    def _preview_mean_path(master_path: Path, master_label: str) -> Path:
+        candidates = _preview_mean_candidates(master_path, master_label)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1]
 
     def _open_hub(hub_idx: int) -> None:
         nonlocal current_hub_idx, selected, scroll, top_selected, top_scroll
@@ -1686,6 +1760,7 @@ def _select_master_run_ui(
         selected_master = _selected_master()
         selected_is_master = selected_master is not None
         selected_is_hub = isinstance(entry, dict) and str(entry.get("kind")) == "hub"
+        scrollbar_track_rect, scrollbar_thumb_rect, _ = _scrollbar_geometry(len(entries))
         if editing_message and (not selected_is_master):
             editing_message = False
             message_text = ""
@@ -1703,6 +1778,7 @@ def _select_master_run_ui(
         btn_y = preview_rect.bottom + 12
         choose_rect = pygame.Rect(detail_x + 10, btn_y, 120, 28)
         delete_rect = pygame.Rect(choose_rect.right + 10, btn_y, 120, 28)
+        increment_rect = pygame.Rect(delete_rect.right + 10, btn_y, 120, 28)
         delete_yes_rect = pygame.Rect(detail_x + 10, btn_y, 70, 28)
         delete_no_rect = pygame.Rect(delete_yes_rect.right + 10, btn_y, 70, 28)
 
@@ -1765,6 +1841,9 @@ def _select_master_run_ui(
                         if chosen is not None:
                             confirm_delete = True
                             delete_target = chosen
+                    elif event.key == pygame.K_i:
+                        if selected_is_master:
+                            _toggle_preview_increment()
             if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:
                     selected = (selected - 1) % len(entries)
@@ -1772,10 +1851,24 @@ def _select_master_run_ui(
                     selected = (selected + 1) % len(entries)
                 editing_message = False
                 _ensure_visible()
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                scrollbar_dragging = False
+            if event.type == pygame.MOUSEMOTION and scrollbar_dragging:
+                _set_scroll_from_thumb_mouse(event.pos[1])
+                _ensure_visible()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if exit_rect.collidepoint(mx, my):
                     return None, None, None
+                if scrollbar_track_rect.collidepoint(mx, my):
+                    scrollbar_anchor_offset = max(0, min(visible_count - 1, int(selected - scroll)))
+                    if scrollbar_thumb_rect.collidepoint(mx, my):
+                        scrollbar_drag_offset = int(my - scrollbar_thumb_rect.y)
+                    else:
+                        scrollbar_drag_offset = int(scrollbar_thumb_rect.height // 2)
+                        _set_scroll_from_thumb_mouse(my)
+                    scrollbar_dragging = True
+                    continue
                 if confirm_delete:
                     if delete_yes_rect.collidepoint(mx, my):
                         if delete_target is None:
@@ -1824,7 +1917,10 @@ def _select_master_run_ui(
                 if delete_rect.collidepoint(mx, my) and selected_is_master:
                     confirm_delete = True
                     delete_target = selected_master
+                if increment_rect.collidepoint(mx, my) and selected_is_master:
+                    _toggle_preview_increment()
 
+        scrollbar_track_rect, scrollbar_thumb_rect, _ = _scrollbar_geometry(len(entries))
         screen.fill((18, 18, 18))
         title_label = title_text
         if include_nested and current_hub_idx is not None:
@@ -1845,11 +1941,11 @@ def _select_master_run_ui(
         if editing_message:
             hint_text = "Editing message: Enter=save  Esc=cancel"
         elif include_nested and current_hub_idx is not None:
-            hint_text = "Enter: select master  Esc/Backspace: back  M: edit message  Del: delete"
+            hint_text = "Enter: select master  Esc/Backspace: back  M: edit message  I: increment  Del: delete"
         elif include_nested:
-            hint_text = "Enter: open hub/select master  Esc: cancel  Del: delete selected master"
+            hint_text = "Enter: open hub/select master  Esc: cancel  I: increment  Del: delete selected master"
         else:
-            hint_text = "Enter: select  Esc: cancel  M: edit message  Del: delete"
+            hint_text = "Enter: select  Esc: cancel  M: edit message  I: increment  Del: delete"
         hint = small_font.render(hint_text, True, (180, 180, 180))
         screen.blit(hint, (20, screen_h - 50))
 
@@ -1878,6 +1974,13 @@ def _select_master_run_ui(
                 )
             text = small_font.render(label, True, color)
             screen.blit(text, (list_left, y))
+
+        pygame.draw.rect(screen, (36, 36, 36), scrollbar_track_rect)
+        pygame.draw.rect(screen, (86, 86, 86), scrollbar_track_rect, 1)
+        if len(entries) > visible_count:
+            thumb_fill = (132, 156, 188) if scrollbar_dragging else (108, 122, 140)
+            pygame.draw.rect(screen, thumb_fill, scrollbar_thumb_rect)
+            pygame.draw.rect(screen, (198, 210, 228), scrollbar_thumb_rect, 1)
 
         pygame.draw.rect(screen, (30, 30, 30), (detail_x, detail_y, detail_w, detail_h))
         pygame.draw.rect(screen, (80, 80, 80), (detail_x, detail_y, detail_w, detail_h), 1)
@@ -1970,12 +2073,14 @@ def _select_master_run_ui(
             )
 
             pygame.draw.rect(screen, (60, 60, 60), preview_rect, 1)
-            mean_path = sel_path / f"combinedArithmeticMeanSimulatino{master_label}_Log.csv"
-            if not mean_path.exists():
-                mean_path = sel_path / f"parsedArithmeticMeanSimulatino{master_label}_Log.csv"
+            mean_path = _preview_mean_path(sel_path, master_label)
             mean_points = _load_mean_points(mean_path, "arithmetic mean length lived")
             if not mean_points:
-                msg = small_font.render("No arithmetic data", True, (160, 160, 160))
+                msg = small_font.render(
+                    f"No arithmetic data (step {_preview_increment_label()})",
+                    True,
+                    (160, 160, 160),
+                )
                 screen.blit(msg, (preview_rect.x + 6, preview_rect.y + 6))
             else:
                 points_sorted = sorted(mean_points, key=lambda p: p[0])
@@ -2039,15 +2144,32 @@ def _select_master_run_ui(
                 pygame.draw.rect(screen, (70, 40, 40), delete_rect)
                 pygame.draw.rect(screen, (180, 180, 180), delete_rect, 1)
                 del_text = small_font.render("Delete", True, (230, 230, 230))
+                pygame.draw.rect(screen, (40, 52, 72), increment_rect)
+                pygame.draw.rect(screen, (180, 180, 180), increment_rect, 1)
+                inc_text = small_font.render(
+                    f"Step {_preview_increment_label()}",
+                    True,
+                    (230, 230, 230),
+                )
             else:
                 pygame.draw.rect(screen, (45, 45, 45), delete_rect)
                 pygame.draw.rect(screen, (110, 110, 110), delete_rect, 1)
                 del_text = small_font.render("Delete", True, (140, 140, 140))
+                pygame.draw.rect(screen, (45, 45, 45), increment_rect)
+                pygame.draw.rect(screen, (110, 110, 110), increment_rect, 1)
+                inc_text = small_font.render("Step --", True, (140, 140, 140))
             screen.blit(
                 del_text,
                 (
                     delete_rect.x + (delete_rect.width - del_text.get_width()) // 2,
                     delete_rect.y + 6,
+                ),
+            )
+            screen.blit(
+                inc_text,
+                (
+                    increment_rect.x + (increment_rect.width - inc_text.get_width()) // 2,
+                    increment_rect.y + 6,
                 ),
             )
 

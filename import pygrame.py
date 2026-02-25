@@ -412,10 +412,10 @@ class enviorment():
             self.foodAmnt += 1
         '''
         
-        if self.foodAmnt > self.goingToAmnt:
-            self.foodAmnt -= 1
-        elif self.foodAmnt < self.goingToAmnt:
-            self.foodAmnt += 1
+        if self.foodAmnt > self.goingToAmnt - enviormentChangeRate:
+            self.foodAmnt -= enviormentChangeRate
+        elif self.foodAmnt < self.goingToAmnt + enviormentChangeRate:
+            self.foodAmnt += enviormentChangeRate
         else:
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
@@ -460,16 +460,16 @@ class enviorment():
     def update_climate(self, frame_count):
         if frame_count % self._change_interval() != 0:
             return
-        self.ph += random.uniform(-2, 2)
+        self.ph += random.uniform(-enviormentChangeRate, enviormentChangeRate) * 2
         if self.ph < 4:
             self.ph = 4
         if self.ph > 10:
             self.ph = 10
 
         if self.tempDirUp:
-            self.temp += random.uniform(0, 1)
+            self.temp += random.uniform(0, enviormentChangeRate)
         else:
-            self.temp -= random.uniform(0, 1)
+            self.temp -= random.uniform(0, enviormentChangeRate)
         if self.temp > 40:
             self.temp = 40
             self.tempDirUp = False
@@ -483,7 +483,7 @@ def reset_simulation():
     dots = []
     for x in range(30):
         dots.append(Dot(random.randint(0, WIDTH), random.randint(0, HEIGHT)))
-        dots[-1].evolution_speed = (evo_speed_range[1] - evo_speed_range[0]) / 30 * x + evo_speed_range[0]
+        #dots[-1].evolution_speed = (evo_speed_range[1] - evo_speed_range[0]) / 30 * x + evo_speed_range[0]
     enviorment_state = enviorment()
     #totalSim += 1
     frame_count = 0
@@ -690,8 +690,8 @@ def _spawn_child_from_parent(parent):
     child.immune_system = child.immune_system % 5
 
 
-    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
-    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
+    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
     child.color = parent.color.copy()
     '''
 
@@ -765,6 +765,8 @@ def _write_run_meta(final=False):
 CONTROL_CHECK_INTERVAL = 50
 SPECIES_LOG_GAP = 1000
 PRINT_INTERVAL = 5000
+LINEAGE_RESET_LIFESPAN = 10_000
+LINEAGE_RECORD_LIFESPAN = 15_000
 control_active_index = None
 enabled_flags = None
 draw_modes = None

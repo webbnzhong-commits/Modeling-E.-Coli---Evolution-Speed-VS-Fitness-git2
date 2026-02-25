@@ -201,7 +201,73 @@ def _rates_from_meta(hub_dir: Path, hub_meta: dict) -> list[float]:
     return sorted(set(from_dirs))
 
 
-def _refresh_row_from_disk(row: dict, recompute_fit: bool = True) -> None:
+def _increment_suffixes(increment_mode: str) -> list[str]:
+    if str(increment_mode) == "step0p01":
+        return ["_step0p01", ""]
+    return [""]
+
+
+def _master_parsed_arithmetic_points(
+    master_dir: Path,
+    run_nums: list[int],
+    increment_mode: str = "default",
+) -> list[tuple[float, float]]:
+    master_name = master_dir.name
+    for suffix in _increment_suffixes(increment_mode):
+        candidates = [
+            master_dir / f"parsedArithmeticMeanSimulatino{master_name}{suffix}_Log.csv",
+            master_dir / f"parsedArithmeticMeanSimulationo{master_name}{suffix}_Log.csv",
+            master_dir / f"parsedArithmeticMeanSimulation{master_name}{suffix}_Log.csv",
+            master_dir / f"parsedArithmeticMeanSimulatin{master_name}{suffix}_Log.csv",
+            master_dir / f"parsedArithmeticMeanSimulatino{master_name}{suffix}_log.csv",
+            master_dir / f"parsedArithmeticMeanSimulationo{master_name}{suffix}_log.csv",
+            master_dir / f"parsedArithmeticMeanSimulation{master_name}{suffix}_log.csv",
+            master_dir / f"parsedArithmeticMeanSimulatin{master_name}{suffix}_log.csv",
+        ]
+        for path in candidates:
+            points = hr._extract_points_from_csv(path)
+            if points:
+                return points
+        if suffix:
+            for candidate in sorted(
+                master_dir.glob(f"parsedArithmeticMean*{master_name}*{suffix}*.csv")
+            ):
+                points = hr._extract_points_from_csv(candidate)
+                if points:
+                    return points
+        else:
+            for candidate in sorted(master_dir.glob(f"parsedArithmeticMean*{master_name}_*.csv")):
+                if "_step" in candidate.name.lower():
+                    continue
+                points = hr._extract_points_from_csv(candidate)
+                if points:
+                    return points
+
+    for suffix in _increment_suffixes(increment_mode):
+        combined_points = hr._extract_points_from_csv(
+            master_dir / f"combinedArithmeticMeanSimulatino{master_name}{suffix}_Log.csv"
+        )
+        if combined_points:
+            return combined_points
+
+    merged = []
+    for run_num in run_nums:
+        run_dir = master_dir.parent / str(run_num)
+        merged.extend(
+            _run_parsed_arithmetic_points(
+                run_dir,
+                int(run_num),
+                increment_mode=increment_mode,
+            )
+        )
+    return merged
+
+
+def _refresh_row_from_disk(
+    row: dict,
+    recompute_fit: bool = True,
+    increment_mode: str = "default",
+) -> None:
     row["_full_loaded"] = False
     env_dir_raw = row.get("env_dir")
     if not env_dir_raw:
@@ -230,15 +296,21 @@ def _refresh_row_from_disk(row: dict, recompute_fit: bool = True) -> None:
             master_run_num = int(master_dir.name.split("_", 1)[1])
         except Exception:
             master_run_num = None
-        points = hr._master_points(master_dir, run_nums)
+        points = _master_parsed_arithmetic_points(
+            master_dir,
+            run_nums,
+            increment_mode=increment_mode,
+        )
         row["master_dir"] = str(master_dir)
     else:
         master_run_num = None
         points = []
         for run_num in run_nums:
             points.extend(
-                hr._extract_points_from_csv(
-                    env_dir / str(run_num) / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv"
+                _run_parsed_arithmetic_points(
+                    env_dir / str(run_num),
+                    int(run_num),
+                    increment_mode=increment_mode,
                 )
             )
 
@@ -280,7 +352,12 @@ def _refresh_row_from_disk(row: dict, recompute_fit: bool = True) -> None:
     row["_full_loaded"] = True
 
 
-def _build_rows(hub_dir: Path, hub_meta: dict, refresh_disk: bool = True) -> list[dict]:
+def _build_rows(
+    hub_dir: Path,
+    hub_meta: dict,
+    refresh_disk: bool = True,
+    increment_mode: str = "default",
+) -> list[dict]:
     rates = _rates_from_meta(hub_dir, hub_meta)
     planned = hub_meta.get("planned_master_ids")
     planned_ids = planned if isinstance(planned, list) else []
@@ -333,7 +410,10 @@ def _build_rows(hub_dir: Path, hub_meta: dict, refresh_disk: bool = True) -> lis
             "_full_loaded": bool(refresh_disk),
         }
         if refresh_disk:
-            _refresh_row_from_disk(row)
+            _refresh_row_from_disk(
+                row,
+                increment_mode=increment_mode,
+            )
         if row.get("master_run_num") is not None and row.get("status") in ("pending", "running", ""):
             row["status"] = "ok"
         rows.append(row)
@@ -600,25 +680,38 @@ def _timeline_interp_y(points: list[tuple[float, float]], x_norm: float) -> floa
     return float(cleaned[-1][1])
 
 
-def _run_parsed_arithmetic_points(run_dir: Path, run_num: int) -> list[tuple[float, float]]:
-    candidates = [
-        run_dir / f"parsedArithmeticMeanSimulatino{run_num}_Log.csv",
-        run_dir / f"parsedArithmeticMeanSimulationo{run_num}_Log.csv",
-        run_dir / f"parsedArithmeticMeanSimulation{run_num}_Log.csv",
-        run_dir / f"parsedArithmeticMeanSimulatin{run_num}_Log.csv",
-        run_dir / f"parsedArithmeticMeanSimulatino{run_num}_log.csv",
-        run_dir / f"parsedArithmeticMeanSimulationo{run_num}_log.csv",
-        run_dir / f"parsedArithmeticMeanSimulation{run_num}_log.csv",
-        run_dir / f"parsedArithmeticMeanSimulatin{run_num}_log.csv",
-    ]
-    for path in candidates:
-        points = hr._extract_points_from_csv(path)
-        if points:
-            return points
-    for candidate in sorted(run_dir.glob(f"parsedArithmeticMean*{run_num}_*.csv")):
-        points = hr._extract_points_from_csv(candidate)
-        if points:
-            return points
+def _run_parsed_arithmetic_points(
+    run_dir: Path,
+    run_num: int,
+    increment_mode: str = "default",
+) -> list[tuple[float, float]]:
+    for suffix in _increment_suffixes(increment_mode):
+        candidates = [
+            run_dir / f"parsedArithmeticMeanSimulatino{run_num}{suffix}_Log.csv",
+            run_dir / f"parsedArithmeticMeanSimulationo{run_num}{suffix}_Log.csv",
+            run_dir / f"parsedArithmeticMeanSimulation{run_num}{suffix}_Log.csv",
+            run_dir / f"parsedArithmeticMeanSimulatin{run_num}{suffix}_Log.csv",
+            run_dir / f"parsedArithmeticMeanSimulatino{run_num}{suffix}_log.csv",
+            run_dir / f"parsedArithmeticMeanSimulationo{run_num}{suffix}_log.csv",
+            run_dir / f"parsedArithmeticMeanSimulation{run_num}{suffix}_log.csv",
+            run_dir / f"parsedArithmeticMeanSimulatin{run_num}{suffix}_log.csv",
+        ]
+        for path in candidates:
+            points = hr._extract_points_from_csv(path)
+            if points:
+                return points
+        if suffix:
+            for candidate in sorted(run_dir.glob(f"parsedArithmeticMean*{run_num}*{suffix}*.csv")):
+                points = hr._extract_points_from_csv(candidate)
+                if points:
+                    return points
+        else:
+            for candidate in sorted(run_dir.glob(f"parsedArithmeticMean*{run_num}_*.csv")):
+                if "_step" in candidate.name.lower():
+                    continue
+                points = hr._extract_points_from_csv(candidate)
+                if points:
+                    return points
     return []
 
 
@@ -651,6 +744,10 @@ class HubViewer:
         self.hub_dot_hits = []
         self.table_row_hits = []
         self._table_rect = None
+        self._table_scrollbar_track_rect = None
+        self._table_scrollbar_thumb_rect = None
+        self._table_scrollbar_dragging = False
+        self._table_scrollbar_drag_offset = 0
         self.selected_row_index = None
         self.table_scroll = 0.0
         self.table_row_h = 24
@@ -675,6 +772,8 @@ class HubViewer:
         self._loader_timeline_status = ""
         self._loader_timeline_active = False
         self._loader_timeline_started_at = None
+        self._timeline_loader_thread = None
+        self._timeline_loader_stop_event = threading.Event()
         self._selected_loader_thread = None
         self._selected_loader_stop_event = threading.Event()
         self._selected_loader_updates = queue.SimpleQueue()
@@ -695,6 +794,7 @@ class HubViewer:
         self._master_refresh_error = None
         self._master_refresh_started_at = None
         self._fit_cache = {}
+        self._sum_norm_scale = 1.0
         self.graph_modes = [
             "normal",
             "hub_3d",
@@ -712,6 +812,7 @@ class HubViewer:
         self._export_button_rect = None
         self._settings_button_rect = None
         self._normalize_button_rect = None
+        self._increment_button_rect = None
         self._hub_graph_rect = None
         self._selected_scatter_plot_rect = None
         self._selected_scatter_point_hits = []
@@ -730,6 +831,8 @@ class HubViewer:
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
         self._timeline_next_button_rect = None
+        self._timeline_load_button_rect = None
+        self._timeline_step_mode_button_rect = None
         self._timeline_slider_rect = None
         self._timeline_slider_dragging = False
         self._equation_copy_hits = []
@@ -737,10 +840,14 @@ class HubViewer:
         self.timeline_playing = False
         self.timeline_frame_count = 101
         self.timeline_play_frames_per_sec = 12.0
+        self.timeline_step_mode = "normal"
         self.normalize_modes = ["none", "range", "sum"]
         self.normalize_mode_index = 0
         self.normalize_mode = "none"
         self.normalize_display = False
+        self.increment_modes = ["default", "step0p01"]
+        self.increment_mode_index = 0
+        self.increment_mode = "default"
         self.range_top_n = 80
         self._range_top_n_auto_all = True
         self.range_top_n_min = 1
@@ -805,6 +912,7 @@ class HubViewer:
         )
         if bool(self._range_top_n_auto_all):
             self.range_top_n = int(self.range_top_n_max)
+        self._refresh_sum_norm_scale()
         env_values = [
             float(row.get("env_rate"))
             for row in self.rows
@@ -845,11 +953,46 @@ class HubViewer:
         else:
             self.selected_row_index = None
 
+    def _refresh_sum_norm_scale(self) -> None:
+        max_norm = 0.0
+        for row in self.rows:
+            if not isinstance(row, dict):
+                continue
+            points = row.get("points")
+            if not isinstance(points, list) or (not points):
+                continue
+            fit_vals = []
+            total = 0.0
+            for pair in points:
+                if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+                    continue
+                fit_val = pair[1]
+                if not hr._is_number(fit_val):
+                    continue
+                fit_float = float(fit_val)
+                fit_vals.append(fit_float)
+                total += fit_float
+            if abs(total) <= 1e-12:
+                continue
+            for fit_float in fit_vals:
+                norm_val = fit_float / total
+                if math.isfinite(norm_val) and norm_val > max_norm:
+                    max_norm = float(norm_val)
+        if (not math.isfinite(max_norm)) or max_norm <= 1e-12:
+            self._sum_norm_scale = 1.0
+        else:
+            self._sum_norm_scale = float(1.0 / max_norm)
+
     def _stop_background_loader(self, wait: bool = False) -> None:
         if isinstance(self._loader_thread, threading.Thread) and self._loader_thread.is_alive():
             self._loader_stop_event.set()
             if wait:
                 self._loader_thread.join(timeout=2.0)
+        if isinstance(self._timeline_loader_thread, threading.Thread) and self._timeline_loader_thread.is_alive():
+            self._timeline_loader_stop_event.set()
+            if wait:
+                self._timeline_loader_thread.join(timeout=2.0)
+        self._timeline_loader_thread = None
         self._loader_active = False
         self._loader_rows_active = False
         self._loader_timeline_active = False
@@ -897,6 +1040,117 @@ class HubViewer:
         )
         self._loader_thread.start()
 
+    def _timeline_cache_progress_counts(self) -> tuple[int, int]:
+        required_keys = []
+        seen = set()
+        for row in self.rows:
+            key = self._timeline_cache_key_for_row(row)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            required_keys.append(key)
+        loaded = 0
+        for key in required_keys:
+            if isinstance(self.timeline_cache.get(key), dict):
+                loaded += 1
+        return int(loaded), int(len(required_keys))
+
+    def _start_timeline_cache_loader(self, force_reload: bool = False) -> None:
+        if self._loader_timeline_active:
+            return
+        if isinstance(self._timeline_loader_thread, threading.Thread) and self._timeline_loader_thread.is_alive():
+            return
+        self._loader_error = None
+
+        rows_to_load = []
+        seen = set()
+        for row in self.rows:
+            if not isinstance(row, dict):
+                continue
+            key = self._timeline_cache_key_for_row(row)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            if (not force_reload) and isinstance(self.timeline_cache.get(key), dict):
+                continue
+            rows_to_load.append(dict(row))
+
+        total_rows = len(rows_to_load)
+        self._loader_timeline_total = max(1, int(total_rows))
+        self._loader_timeline_done = 0 if total_rows > 0 else 1
+        if total_rows > 0:
+            self._loader_timeline_status = f"Loading timeline cache: 0/{int(total_rows)}"
+        else:
+            self._loader_timeline_status = "Timeline cache already loaded"
+        self._loader_timeline_active = bool(total_rows > 0)
+        self._loader_timeline_started_at = float(time.time()) if total_rows > 0 else None
+        self._loader_status = self._loader_timeline_status
+        if total_rows <= 0:
+            return
+
+        self._timeline_loader_stop_event = threading.Event()
+        token = int(self._loader_token)
+        self._timeline_loader_thread = threading.Thread(
+            target=self._timeline_cache_loader_worker,
+            args=(token, rows_to_load, self._timeline_loader_stop_event),
+            daemon=True,
+            name=f"hub_viewer_timeline_loader_{self.hub_idx if self.hub_idx is not None else 'x'}",
+        )
+        self._timeline_loader_thread.start()
+
+    def _timeline_cache_loader_worker(
+        self,
+        token: int,
+        rows_seed: list[dict],
+        stop_event: threading.Event,
+    ) -> None:
+        try:
+            total_rows = len(rows_seed)
+            if total_rows <= 0:
+                return
+            done = 0
+
+            def _timeline_task(_idx: int, row_seed: dict):
+                row = dict(row_seed)
+                key = self._timeline_cache_key_for_row(row)
+                payload = self._build_timeline_payload_for_row(row)
+                return key, payload
+
+            for _, result in self._loading_pool.run_indexed(
+                rows_seed,
+                _timeline_task,
+                stop_event=stop_event,
+            ):
+                if stop_event.is_set():
+                    return
+                if isinstance(result, tuple) and len(result) >= 2:
+                    key = result[0]
+                    payload = result[1]
+                    if key is not None and isinstance(payload, dict):
+                        self._loader_updates.put(("timeline", token, key, payload))
+                done += 1
+                self._loader_updates.put(
+                    (
+                        "progress_timeline",
+                        token,
+                        int(done),
+                        int(total_rows),
+                        f"Loading timeline cache: {done}/{total_rows}",
+                    )
+                )
+            if not stop_event.is_set():
+                self._loader_updates.put(
+                    (
+                        "progress_timeline",
+                        token,
+                        int(total_rows),
+                        int(total_rows),
+                        "Timeline cache loaded",
+                    )
+                )
+        except Exception as exc:
+            self._loader_updates.put(("error_timeline", token, str(exc)))
+
     def _background_loader_worker(
         self,
         token: int,
@@ -910,7 +1164,11 @@ class HubViewer:
 
             def _row_task(_idx: int, row_seed: dict) -> dict:
                 row = dict(row_seed)
-                _refresh_row_from_disk(row, recompute_fit=False)
+                _refresh_row_from_disk(
+                    row,
+                    recompute_fit=False,
+                    increment_mode=self.increment_mode,
+                )
                 return row
 
             for idx, row in self._loading_pool.run_indexed(
@@ -1002,8 +1260,18 @@ class HubViewer:
                 self._loader_timeline_total = max(1, int(item[3]))
                 self._loader_timeline_status = str(item[4])
                 if self._loader_timeline_done >= self._loader_timeline_total:
+                    self._loader_timeline_done = int(self._loader_timeline_total)
                     self._loader_timeline_active = False
+                    self._loader_timeline_started_at = None
+                    if "loaded" not in self._loader_timeline_status.lower():
+                        self._loader_timeline_status = "Timeline cache loaded"
                 self._loader_status = self._loader_timeline_status
+            elif event == "error_timeline" and len(item) >= 3:
+                self._loader_error = str(item[2])
+                self._loader_timeline_status = f"Timeline cache failed: {self._loader_error}"
+                self._loader_status = self._loader_timeline_status
+                self._loader_timeline_active = False
+                self._loader_timeline_started_at = None
             elif event == "done" and len(item) >= 5:
                 self._loader_rows_done = max(1, int(self._loader_rows_total))
                 self._loader_rows_active = False
@@ -1090,7 +1358,12 @@ class HubViewer:
     def _master_refresh_worker(self, token: int, stop_event: threading.Event) -> None:
         try:
             latest_meta = _load_hub_meta(self.hub_dir)
-            rows = _build_rows(self.hub_dir, latest_meta, refresh_disk=False)
+            rows = _build_rows(
+                self.hub_dir,
+                latest_meta,
+                refresh_disk=False,
+                increment_mode=self.increment_mode,
+            )
             total_rows = len(rows)
             total_steps = max(1, int(total_rows) + 4)
             self._master_refresh_updates.put(
@@ -1106,7 +1379,11 @@ class HubViewer:
 
             def _refresh_row_task(_idx: int, row_seed: dict) -> dict:
                 row = dict(row_seed)
-                _refresh_row_from_disk(row, recompute_fit=True)
+                _refresh_row_from_disk(
+                    row,
+                    recompute_fit=True,
+                    increment_mode=self.increment_mode,
+                )
                 return row
 
             for idx, row in self._loading_pool.run_indexed(
@@ -1335,7 +1612,11 @@ class HubViewer:
     ) -> None:
         try:
             row = dict(row_seed)
-            _refresh_row_from_disk(row, recompute_fit=False)
+            _refresh_row_from_disk(
+                row,
+                recompute_fit=False,
+                increment_mode=self.increment_mode,
+            )
             if stop_event.is_set():
                 return
             self._selected_loader_updates.put(("row", int(token), int(row_idx), row))
@@ -1431,16 +1712,30 @@ class HubViewer:
         self._stop_background_loader(wait=(not run_in_background))
         self._stop_selected_loader(wait=False)
         self.hub_meta = _load_hub_meta(self.hub_dir)
-        self.rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=False)
+        self.rows = _build_rows(
+            self.hub_dir,
+            self.hub_meta,
+            refresh_disk=False,
+            increment_mode=self.increment_mode,
+        )
         self.timeline_cache.clear()
         self._rebuild_graph_models()
         if force_full or (not run_in_background):
-            seed_rows = _build_rows(self.hub_dir, self.hub_meta, refresh_disk=False)
+            seed_rows = _build_rows(
+                self.hub_dir,
+                self.hub_meta,
+                refresh_disk=False,
+                increment_mode=self.increment_mode,
+            )
             loaded_rows = [dict(row) for row in seed_rows]
 
             def _full_row_task(_idx: int, row_seed: dict) -> dict:
                 row = dict(row_seed)
-                _refresh_row_from_disk(row, recompute_fit=True)
+                _refresh_row_from_disk(
+                    row,
+                    recompute_fit=True,
+                    increment_mode=self.increment_mode,
+                )
                 return row
 
             for idx, row in self._loading_pool.run_indexed(loaded_rows, _full_row_task):
@@ -1626,13 +1921,35 @@ class HubViewer:
         if mode == "range":
             return "Display normalization: range (min-max mapped to 0..1)"
         if mode == "sum":
-            return "Display normalization: sum (fitness divided by total fitness in set)"
+            return "Display normalization: sum (fitness divided by total fitness per master, globally scaled)"
         return "Display normalization: none"
 
     def _cycle_normalize_mode(self) -> None:
         modes = self.normalize_modes if isinstance(self.normalize_modes, list) and self.normalize_modes else ["none", "range", "sum"]
         self.normalize_mode_index = (int(self.normalize_mode_index) + 1) % len(modes)
         self._active_normalize_mode()
+
+    def _active_increment_mode(self) -> str:
+        modes = self.increment_modes if isinstance(self.increment_modes, list) and self.increment_modes else ["default", "step0p01"]
+        idx = int(self.increment_mode_index) % len(modes)
+        self.increment_mode_index = idx
+        mode = str(modes[idx])
+        self.increment_mode = mode
+        return mode
+
+    def _increment_mode_label(self) -> str:
+        mode = self._active_increment_mode()
+        if mode == "step0p01":
+            return "0.01"
+        return "0.001"
+
+    def _cycle_increment_mode(self) -> None:
+        modes = self.increment_modes if isinstance(self.increment_modes, list) and self.increment_modes else ["default", "step0p01"]
+        self.increment_mode_index = (int(self.increment_mode_index) + 1) % len(modes)
+        self._active_increment_mode()
+        self._selected_scatter_selected = None
+        self._set_export_status(True, f"Increment step: {self._increment_mode_label()} (reloading)")
+        self.reload_from_disk(force_full=False, run_in_background=True)
 
     def _normalization_context_for_values(self, values: list[float]) -> dict | None:
         numeric = [float(v) for v in values if hr._is_number(v)]
@@ -1641,6 +1958,7 @@ class HubViewer:
         return {
             "range": (float(min(numeric)), float(max(numeric))),
             "sum": float(sum(numeric)),
+            "sum_scale": float(self._sum_norm_scale),
         }
 
     def _normalize_value_for_display(self, value: float, context: tuple[float, float] | dict | float | None) -> float:
@@ -1652,15 +1970,19 @@ class HubViewer:
             return val
         if mode == "sum":
             total = None
+            scale = 1.0
             if isinstance(context, dict):
                 total_val = context.get("sum")
                 if hr._is_number(total_val):
                     total = float(total_val)
+                scale_val = context.get("sum_scale")
+                if hr._is_number(scale_val):
+                    scale = float(scale_val)
             elif hr._is_number(context):
                 total = float(context)
             if total is None or abs(float(total)) <= 1e-12:
                 return 0.0
-            norm = val / float(total)
+            norm = (val / float(total)) * float(scale)
             return max(0.0, min(1.0, float(norm)))
         bounds = None
         if isinstance(context, dict):
@@ -1685,7 +2007,6 @@ class HubViewer:
     ) -> tuple[list[dict], dict]:
         if (not self.normalize_display) or (not isinstance(graph_points, list)):
             return graph_points, {}
-        mode = self._active_normalize_mode()
         contexts: dict = {}
         for point in graph_points:
             if not isinstance(point, dict):
@@ -1693,11 +2014,12 @@ class HubViewer:
             fit_val = point.get("fitness")
             if not hr._is_number(fit_val):
                 continue
-            group = "__all__" if mode == "sum" else point.get(group_key)
+            group = point.get(group_key)
             if group not in contexts:
                 contexts[group] = {
                     "range": [float(fit_val), float(fit_val)],
                     "sum": float(fit_val),
+                    "sum_scale": float(self._sum_norm_scale),
                 }
             else:
                 cur = contexts[group]
@@ -1714,7 +2036,7 @@ class HubViewer:
             if not hr._is_number(fit_val):
                 normalized.append(point)
                 continue
-            group = "__all__" if mode == "sum" else point.get(group_key)
+            group = point.get(group_key)
             group_context = contexts.get(group)
             norm_fit = self._normalize_value_for_display(float(fit_val), group_context if isinstance(group_context, dict) else None)
             item = dict(point)
@@ -1734,6 +2056,7 @@ class HubViewer:
             final_contexts[key] = {
                 "range": range_tuple,
                 "sum": float(payload.get("sum", 0.0)),
+                "sum_scale": float(payload.get("sum_scale", self._sum_norm_scale)),
             }
         return normalized, final_contexts
 
@@ -1871,7 +2194,11 @@ class HubViewer:
                 if norm_points:
                     used_snapshots_local = True
             if not norm_points:
-                parsed_points = _run_parsed_arithmetic_points(run_dir, int(run_num))
+                parsed_points = _run_parsed_arithmetic_points(
+                    run_dir,
+                    int(run_num),
+                    increment_mode=self.increment_mode,
+                )
                 apex_x, _ = _apex_from_points(parsed_points)
                 if hr._is_number(apex_x):
                     norm_points = [(0.0, float(apex_x)), (1.0, float(apex_x))]
@@ -1951,7 +2278,7 @@ class HubViewer:
             "timeline_source": source,
         }
 
-    def _timeline_payload_for_row(self, row: dict | None, build_if_missing: bool = True) -> dict:
+    def _timeline_payload_for_row(self, row: dict | None, build_if_missing: bool = False) -> dict:
         key = self._timeline_cache_key_for_row(row)
         if key is None:
             return {
@@ -2010,14 +2337,28 @@ class HubViewer:
         frames = max(2, int(self.timeline_frame_count))
         return 1.0 / float(frames - 1)
 
+    def _timeline_step_mode_label(self) -> str:
+        if str(self.timeline_step_mode) == "point1":
+            return "0.1"
+        return "normal"
+
+    def _toggle_timeline_step_mode(self) -> None:
+        if str(self.timeline_step_mode) == "point1":
+            self.timeline_step_mode = "normal"
+        else:
+            self.timeline_step_mode = "point1"
+
     def _timeline_frame_index(self) -> int:
         frames = max(2, int(self.timeline_frame_count))
         idx = int(round(float(self.timeline_progress) * float(frames - 1)))
         return max(0, min(frames - 1, idx))
 
     def _step_timeline_frame(self, delta_steps: int) -> None:
-        step = self._timeline_step_size()
-        new_progress = float(self.timeline_progress) + (float(delta_steps) * step)
+        if str(self.timeline_step_mode) == "point1":
+            new_progress = round(float(self.timeline_progress) + (float(delta_steps) * 0.1), 1)
+        else:
+            step = self._timeline_step_size()
+            new_progress = float(self.timeline_progress) + (float(delta_steps) * step)
         self.timeline_progress = max(0.0, min(1.0, new_progress))
 
     def _set_timeline_slider_from_mouse(self, mx: int) -> None:
@@ -2545,6 +2886,30 @@ class HubViewer:
             ratio = float(start_idx) / max(1.0, float(max_scroll))
             thumb_y = bar_y + int((bar_h - thumb_h) * ratio)
             pg.draw.rect(self.screen, (126, 134, 151), (bar_x - 1, thumb_y, 6, thumb_h))
+            self._table_scrollbar_track_rect = pg.Rect(bar_x - 4, bar_y, 12, bar_h)
+            self._table_scrollbar_thumb_rect = pg.Rect(bar_x - 1, thumb_y, 6, thumb_h)
+        else:
+            self._table_scrollbar_track_rect = None
+            self._table_scrollbar_thumb_rect = None
+            self._table_scrollbar_dragging = False
+
+    def _set_table_scroll_from_thumb_mouse(self, my: int) -> None:
+        track = self._table_scrollbar_track_rect
+        thumb = self._table_scrollbar_thumb_rect
+        if track is None or thumb is None:
+            return
+        total = len(self.rows)
+        visible = self._table_visible_rows()
+        max_scroll = max(0, total - visible)
+        if max_scroll <= 0:
+            self.table_scroll = 0.0
+            return
+        thumb_h = max(1, int(thumb.height))
+        travel = max(1, int(track.height) - thumb_h)
+        thumb_top = int(my) - int(self._table_scrollbar_drag_offset)
+        thumb_top = max(int(track.y), min(int(track.bottom) - thumb_h, int(thumb_top)))
+        ratio = float(thumb_top - int(track.y)) / float(travel)
+        self.table_scroll = max(0.0, min(float(max_scroll), ratio * float(max_scroll)))
 
     def _draw_hub_graph(self, rect) -> None:
         pg = self.pg
@@ -3519,6 +3884,14 @@ class HubViewer:
             (rect.x + 10, rect.y + 8),
         )
 
+        cached_timeline_rows, total_timeline_rows = self._timeline_cache_progress_counts()
+        if (not self._loader_timeline_active) and total_timeline_rows > 0 and cached_timeline_rows <= 0:
+            msg = self.small.render("Timeline cache is not loaded. Click Load.", True, (182, 198, 230))
+            self.screen.blit(msg, (rect.x + 10, rect.y + 28))
+            hint = self.tiny.render("No timeline files are read until you click Load.", True, (150, 165, 188))
+            self.screen.blit(hint, (rect.x + 10, rect.y + 50))
+            return
+
         cursor_norm = max(0.0, min(1.0, float(self.timeline_progress)))
         graph_points = []
         env_values = []
@@ -3533,7 +3906,7 @@ class HubViewer:
             if (not hr._is_number(env_rate)) or (not self._env_rate_in_view(env_rate)):
                 continue
             candidate_rows += 1
-            payload = self._timeline_payload_for_row(row, build_if_missing=(not self._loader_active))
+            payload = self._timeline_payload_for_row(row, build_if_missing=False)
             cloud_series = payload.get("cloud_series") if isinstance(payload, dict) else None
             if not isinstance(cloud_series, list) or not cloud_series:
                 continue
@@ -4286,6 +4659,7 @@ class HubViewer:
         self._export_button_rect = pg.Rect(self._next_button_rect.right + 8, by, btn_w, btn_h)
         self._settings_button_rect = pg.Rect(self._export_button_rect.right + 8, by, btn_w, btn_h)
         self._normalize_button_rect = pg.Rect(self._settings_button_rect.right + 8, by, 132, btn_h)
+        self._increment_button_rect = pg.Rect(self._normalize_button_rect.right + 8, by, 118, btn_h)
         for button_rect, label in (
             (self._back_button_rect, "Back"),
             (self._next_button_rect, "Next"),
@@ -4314,6 +4688,18 @@ class HubViewer:
                 self._normalize_button_rect.y + 5,
             ),
         )
+        pg.draw.rect(self.screen, (42, 42, 46), self._increment_button_rect)
+        pg.draw.rect(self.screen, (155, 155, 155), self._increment_button_rect, 1)
+        increment_label = f"Step: {self._increment_mode_label()}"
+        inc_color = (172, 226, 178) if self._active_increment_mode() == "step0p01" else (230, 230, 230)
+        inc_txt = self.small.render(increment_label, True, inc_color)
+        self.screen.blit(
+            inc_txt,
+            (
+                self._increment_button_rect.x + (self._increment_button_rect.width - inc_txt.get_width()) // 2,
+                self._increment_button_rect.y + 5,
+            ),
+        )
 
         mode_labels = {
             "normal": "Normal",
@@ -4327,11 +4713,13 @@ class HubViewer:
             "master_fit_lines_3d": "Master Fit Lines 3D",
         }
         mode_text = f"Mode {self.graph_mode_index + 1}/{len(self.graph_modes)}: {mode_labels.get(mode, mode)}"
-        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._normalize_button_rect.right + 12, by + 5))
+        self.screen.blit(self.small.render(mode_text, True, (205, 215, 230)), (self._increment_button_rect.right + 12, by + 5))
 
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
         self._timeline_next_button_rect = None
+        self._timeline_load_button_rect = None
+        self._timeline_step_mode_button_rect = None
         self._timeline_slider_rect = None
         self._range_slider_rect = None
         self._env_range_slider_rect = None
@@ -4361,6 +4749,60 @@ class HubViewer:
                 btn_w,
                 btn_h,
             )
+            self._timeline_load_button_rect = pg.Rect(
+                self._timeline_prev_button_rect.x - btn_w - btn_gap,
+                by + 1,
+                btn_w,
+                btn_h,
+            )
+            cached_rows, total_rows = self._timeline_cache_progress_counts()
+            cache_loaded = total_rows > 0 and cached_rows >= total_rows
+            if self._loader_timeline_active:
+                load_label = "Loading..."
+                load_fill = (56, 70, 86)
+                load_border = (125, 162, 198)
+                load_color = (214, 228, 246)
+            elif cache_loaded:
+                load_label = "Loaded"
+                load_fill = (40, 66, 54)
+                load_border = (122, 176, 146)
+                load_color = (198, 236, 210)
+            else:
+                load_label = "Load"
+                load_fill = (42, 42, 46)
+                load_border = (155, 155, 155)
+                load_color = (230, 230, 230)
+            pg.draw.rect(self.screen, load_fill, self._timeline_load_button_rect)
+            pg.draw.rect(self.screen, load_border, self._timeline_load_button_rect, 1)
+            load_txt = self.tiny.render(load_label, True, load_color)
+            self.screen.blit(
+                load_txt,
+                (
+                    self._timeline_load_button_rect.x + (self._timeline_load_button_rect.width - load_txt.get_width()) // 2,
+                    self._timeline_load_button_rect.y + 6,
+                ),
+            )
+            self._timeline_step_mode_button_rect = pg.Rect(
+                self._timeline_load_button_rect.x - btn_w - btn_gap,
+                by + 1,
+                btn_w,
+                btn_h,
+            )
+            point1_mode = str(self.timeline_step_mode) == "point1"
+            step_label = "Step: 0.1" if point1_mode else "Step: Normal"
+            step_fill = (40, 66, 54) if point1_mode else (42, 42, 46)
+            step_border = (122, 176, 146) if point1_mode else (155, 155, 155)
+            step_color = (198, 236, 210) if point1_mode else (230, 230, 230)
+            pg.draw.rect(self.screen, step_fill, self._timeline_step_mode_button_rect)
+            pg.draw.rect(self.screen, step_border, self._timeline_step_mode_button_rect, 1)
+            step_txt = self.tiny.render(step_label, True, step_color)
+            self.screen.blit(
+                step_txt,
+                (
+                    self._timeline_step_mode_button_rect.x + (self._timeline_step_mode_button_rect.width - step_txt.get_width()) // 2,
+                    self._timeline_step_mode_button_rect.y + 6,
+                ),
+            )
             play_label = "Stop" if self.timeline_playing else "Play"
             for button_rect, label in (
                 (self._timeline_prev_button_rect, "Last Frame"),
@@ -4380,7 +4822,7 @@ class HubViewer:
             frame_idx = self._timeline_frame_index() + 1
             frame_total = max(2, int(self.timeline_frame_count))
             timeline_label = self.tiny.render(
-                f"Frame: {frame_idx}/{frame_total}",
+                f"Frame: {frame_idx}/{frame_total} | step {self._timeline_step_mode_label()}",
                 True,
                 (190, 200, 218),
             )
@@ -4574,7 +5016,7 @@ class HubViewer:
         )
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
-            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button cycles normalization (None/Range/Sum), Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
+            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button cycles normalization (None/Range/Sum), I/Step button toggles increment (0.001/0.01), Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Load/Step/Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
         )
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, subtitle, self.window_w - (2 * margin)), True, (168, 176, 191)), (margin, 44))
         if include_status and self.export_status:
@@ -4629,6 +5071,20 @@ class HubViewer:
         mx, my = pos
         if self._handle_equation_copy_click(int(mx), int(my)):
             return
+        if self._table_scrollbar_track_rect is not None and self._table_scrollbar_track_rect.collidepoint(mx, my):
+            self._table_scrollbar_dragging = True
+            if (
+                self._table_scrollbar_thumb_rect is not None
+                and self._table_scrollbar_thumb_rect.collidepoint(mx, my)
+            ):
+                self._table_scrollbar_drag_offset = int(my - self._table_scrollbar_thumb_rect.y)
+            else:
+                if self._table_scrollbar_thumb_rect is not None:
+                    self._table_scrollbar_drag_offset = int(self._table_scrollbar_thumb_rect.height // 2)
+                else:
+                    self._table_scrollbar_drag_offset = 0
+                self._set_table_scroll_from_thumb_mouse(int(my))
+            return
         if self._table_rect is not None and self._table_rect.collidepoint(mx, my):
             for row_idx, y0, y1 in self.table_row_hits:
                 if y0 <= my < y1:
@@ -4658,6 +5114,18 @@ class HubViewer:
         if self._normalize_button_rect is not None and self._normalize_button_rect.collidepoint(mx, my):
             self._cycle_normalize_mode()
             self._selected_scatter_selected = None
+            return
+        if self._increment_button_rect is not None and self._increment_button_rect.collidepoint(mx, my):
+            self._cycle_increment_mode()
+            return
+        if self._timeline_load_button_rect is not None and self._timeline_load_button_rect.collidepoint(mx, my):
+            self._start_timeline_cache_loader()
+            return
+        if (
+            self._timeline_step_mode_button_rect is not None
+            and self._timeline_step_mode_button_rect.collidepoint(mx, my)
+        ):
+            self._toggle_timeline_step_mode()
             return
         if self._timeline_prev_button_rect is not None and self._timeline_prev_button_rect.collidepoint(mx, my):
             self.timeline_playing = False
@@ -4769,6 +5237,8 @@ class HubViewer:
                         self._open_settings_dialog()
                     elif event.key == self.pg.K_n:
                         self._cycle_normalize_mode()
+                    elif event.key == self.pg.K_i:
+                        self._cycle_increment_mode()
                     elif event.key == self.pg.K_LEFT:
                         self._rotate_graph_mode(-1)
                     elif event.key == self.pg.K_RIGHT:
@@ -4820,6 +5290,7 @@ class HubViewer:
                     self._timeline_slider_dragging = False
                     self._env_range_drag_handle = None
                     self._graph3d_dragging = False
+                    self._table_scrollbar_dragging = False
                     self._graph3d_last_mouse = None
                 elif event.type == self.pg.MOUSEMOTION:
                     if self._range_slider_dragging:
@@ -4828,6 +5299,8 @@ class HubViewer:
                         self._set_timeline_slider_from_mouse(int(event.pos[0]))
                     if isinstance(self._env_range_drag_handle, str):
                         self._set_env_slider_from_mouse(int(event.pos[0]), self._env_range_drag_handle)
+                    if self._table_scrollbar_dragging:
+                        self._set_table_scroll_from_thumb_mouse(int(event.pos[1]))
                     if self._graph3d_dragging:
                         if self._graph3d_last_mouse is None:
                             self._graph3d_last_mouse = (int(event.pos[0]), int(event.pos[1]))

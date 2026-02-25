@@ -90,14 +90,21 @@ while running:
     # Check for extinct species
     extinct_species = []
     for evo_val, data in list(species_trackers.items()):
-        if data["lifespan"] > 4000:
+        if data["lifespan"] >= LINEAGE_RESET_LIFESPAN:
             #reset simulation
             print(f"[{time.strftime('%H:%M:%S')}] Resetting simulation due to long-lived species")
             for evo_val, data in list(species_trackers.items()):
                 if data["alive"]:
                     data["alive"] = False
-                    if data["lifespan"] != data["pop_time"]: #they reproduced at least once
-                        _log_species(evo_val, data)
+                    should_log = (
+                        data["lifespan"] != data["pop_time"]
+                        or data["lifespan"] >= LINEAGE_RESET_LIFESPAN
+                    )
+                    if should_log: #they reproduced at least once, or hit lineage reset threshold
+                        row = data.copy()
+                        if row["lifespan"] >= LINEAGE_RESET_LIFESPAN:
+                            row["lifespan"] = LINEAGE_RECORD_LIFESPAN
+                        _log_species(evo_val, row)
             dots, enviorment_state = reset_simulation()
             species_trackers = {}
             totalSim += 1
