@@ -697,8 +697,8 @@ def _spawn_child_from_parent(parent):
     child.immune_system = child.immune_system % 5
 
 
-    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
-    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed / 2, child.evolution_speed / 2)
+    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
     child.color = parent.color.copy()
     '''
 
