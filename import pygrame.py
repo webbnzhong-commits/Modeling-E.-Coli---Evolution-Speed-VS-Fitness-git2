@@ -697,8 +697,8 @@ def _spawn_child_from_parent(parent):
     child.immune_system = child.immune_system % 5
 
 
-    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
-    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 2, child.evolution_speed * 2)
+    child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 1.5, child.evolution_speed * 1.5)
+    child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 1.5, child.evolution_speed * 1.5)
     child.color = parent.color.copy()
     '''
 
@@ -772,8 +772,8 @@ def _write_run_meta(final=False):
 CONTROL_CHECK_INTERVAL = 50
 SPECIES_LOG_GAP = 1000
 PRINT_INTERVAL = 5000
-LINEAGE_RESET_LIFESPAN = 10_000
-LINEAGE_RECORD_LIFESPAN = 15_000
+LINEAGE_RESET_LIFESPAN = 2_100
+LINEAGE_RECORD_LIFESPAN = 3_500
 control_active_index = None
 enabled_flags = None
 draw_modes = None
