@@ -420,9 +420,9 @@ class enviorment():
         '''
         
         if self.foodAmnt > self.goingToAmnt - enviormentChangeRate:
-            self.foodAmnt -= enviormentChangeRate
+            self.foodAmnt -= enviormentChangeRate / 2 + 0.5
         elif self.foodAmnt < self.goingToAmnt + enviormentChangeRate:
-            self.foodAmnt += enviormentChangeRate
+            self.foodAmnt += enviormentChangeRate / 2 + 0.5
         else:
             # Choose a new target amount based on population.
             pop = max(1, len(dots))
@@ -467,16 +467,16 @@ class enviorment():
     def update_climate(self, frame_count):
         if frame_count % self._change_interval() != 0:
             return
-        self.ph += random.uniform(-enviormentChangeRate, enviormentChangeRate) * 2
+        self.ph += random.uniform(-enviormentChangeRate / 2 + 0.5, enviormentChangeRate / 2 + 0.5) * 2
         if self.ph < 4:
             self.ph = 4
         if self.ph > 10:
             self.ph = 10
 
         if self.tempDirUp:
-            self.temp += random.uniform(0, enviormentChangeRate)
+            self.temp += random.uniform(0, enviormentChangeRate / 2 + 0.5)
         else:
-            self.temp -= random.uniform(0, enviormentChangeRate)
+            self.temp -= random.uniform(0, enviormentChangeRate / 2 + 0.5)
         if self.temp > 40:
             self.temp = 40
             self.tempDirUp = False
@@ -729,7 +729,7 @@ def _spawn_child_from_parent(parent):
         1 * child.size / 2, child.reproduction_resource[child.favored_resource]
     )
 
-    if random.uniform(0, child.evolution_speed/4 + 0.0275) < 0.11:
+    if random.uniform(0, child.evolution_speed/3 + 0.0367) < 0.11:
         return child
     for r in ["o", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
