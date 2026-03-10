@@ -14,7 +14,7 @@ from settings_manager import load_settings, save_settings
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run hub folders of master simulations across enviormentChangeRate values."
+        description="Run hub folders of master simulations across environment change-rate values."
     )
     parser.add_argument("--results-root", type=str, default="results")
     parser.add_argument("--script", type=str, default="simulation_entry.py")
@@ -523,12 +523,44 @@ def _fitness_weight_count(fitness: float) -> int:
     return max(1, int(round(value)))
 
 
+_MAX_WEIGHTED_POINT_COPIES = 200_000
+
+
 def _hub_all_points_weighted_by_fitness(rows: list[dict]) -> list[tuple[float, float, float]]:
     flattened = _hub_point_triples_from_rows(rows)
-    weighted: list[tuple[float, float, float]] = []
+    weighted_specs: list[tuple[float, float, float, int]] = []
+    total_copies = 0
     for env, evo, fitness in flattened:
         copies = _fitness_weight_count(fitness)
-        for _ in range(copies):
+        if copies <= 0:
+            continue
+        weighted_specs.append((env, evo, fitness, int(copies)))
+        total_copies += int(copies)
+    if total_copies <= 0:
+        return []
+
+    if total_copies <= _MAX_WEIGHTED_POINT_COPIES:
+        weighted: list[tuple[float, float, float]] = []
+        for env, evo, fitness, copies in weighted_specs:
+            weighted.extend([(env, evo, fitness)] * copies)
+        return weighted
+
+    # Keep the weighted view bounded by scaling copy counts proportionally.
+    scale = float(_MAX_WEIGHTED_POINT_COPIES) / float(total_copies)
+    weighted = []
+    fractions: list[tuple[float, int]] = []
+    for idx, (env, evo, fitness, copies) in enumerate(weighted_specs):
+        scaled = float(copies) * scale
+        base = int(math.floor(scaled))
+        if base > 0:
+            weighted.extend([(env, evo, fitness)] * base)
+        fractions.append((scaled - float(base), idx))
+
+    remaining = max(0, _MAX_WEIGHTED_POINT_COPIES - len(weighted))
+    if remaining > 0 and fractions:
+        fractions.sort(key=lambda item: item[0], reverse=True)
+        for _, idx in fractions[:remaining]:
+            env, evo, fitness, _ = weighted_specs[idx]
             weighted.append((env, evo, fitness))
     return weighted
 
@@ -927,6 +959,37 @@ def _reserve_global_counters(
     return int(target_master), int(target_sim)
 
 
+def _master_dir_by_run_num(results_dir: Path, run_num: int | None) -> Path | None:
+    if run_num is None:
+        return None
+    try:
+        run_id = int(run_num)
+    except Exception:
+        return None
+    candidate = results_dir / f"master_{run_id}"
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
+def _select_master_dir(results_dir: Path, preferred_run_nums: list[int | None]) -> Path | None:
+    seen: set[int] = set()
+    for raw_run_num in preferred_run_nums:
+        if raw_run_num is None:
+            continue
+        try:
+            run_num = int(raw_run_num)
+        except Exception:
+            continue
+        if run_num in seen:
+            continue
+        seen.add(run_num)
+        direct = _master_dir_by_run_num(results_dir, run_num)
+        if direct is not None:
+            return direct
+    return _latest_master_dir(results_dir)
+
+
 def _latest_master_dir(results_dir: Path) -> Path | None:
     best = None
     best_num = -1
@@ -975,7 +1038,10 @@ def _read_species_from_run_meta(path: Path) -> float | None:
     species = payload.get("amnt_of_species")
     if not isinstance(species, (int, float)):
         return None
-    return float(species)
+    species_f = float(species)
+    if not math.isfinite(species_f) or species_f < 0:
+        return None
+    return species_f
 
 
 def _read_elapsed_from_run_meta(path: Path) -> float | None:
@@ -1083,16 +1149,13 @@ def _extract_points_from_csv(path: Path) -> list[tuple[float, float]]:
 def _master_points(master_dir: Path, run_nums: list[int]) -> list[tuple[float, float]]:
     # Prefer the master-level parsed arithmetic file for graph points.
     # This is the source of truth for: evolution rate + arithmetic mean length lived.
-    preferred_master_paths: list[Path] = [
-        master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_Log.csv",
-        master_dir / f"parsedArithmeticMeanSimulationo{master_dir.name}_Log.csv",
-        master_dir / f"parsedArithmeticMeanSimulation{master_dir.name}_Log.csv",
-        master_dir / f"parsedArithmeticMeanSimulatin{master_dir.name}_Log.csv",
-        master_dir / f"parsedArithmeticMeanSimulatino{master_dir.name}_log.csv",
-        master_dir / f"parsedArithmeticMeanSimulationo{master_dir.name}_log.csv",
-        master_dir / f"parsedArithmeticMeanSimulation{master_dir.name}_log.csv",
-        master_dir / f"parsedArithmeticMeanSimulatin{master_dir.name}_log.csv",
-    ]
+    preferred_master_paths: list[Path] = []
+    name_variants = ("Simulatino", "Simulationo", "Simulation", "Simulatin")
+    for suffix in ("_Log.csv", "_log.csv"):
+        for variant in name_variants:
+            preferred_master_paths.append(
+                master_dir / f"parsedArithmeticMean{variant}{master_dir.name}{suffix}"
+            )
     for master_path in preferred_master_paths:
         points = _extract_points_from_csv(master_path)
         if points:
@@ -1530,10 +1593,11 @@ def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
         denom = max(1e-9, fit_max - fit_min)
         norms = [(v - fit_min) / denom for v in fits]
 
-    # Bubble area scale in points^2 (dynamic, not hard-capped to 2000).
-    size_min = 0.0
-    
-    size_max = 1.0
+    # Bubble area scale in points^2.
+    # Keep points visible for small samples while limiting overlap for dense samples.
+    point_count = max(1, len(fits))
+    size_min = 14.0
+    size_max = max(36.0, min(220.0, 520.0 / math.sqrt(float(point_count))))
     sizes = [size_min + (n * (size_max - size_min)) for n in norms]
 
     x_min = min(xs)
@@ -1555,11 +1619,6 @@ def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
     ax.set_ylim(y_min - y_pad, y_max + y_pad)
     fig.canvas.draw()
 
-    def _size_to_radius_px(size_val: float) -> float:
-        # Matplotlib scatter size is area in points^2.
-        radius_points = math.sqrt(max(0.0, float(size_val)) / math.pi)
-        return radius_points * float(fig.dpi) / 72.0
-
     plot_x, plot_y, plot_sizes = xs, ys, sizes
     color_min = fit_min if fits else 0.0
     color_max = fit_max if fits else 1.0
@@ -1578,8 +1637,8 @@ def _plot_hub_scatter(rows: list[dict], out_path: Path) -> bool:
         edgecolors="#0f172a",
         linewidths=0.65,
     )
-    ax.set_title("Hub Apex Map: Enviorment Change Rate vs Evolution Speed")
-    ax.set_xlabel("enviorment change rate")
+    ax.set_title("Hub Apex Map: Environment Change Rate vs Evolution Speed")
+    ax.set_xlabel("environment change rate")
     ax.set_ylabel("apex evolution speed")
     ax.grid(alpha=0.25)
     sm = mpl_cm.ScalarMappable(norm=norm, cmap=mpl_cm.viridis)
@@ -1856,8 +1915,8 @@ def _plot_ratio_curve(rows: list[dict], out_path: Path) -> bool:
     ax = fig.add_subplot(111)
     ax.plot([r for r, _ in usable], [ratio for _, ratio in usable], color="#cc3d1f", linewidth=2.0)
     ax.scatter([r for r, _ in usable], [ratio for _, ratio in usable], color="#f1a208", s=28)
-    ax.set_title("Fitness / Evolution-Speed Ratio by Enviorment Change Rate")
-    ax.set_xlabel("enviorment change rate")
+    ax.set_title("Fitness / Evolution-Speed Ratio by Environment Change Rate")
+    ax.set_xlabel("environment change rate")
     ax.set_ylabel("fitness / evolution speed")
     ax.grid(alpha=0.25)
     fig.tight_layout()
@@ -2256,10 +2315,10 @@ def _fit_hub_models_from_weighted_samples(
         for model in models
         if _is_number(model.get("r2"))
     ]
-    best_model = min(valid, key=lambda item: float(item["r2"])) if valid else None
+    best_model = max(valid, key=lambda item: float(item["r2"])) if valid else None
     total_weighted = int(round(sum(float(w) for _, _, w in samples if _is_number(w) and float(w) > 0)))
     return {
-        "selection_rule": "lowest_r2",
+        "selection_rule": "highest_r2",
         "point_count": int(len(samples)),
         "weighted_point_count": int(total_weighted),
         "models": models,
@@ -2346,7 +2405,7 @@ def _write_hub_stats_csv(path: Path, rows: list[dict]) -> dict:
                     writer.writerow(
                         [
                             ("yes" if model_name == best_model_name else ""),
-                            str(report.get("selection_rule", "lowest_r2")),
+                            str(report.get("selection_rule", "highest_r2")),
                             model_name,
                             (
                                 float(model["r2"])
@@ -4173,6 +4232,30 @@ def main() -> None:
             "steps": [],
             "status": "running",
         }
+    # Collapse duplicate step entries by step_index (keep latest occurrence).
+    if isinstance(hub_meta.get("steps"), list):
+        steps_raw = hub_meta.get("steps", [])
+        last_pos_by_idx: dict[int, int] = {}
+        for pos, step_info in enumerate(steps_raw):
+            if not isinstance(step_info, dict):
+                continue
+            raw_idx = step_info.get("step_index")
+            if not _is_number(raw_idx):
+                continue
+            last_pos_by_idx[int(raw_idx)] = int(pos)
+        if last_pos_by_idx:
+            deduped_steps = []
+            for pos, step_info in enumerate(steps_raw):
+                if not isinstance(step_info, dict):
+                    continue
+                raw_idx = step_info.get("step_index")
+                if not _is_number(raw_idx):
+                    deduped_steps.append(step_info)
+                    continue
+                if last_pos_by_idx.get(int(raw_idx)) != int(pos):
+                    continue
+                deduped_steps.append(step_info)
+            hub_meta["steps"] = deduped_steps
     _write_json_file(hub_meta_path, hub_meta)
     _ensure_csv_with_header(
         hub_summary_path,
@@ -4211,6 +4294,36 @@ def main() -> None:
     current_step_close_path = None
     current_step_close_requested = False
     abort_requested = False
+    fatal_returncode = None
+
+    def _upsert_hub_step(step_info: dict) -> None:
+        if not isinstance(step_info, dict):
+            return
+        steps = hub_meta.get("steps")
+        if not isinstance(steps, list):
+            steps = []
+            hub_meta["steps"] = steps
+        raw_idx = step_info.get("step_index")
+        if _is_number(raw_idx):
+            target_idx = int(raw_idx)
+            for pos, existing in enumerate(steps):
+                if not isinstance(existing, dict):
+                    continue
+                existing_idx = existing.get("step_index")
+                if not _is_number(existing_idx):
+                    continue
+                if int(existing_idx) == target_idx:
+                    steps[pos] = dict(step_info)
+                    return
+        steps.append(dict(step_info))
+
+    def _persist_hub_state(force: bool = True, clear_running_row: bool = False) -> None:
+        if clear_running_row:
+            dash_state["running_row"] = None
+        dash_state["status"] = str(hub_meta.get("status", dash_state.get("status", "")))
+        _write_json_file(hub_meta_path, hub_meta)
+        _refresh_reopened_processes()
+        dashboard.update(dash_state, force=force)
 
     def _master_subprocess_env(close_path: Path | None = None) -> dict:
         env = os.environ.copy()
@@ -4348,6 +4461,69 @@ def main() -> None:
         except Exception as exc:
             print(f"[hub_{hub_idx}] failed to open hub viewer: {exc}")
 
+    def _terminate_process(proc: subprocess.Popen | None, label: str) -> None:
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except Exception:
+            return
+        try:
+            proc.wait(timeout=2.0)
+            return
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        print(f"[hub_{hub_idx}] force-stopped {label} (pid={proc.pid})")
+
+    def _cleanup_child_processes(close_viewer: bool = False) -> None:
+        nonlocal hub_viewer_proc, current_step_proc, current_step_close_path, current_step_close_requested
+        _close_all_reopened()
+        if current_step_proc is not None and current_step_proc.poll() is None:
+            _request_graceful_close(current_step_proc, current_step_close_path, "active hub step")
+            current_step_close_requested = True
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            _refresh_reopened_processes()
+            reopened_running = any(proc.poll() is None for proc in reopened_master_procs.values())
+            step_running = current_step_proc is not None and current_step_proc.poll() is None
+            if (not reopened_running) and (not step_running):
+                break
+            time.sleep(0.1)
+
+        for master_num, proc in list(reopened_master_procs.items()):
+            if proc.poll() is None:
+                _terminate_process(proc, f"reopened master_{int(master_num)}")
+        _refresh_reopened_processes()
+
+        if current_step_proc is not None and current_step_proc.poll() is None:
+            _terminate_process(current_step_proc, "active hub step")
+        if current_step_proc is not None and current_step_proc.poll() is not None:
+            current_step_proc = None
+            if isinstance(current_step_close_path, Path):
+                try:
+                    current_step_close_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            current_step_close_path = None
+            current_step_close_requested = False
+
+        if close_viewer:
+            if hub_viewer_proc is not None and hub_viewer_proc.poll() is None:
+                _terminate_process(hub_viewer_proc, "hub viewer")
+            if hub_viewer_proc is not None and hub_viewer_proc.poll() is not None:
+                hub_viewer_proc = None
+
     def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, float | None]:
         if not points:
             return (None, None)
@@ -4368,7 +4544,12 @@ def main() -> None:
         env_dir = Path(str(env_dir_raw))
         if not env_dir.is_dir():
             return (None, None, [])
-        master_dir = _latest_master_dir(env_dir)
+        preferred_runs: list[int | None] = []
+        raw_master_run = row.get("master_run_num")
+        raw_planned_run = row.get("planned_master_run_num")
+        preferred_runs.append(int(raw_master_run) if _is_number(raw_master_run) else None)
+        preferred_runs.append(int(raw_planned_run) if _is_number(raw_planned_run) else None)
+        master_dir = _select_master_dir(env_dir, preferred_runs)
         run_nums = _master_run_nums(master_dir) if master_dir is not None else []
         if not run_nums:
             run_nums = _discover_env_run_nums(env_dir)
@@ -4549,6 +4730,17 @@ def main() -> None:
 
     hub_rows = []
     step_rows = []
+    step_meta_by_index = {}
+    if continuing:
+        raw_steps = existing_hub_meta.get("steps")
+        if isinstance(raw_steps, list):
+            for step_info in raw_steps:
+                if not isinstance(step_info, dict):
+                    continue
+                raw_idx = step_info.get("step_index")
+                if not _is_number(raw_idx):
+                    continue
+                step_meta_by_index[int(raw_idx)] = step_info
     for idx, rate in enumerate(rates):
         env_dir = hub_dir / _rate_label(rate)
         row = {
@@ -4579,23 +4771,43 @@ def main() -> None:
             has_existing_master = (
                 row.get("master_run_num") is not None and bool(row.get("master_dir"))
             )
-            step_complete = has_existing_master
-            if has_existing_master:
-                if step_complete:
-                    row["status"] = "ok"
-                    row["resume_existing"] = False
-                    hub_rows.append(
-                        {
-                            "env_rate": float(rate),
-                            "apex_x": row.get("apex_evolution_rate"),
-                            "apex_y": row.get("apex_fitness"),
-                            "fit": row.get("fit"),
-                            "points": row.get("points") or [],
-                        }
-                    )
+            step_meta = step_meta_by_index.get(int(idx))
+            recorded_status = (
+                str(step_meta.get("status", "")).strip().lower()
+                if isinstance(step_meta, dict)
+                else ""
+            )
+            recorded_master_run = (
+                step_meta.get("master_run_num")
+                if isinstance(step_meta, dict)
+                else None
+            )
+            master_matches_record = True
+            if recorded_status == "ok" and _is_number(recorded_master_run):
+                if row.get("master_run_num") is None:
+                    master_matches_record = False
                 else:
-                    row["status"] = "pending"
-                    row["resume_existing"] = True
+                    master_matches_record = int(row.get("master_run_num")) == int(recorded_master_run)
+            step_complete = bool(
+                recorded_status == "ok"
+                and has_existing_master
+                and master_matches_record
+            )
+            if step_complete:
+                row["status"] = "ok"
+                row["resume_existing"] = False
+                hub_rows.append(
+                    {
+                        "env_rate": float(rate),
+                        "apex_x": row.get("apex_evolution_rate"),
+                        "apex_y": row.get("apex_fitness"),
+                        "fit": row.get("fit"),
+                        "points": row.get("points") or [],
+                    }
+                )
+            else:
+                row["status"] = "pending"
+                row["resume_existing"] = bool(has_existing_master)
         step_rows.append(row)
     dashboard = _HubDashboard(
         enabled=(not args.no_screen),
@@ -4791,38 +5003,32 @@ def main() -> None:
         if abort_requested:
             step_info["status"] = "aborted"
             row_ref["status"] = "aborted"
-            hub_meta["steps"].append(step_info)
+            _upsert_hub_step(step_info)
             hub_meta["status"] = "aborted_by_user"
             hub_meta["aborted_at"] = time.time()
-            dash_state["status"] = hub_meta["status"]
-            dash_state["running_row"] = None
-            _write_json_file(hub_meta_path, hub_meta)
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
+            _persist_hub_state(force=True, clear_running_row=True)
             break
         if returncode != 0:
             step_info["status"] = "failed"
             row_ref["status"] = "failed"
-            hub_meta["steps"].append(step_info)
+            _upsert_hub_step(step_info)
             hub_meta["status"] = "failed"
-            dash_state["status"] = hub_meta["status"]
-            dash_state["running_row"] = None
-            _write_json_file(hub_meta_path, hub_meta)
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
-            raise SystemExit(returncode)
+            _persist_hub_state(force=True, clear_running_row=True)
+            fatal_returncode = int(returncode)
+            break
 
-        master_dir = _latest_master_dir(env_dir)
+        selected_runs: list[int | None] = []
+        selected_runs.append(int(planned_master_run) if _is_number(planned_master_run) else None)
+        selected_runs.append(
+            int(row_ref.get("master_run_num")) if _is_number(row_ref.get("master_run_num")) else None
+        )
+        master_dir = _select_master_dir(env_dir, selected_runs)
         if master_dir is None:
             step_info["status"] = "no_master"
             row_ref["status"] = "no_master"
-            hub_meta["steps"].append(step_info)
+            _upsert_hub_step(step_info)
             hub_meta["status"] = "stopped_no_master"
-            dash_state["status"] = hub_meta["status"]
-            dash_state["running_row"] = None
-            _write_json_file(hub_meta_path, hub_meta)
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
+            _persist_hub_state(force=True, clear_running_row=True)
             break
 
         run_nums = _master_run_nums(master_dir)
@@ -4914,7 +5120,7 @@ def main() -> None:
             step_info["master_run_mismatch_note"] = (
                 f"expected master_{planned_master_run}, got master_{master_run_num}"
             )
-        hub_meta["steps"].append(step_info)
+        _upsert_hub_step(step_info)
         _write_json_file(hub_meta_path, hub_meta)
 
         hub_rows.append(
@@ -4934,21 +5140,14 @@ def main() -> None:
     else:
         hub_meta["status"] = "completed"
         hub_meta["completed_at"] = time.time()
-        dash_state["status"] = hub_meta["status"]
-        _write_json_file(hub_meta_path, hub_meta)
-        _refresh_reopened_processes()
-        dashboard.update(dash_state, force=True)
+        _persist_hub_state(force=True, clear_running_row=False)
 
     if abort_requested and str(hub_meta.get("status", "")) == "running":
         hub_meta["status"] = "aborted_by_user"
         hub_meta["aborted_at"] = time.time()
-        dash_state["status"] = hub_meta["status"]
-        dash_state["running_row"] = None
-        _write_json_file(hub_meta_path, hub_meta)
-        _refresh_reopened_processes()
-        dashboard.update(dash_state, force=True)
+        _persist_hub_state(force=True, clear_running_row=True)
 
-    if (not args.skip_plots) and (not abort_requested):
+    if (not args.skip_plots) and (not abort_requested) and (fatal_returncode is None):
         plotted = []
         scatter_path = hub_dir / "hub_apex_scatter.png"
         if _plot_hub_scatter(hub_rows, scatter_path):
@@ -4961,10 +5160,7 @@ def main() -> None:
             plotted.append(ratio_path.name)
         if plotted:
             hub_meta["plots"] = plotted
-            _write_json_file(hub_meta_path, hub_meta)
-            dash_state["status"] = hub_meta["status"]
-            _refresh_reopened_processes()
-            dashboard.update(dash_state, force=True)
+            _persist_hub_state(force=True, clear_running_row=False)
 
     # When a hub finishes all steps, keep the dashboard open by default
     # so users can inspect the final graph and reopen masters if needed.
@@ -4982,8 +5178,16 @@ def main() -> None:
                 dashboard.update(dash_state, force=True)
                 time.sleep(0.1)
 
-    if abort_requested:
+    final_status = str(hub_meta.get("status", ""))
+    if fatal_returncode is not None or final_status in {"failed", "aborted_by_user", "stopped_no_master"}:
+        _cleanup_child_processes(close_viewer=True)
+
+    if fatal_returncode is not None:
+        print(f"Hub failed (returncode={int(fatal_returncode)}): {hub_dir}")
+    elif abort_requested:
         print(f"Hub aborted by user: {hub_dir}")
+    elif final_status == "stopped_no_master":
+        print(f"Hub stopped (no master produced): {hub_dir}")
     else:
         print(f"Hub complete: {hub_dir}")
     print(f"Summary: {hub_summary_path}")
@@ -4994,6 +5198,8 @@ def main() -> None:
         "Weighted datapoints kept in memory variable "
         f"`hub_all_points_weighted_by_fitness` ({len(hub_all_points_weighted_by_fitness)} rows)"
     )
+    if fatal_returncode is not None:
+        raise SystemExit(int(fatal_returncode))
 
 
 if __name__ == "__main__":

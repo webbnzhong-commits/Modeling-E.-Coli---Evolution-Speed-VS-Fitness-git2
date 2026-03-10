@@ -1,6 +1,7 @@
 {
   "screen": {
-    "width": 1280    "height": 832
+    "width": 1280,
+    "height": 832
   },
   "display_mode": 2,
   "draw": false,
@@ -9,42 +10,36 @@
   "population_cap": 0.5,
   "enviormentChangeRate": 1.0,
   "ph_effect": {
-    "scale": 1.0,
+    "scale": 1.25,
     "divisor": 2.0
   },
   "temp_effect": {
-    "scale": 1.0,
+    "scale": 1.5,
     "divisor": 4.0
   },
   "reproduction_debuf_min": 0.001,
   "quan": 2.0,
-  "immune_system_quan_factor": 0.15,
-<<<<<<< HEAD
-  "num_tries": 16891,
-  "num_tries_master": 924,
-  "num_tries_hub": 35,
-=======
-  "num_tries": 38834,
-  "num_tries_master": 2717,
-  "num_tries_hub": 42,
->>>>>>> 5050063d (update hubs)
+  "immune_system_quan_factor": 0.13,
+  "num_tries": 270480,
+  "num_tries_master": 9174,
+  "num_tries_hub": 75,
   "simulations": {
-    "count": 13
+    "count": 94
   },
   "master_graph": {
     "dot_alpha": 50,
     "dot_radius": 3
   },
   "hub": {
-    "start_rate": 0.1,
+    "start_rate": 0.5,
     "end_rate": 2.5,
     "step": 0.01,
-    "species_threshold": 100000,
+    "species_threshold": 50000,
     "max_masters": 241
   },
   "stop_conditions": {
     "runtime_enabled": false,
-    "max_runtime_hours": 21.0,
+    "max_runtime_hours": 0.0,
     "frames_enabled": false,
     "max_frames": 0,
     "species_enabled": false,

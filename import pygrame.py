@@ -16,7 +16,7 @@ import csv
 from collections import Counter
 from pathlib import Path
 from data_tracking import RunDataTracker
-from simulatino_parser import parse_run
+from simulation_parser import parse_run
 from settings_manager import load_settings, save_settings
 from multiprocessing import Pool, cpu_count
 from fps_tracker import FPSTracker

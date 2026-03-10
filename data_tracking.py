@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Union
 
-from simulatino_parser import parse_run
+from simulation_parser import parse_run
 from settings_manager import load_settings, save_settings
 
 

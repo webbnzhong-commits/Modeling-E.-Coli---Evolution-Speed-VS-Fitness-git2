@@ -4,8 +4,8 @@ from pathlib import Path
 from settings_manager import load_settings
 
 
-DRAW_SCRIPT = "import pygrame draw mode.py"
-HEADLESS_SCRIPT = "import pygrame no draw fast.py"
+DRAW_SCRIPT = "import_pygame_draw_mode.py"
+HEADLESS_SCRIPT = "import_pygame_no_draw_fast.py"
 
 
 def main() -> None:

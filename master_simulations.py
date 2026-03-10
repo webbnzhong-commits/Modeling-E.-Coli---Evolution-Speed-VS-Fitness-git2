@@ -20,7 +20,7 @@ except Exception:
     ZoneInfo = None
 
 from settings_manager import load_settings, save_settings
-from simulatino_parser import parse_run
+from simulation_parser import parse_run
 
 '''
 to do 2.0 OMG

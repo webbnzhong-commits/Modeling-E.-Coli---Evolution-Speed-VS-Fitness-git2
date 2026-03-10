@@ -1,21 +1,17 @@
-.DS_Store
-# Python venv
-.venv/
-venv/
-__pycache__/
-*.pyc
-
-*.zip
-
-
-# Local logs / outputs
-results/run_logs/
-*.log
-
 # OS
 .DS_Store
+
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+
+# Virtual environments
 .venv/
 venv/
-__pycache__/
-.pyc
-.DS_Store
+
+# Runtime logs
+run.log
+*.log
+
+# Archives
+*.zip
