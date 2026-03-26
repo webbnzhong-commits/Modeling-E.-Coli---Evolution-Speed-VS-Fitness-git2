@@ -1,0 +1,11 @@
+timestamp,message
+2026-03-26 20:54:30,  running master=master_9174 sims=94 avg_1000_iter=1.24s avg_fps=805.00 species_progress=6586.0/50000 (13.17%) species_total=6586.0 species_max=103.0 frames_max=138000
+2026-03-26 20:54:40,[2026-03-26 20:54:40] [UPDATE] hub_75 status=running progress=0/201 (0.07%) ok=0 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:02:12
+2026-03-26 20:54:40,  estimate remaining=51:39:35 total=51:41:48 finish_at=2026-03-29 00:34:16
+2026-03-26 20:54:40,  running step=1 env_rate=0.5
+2026-03-26 20:54:40,  running master=master_9174 sims=94 avg_1000_iter=1.24s avg_fps=805.35 species_progress=7152.0/50000 (14.30%) species_total=7152.0 species_max=108.0 frames_max=146000
+2026-03-26 20:54:47,[2026-03-26 20:54:47] q pressed: requested graceful hub shutdown
+2026-03-26 20:54:49,[2026-03-26 20:54:49] [FINAL] hub_75 status=aborted_by_user progress=1/201 (0.50%) ok=0 failed=0 stopped=0 no_master=0 aborted=1 elapsed=00:02:21
+2026-03-26 20:54:49,  estimate remaining=07:51:35 total=07:53:56 finish_at=2026-03-27 04:46:24
+2026-03-26 20:54:49,  last step=1 status=aborted env_rate=0.5
+2026-03-26 20:54:49,Hub directory: results/hub/hub_75
