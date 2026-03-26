@@ -5379,9 +5379,8 @@ def main() -> None:
     env_base["SIM_RESULTS_DIR"] = str(results_dir)
     if args.env_change_rate is not None:
         env_base["SIM_ENV_CHANGE_RATE"] = str(float(args.env_change_rate))
-    procs = []
-    sim_start_times = []
-    for idx in range(count):
+
+    def _spawn_sim_process(idx: int) -> subprocess.Popen:
         env = env_base.copy()
         env["SIM_CONTROL_FILE"] = str(control_path)
         env["SIM_INDEX"] = str(idx)
@@ -5390,11 +5389,16 @@ def main() -> None:
         env["SIM_RUN_NUM"] = str(run_nums[idx])
         env["SIM_FPS_PATH"] = str(fps_paths[idx])
         env["PYTHONUNBUFFERED"] = "1"
-        proc = subprocess.Popen(
+        return subprocess.Popen(
             [interpreter, str(sim_path)],
             env=env,
             cwd=os.getcwd(),
         )
+
+    procs = []
+    sim_start_times = []
+    for idx in range(count):
+        proc = _spawn_sim_process(idx)
         procs.append(proc)
         sim_start_times.append(time.perf_counter())
 
@@ -6473,8 +6477,31 @@ def main() -> None:
             confirm_quit = False
         clock.tick(master_fps)
 
-        for proc in procs:
+        for idx, proc in enumerate(procs):
             if proc.poll() is not None:
+                if stop_max_species > 0:
+                    run_label = run_nums[idx] if 0 <= idx < len(run_nums) else "?"
+                    returncode = proc.returncode
+                    try:
+                        procs[idx] = _spawn_sim_process(idx)
+                    except Exception as exc:
+                        print(
+                            f"[master_{master_run_num}] failed to restart sim {idx + 1} "
+                            f"(run {run_label}) after exit code {returncode}: {exc}"
+                        )
+                        running = False
+                        break
+                    print(
+                        f"[master_{master_run_num}] restarted sim {idx + 1} "
+                        f"(run {run_label}) after exit code {returncode}"
+                    )
+                    if idx < len(fps_series):
+                        fps_series[idx] = []
+                    if idx < len(mean_series):
+                        mean_series[idx] = []
+                    if idx < len(meta_series):
+                        meta_series[idx] = {}
+                    continue
                 running = False
                 break
 
