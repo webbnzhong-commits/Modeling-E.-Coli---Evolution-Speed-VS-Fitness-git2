@@ -1,0 +1,11 @@
+timestamp,message
+2026-03-27 02:11:01,"  last step=4 status=ok env_rate=2 master=9579 r2=0.5701 apex=(0.239,2535)"
+2026-03-27 02:11:11,[2026-03-27 02:11:11] [UPDATE] hub_77 status=running progress=4/5 (99.65%) ok=4 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:27
+2026-03-27 02:11:11,  estimate remaining=00:00:01 total=00:07:29 finish_at=2026-03-27 02:11:12
+2026-03-27 02:11:11,  running step=5 env_rate=2.5
+2026-03-27 02:11:11,  running master=master_9580 sims=94 avg_1000_iter=0.82s avg_fps=1225.97 species_progress=4912.0/5000 (98.24%) species_total=4912.0 species_max=89.0 frames_max=130000
+2026-03-27 02:11:11,"  last step=4 status=ok env_rate=2 master=9579 r2=0.5701 apex=(0.239,2535)"
+2026-03-27 02:11:18,[2026-03-27 02:11:18] [FINAL] hub_77 status=completed progress=5/5 (100.00%) ok=5 failed=0 stopped=0 no_master=0 aborted=0 elapsed=00:07:34
+2026-03-27 02:11:18,  estimate remaining=00:00:00 total=00:07:34 finish_at=2026-03-27 02:11:18
+2026-03-27 02:11:18,"  last step=5 status=ok env_rate=2.5 master=9580 r2=0.4652 apex=(0.242,1906)"
+2026-03-27 02:11:18,Hub directory: results/hub/hub_77
