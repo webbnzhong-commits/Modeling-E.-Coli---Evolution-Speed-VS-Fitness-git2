@@ -13,5 +13,10 @@ venv/
 run.log
 *.log
 
+# Generated analysis/export outputs
+paper_exports/
+.matplotlib_cache/
+results/**/exports/
+
 # Archives
 *.zip
