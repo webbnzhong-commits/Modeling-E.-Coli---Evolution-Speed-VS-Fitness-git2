@@ -23,19 +23,3 @@ This project runs and analyzes E. coli evolution simulations across environment 
 
 ## Output
 Generated outputs are written under `results/` and are intentionally ignored in version control.
-
-## Paper Export
-To create NHSJS-ready summary tables and figures from the latest hub run:
-
-```bash
-python3 paper_export.py
-```
-
-To export a specific hub:
-
-```bash
-python3 paper_export.py --hub-dir results/hub/hub_78
-```
-
-The export is written to `paper_exports/<hub_name>/` and includes `paper_summary.csv`,
-`environment_bins.csv`, `paper_methods.json`, and PNG figures when `matplotlib` is installed.

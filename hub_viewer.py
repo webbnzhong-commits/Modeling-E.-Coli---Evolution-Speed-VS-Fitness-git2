@@ -33,6 +33,12 @@ _BACKGROUND_MODEL_UPDATE_EVERY_ROWS = 12
 _HUB_LOADING_WORKERS = 6
 
 
+try:
+    from scipy.stats import pearsonr as _scipy_pearsonr  # type: ignore
+except Exception:
+    _scipy_pearsonr = None
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Read-only hub viewer with sim list, hub graph, and normalized timeline."
@@ -83,6 +89,117 @@ def _safe_float(value):
         return float(value)
     except Exception:
         return None
+
+
+def _format_stat(value, digits: int = 6) -> str:
+    if not hr._is_number(value):
+        return "--"
+    val = float(value)
+    if val == 0.0:
+        return "0"
+    if abs(val) >= 100000 or abs(val) < 0.0001:
+        return f"{val:.{digits}e}"
+    return f"{val:.{digits}g}"
+
+
+def _normal_approx_two_sided_p(z_value: float) -> float:
+    return max(0.0, min(1.0, math.erfc(abs(float(z_value)) / math.sqrt(2.0))))
+
+
+def _bell_curve_fit_stats(points: list[tuple[float, float]], fit: dict | None) -> dict:
+    if not isinstance(fit, dict):
+        return {"n": 0}
+    apex_x = fit.get("apex_x")
+    apex_y = fit.get("apex_y")
+    sigma_left = fit.get("sigma_left")
+    sigma_right = fit.get("sigma_right")
+    shape_power = fit.get("shape_power", 2.0)
+    if not (
+        hr._is_number(apex_x)
+        and hr._is_number(apex_y)
+        and hr._is_number(sigma_left)
+        and hr._is_number(sigma_right)
+    ):
+        return {"n": 0}
+
+    actual = []
+    predicted = []
+    for pair in points:
+        if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+            continue
+        xv, yv = pair[0], pair[1]
+        if not (hr._is_number(xv) and hr._is_number(yv)):
+            continue
+        pred = hr._predict_piecewise_gaussian(
+            float(xv),
+            float(apex_x),
+            float(apex_y),
+            float(sigma_left),
+            float(sigma_right),
+            shape_power=(float(shape_power) if hr._is_number(shape_power) else 2.0),
+        )
+        if hr._is_number(pred):
+            actual.append(float(yv))
+            predicted.append(float(pred))
+
+    n = len(actual)
+    if n <= 0:
+        return {"n": 0}
+
+    residuals = [a - p for a, p in zip(actual, predicted)]
+    sse = sum(err * err for err in residuals)
+    rmse = math.sqrt(sse / float(n)) if n > 0 else None
+    mean_actual = sum(actual) / float(n)
+    ss_tot = sum((a - mean_actual) ** 2 for a in actual)
+    r2 = None
+    if ss_tot > 1e-12:
+        r2 = 1.0 - (sse / ss_tot)
+
+    r_val = None
+    p_value = None
+    p_source = "unavailable"
+    if n >= 2:
+        if _scipy_pearsonr is not None:
+            try:
+                r_obj = _scipy_pearsonr(actual, predicted)
+                if isinstance(r_obj, tuple):
+                    r_val = float(r_obj[0])
+                    p_value = float(r_obj[1])
+                else:
+                    r_val = float(r_obj.statistic)
+                    p_value = float(r_obj.pvalue)
+                p_source = "scipy pearsonr"
+            except Exception:
+                r_val = None
+                p_value = None
+        if r_val is None:
+            mean_pred = sum(predicted) / float(n)
+            ss_actual = sum((a - mean_actual) ** 2 for a in actual)
+            ss_pred = sum((p - mean_pred) ** 2 for p in predicted)
+            if ss_actual > 1e-12 and ss_pred > 1e-12:
+                cov = sum((a - mean_actual) * (p - mean_pred) for a, p in zip(actual, predicted))
+                r_val = cov / math.sqrt(ss_actual * ss_pred)
+                r_val = max(-1.0, min(1.0, float(r_val)))
+                if n >= 4 and abs(r_val) < 1.0:
+                    fisher_z = 0.5 * math.log((1.0 + r_val) / (1.0 - r_val)) * math.sqrt(float(n - 3))
+                    p_value = _normal_approx_two_sided_p(fisher_z)
+                    p_source = "normal approximation"
+
+    return {
+        "n": int(n),
+        "r": r_val,
+        "r2": r2,
+        "stored_r2": fit.get("r2"),
+        "p_value": p_value,
+        "p_source": p_source,
+        "sse": sse,
+        "rmse": rmse,
+        "mean_actual": mean_actual,
+        "min_actual": min(actual),
+        "max_actual": max(actual),
+        "min_predicted": min(predicted),
+        "max_predicted": max(predicted),
+    }
 
 
 def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, float | None]:
@@ -749,6 +866,7 @@ class HubViewer:
         self._table_scrollbar_dragging = False
         self._table_scrollbar_drag_offset = 0
         self.selected_row_index = None
+        self.compare_row_index = None
         self.table_scroll = 0.0
         self.table_row_h = 24
         self.timeline_cache = {}
@@ -799,6 +917,7 @@ class HubViewer:
             "normal",
             "hub_3d",
             "hub_3d_evo_fit_env",
+            "hub_3d_rgb_channels",
             "timeline_hub",
             "spectrum",
             "range",
@@ -817,6 +936,7 @@ class HubViewer:
         self._selected_scatter_plot_rect = None
         self._selected_scatter_point_hits = []
         self._selected_scatter_selected = None
+        self._selected_details_button_rect = None
         self._graph3d_dragging = False
         self._graph3d_last_mouse = None
         self._graph3d_yaw = -0.9
@@ -828,6 +948,12 @@ class HubViewer:
         self._range_slider_dragging = False
         self._env_range_slider_rect = None
         self._env_range_drag_handle = None
+        self._fitness_range_slider_rect = None
+        self._fitness_range_drag_handle = None
+        self._rgb_size_slider_rect = None
+        self._rgb_size_slider_dragging = False
+        self._rgb_depth_slider_rect = None
+        self._rgb_depth_slider_dragging = False
         self._timeline_prev_button_rect = None
         self._timeline_play_button_rect = None
         self._timeline_next_button_rect = None
@@ -836,6 +962,8 @@ class HubViewer:
         self._timeline_slider_rect = None
         self._timeline_slider_dragging = False
         self._equation_copy_hits = []
+        self._copy_feedback_until = {}
+        self._copy_feedback_seconds = 1.35
         self.timeline_progress = 0.0
         self.timeline_playing = False
         self.timeline_frame_count = 101
@@ -857,6 +985,17 @@ class HubViewer:
         # Start unset so first reload defaults to the full discovered env range.
         self.env_view_min = None
         self.env_view_max = None
+        self.fitness_global_min = 0.0
+        self.fitness_global_max = 1.0
+        self.fitness_view_min = None
+        self.fitness_view_max = None
+        self.rgb_point_radius_scale = 0.42
+        self.rgb_point_radius_min = 0.15
+        self.rgb_point_radius_max = 1.25
+        self.rgb_depth_shade_strength = 0.12
+        self.rgb_depth_shade_min = 0.0
+        self.rgb_depth_shade_max = 0.35
+        self.rgb_depth_shade_exponent = 2.35
         self.export_status = ""
         self._export_status_ok = True
         self.last_reload = 0.0
@@ -945,13 +1084,51 @@ class HubViewer:
                     high = float(self.env_global_max)
                 self.env_view_min = float(low)
                 self.env_view_max = float(high)
+
+        fitness_values = [
+            float(point.get("fitness"))
+            for point in self.graph_points
+            if isinstance(point, dict) and hr._is_number(point.get("fitness"))
+        ]
+        if fitness_values:
+            self.fitness_global_min = min(fitness_values)
+            self.fitness_global_max = max(fitness_values)
+        else:
+            self.fitness_global_min = 0.0
+            self.fitness_global_max = 1.0
+        if self.fitness_global_max <= self.fitness_global_min:
+            self.fitness_view_min = float(self.fitness_global_min)
+            self.fitness_view_max = float(self.fitness_global_max)
+        else:
+            if not (hr._is_number(self.fitness_view_min) and hr._is_number(self.fitness_view_max)):
+                self.fitness_view_min = float(self.fitness_global_min)
+                self.fitness_view_max = float(self.fitness_global_max)
+            else:
+                low = max(
+                    float(self.fitness_global_min),
+                    min(float(self.fitness_view_min), float(self.fitness_view_max)),
+                )
+                high = min(
+                    float(self.fitness_global_max),
+                    max(float(self.fitness_view_min), float(self.fitness_view_max)),
+                )
+                if high < low:
+                    low = float(self.fitness_global_min)
+                    high = float(self.fitness_global_max)
+                self.fitness_view_min = float(low)
+                self.fitness_view_max = float(high)
         if self.rows:
             if self.selected_row_index is None:
                 self.selected_row_index = 0
             else:
                 self.selected_row_index = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
+            if self.compare_row_index is not None:
+                self.compare_row_index = max(0, min(int(self.compare_row_index), len(self.rows) - 1))
+                if self.compare_row_index == self.selected_row_index:
+                    self.compare_row_index = None
         else:
             self.selected_row_index = None
+            self.compare_row_index = None
 
     def _refresh_sum_norm_scale(self) -> None:
         max_norm = 0.0
@@ -1707,6 +1884,12 @@ class HubViewer:
         row_idx = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
         self._start_selected_row_loader(row_idx)
 
+    def _queue_row_load(self, row_idx: int | None) -> None:
+        if row_idx is None or not self.rows:
+            return
+        idx = max(0, min(int(row_idx), len(self.rows) - 1))
+        self._start_selected_row_loader(idx)
+
     def reload_from_disk(self, force_full: bool = False, run_in_background: bool = True) -> None:
         self._stop_master_refresh(wait=False)
         self._stop_background_loader(wait=(not run_in_background))
@@ -1778,6 +1961,21 @@ class HubViewer:
         self._queue_selected_row_load()
         return self.rows[idx]
 
+    def _selected_scatter_rows(self) -> list[tuple[int, dict]]:
+        out = []
+        if self.selected_row_index is not None and self.rows:
+            idx = max(0, min(int(self.selected_row_index), len(self.rows) - 1))
+            if isinstance(self.rows[idx], dict):
+                out.append((idx, self.rows[idx]))
+        if self.compare_row_index is not None and self.rows:
+            idx = max(0, min(int(self.compare_row_index), len(self.rows) - 1))
+            if all(int(existing_idx) != idx for existing_idx, _ in out) and isinstance(self.rows[idx], dict):
+                out.append((idx, self.rows[idx]))
+            primary_needs_load = bool(out) and self._row_needs_full_load(out[0][1])
+            if not primary_needs_load:
+                self._queue_row_load(idx)
+        return out
+
     def _table_visible_rows(self) -> int:
         rect = self._table_rect
         if rect is None:
@@ -1808,6 +2006,7 @@ class HubViewer:
         total = len(self.rows)
         if total <= 0:
             self.selected_row_index = None
+            self.compare_row_index = None
             self._selected_scatter_selected = None
             return
         delta_i = int(delta)
@@ -1820,6 +2019,7 @@ class HubViewer:
             else:
                 idx = (current + delta_i) % total
         self.selected_row_index = idx
+        self.compare_row_index = None
         self._selected_scatter_selected = None
         self._ensure_selected_visible()
         self._queue_selected_row_load()
@@ -1830,6 +2030,14 @@ class HubViewer:
         low = min(float(self.env_view_min), float(self.env_view_max))
         high = max(float(self.env_view_min), float(self.env_view_max))
         val = float(env_rate)
+        return (low - 1e-9) <= val <= (high + 1e-9)
+
+    def _fitness_in_view(self, fitness) -> bool:
+        if not hr._is_number(fitness):
+            return False
+        low = min(float(self.fitness_view_min), float(self.fitness_view_max))
+        high = max(float(self.fitness_view_min), float(self.fitness_view_max))
+        val = float(fitness)
         return (low - 1e-9) <= val <= (high + 1e-9)
 
     def _env_slider_ratio_for_value(self, value: float) -> float:
@@ -1876,6 +2084,96 @@ class HubViewer:
             high = max(value, low)
         self.env_view_min = max(float(self.env_global_min), min(float(self.env_global_max), float(low)))
         self.env_view_max = max(float(self.env_global_min), min(float(self.env_global_max), float(high)))
+
+    def _fitness_slider_ratio_for_value(self, value: float) -> float:
+        if self.fitness_global_max <= self.fitness_global_min:
+            return 0.0
+        ratio = (float(value) - float(self.fitness_global_min)) / max(
+            1e-9,
+            float(self.fitness_global_max) - float(self.fitness_global_min),
+        )
+        return max(0.0, min(1.0, ratio))
+
+    def _fitness_slider_value_from_mouse(self, mx: int) -> float:
+        if self._fitness_range_slider_rect is None:
+            return float(self.fitness_view_min)
+        ratio = (float(mx) - float(self._fitness_range_slider_rect.x)) / max(
+            1.0,
+            float(self._fitness_range_slider_rect.width),
+        )
+        ratio = max(0.0, min(1.0, ratio))
+        return float(self.fitness_global_min) + (
+            ratio * (float(self.fitness_global_max) - float(self.fitness_global_min))
+        )
+
+    def _fitness_slider_handle_x(self, which: str) -> int:
+        if self._fitness_range_slider_rect is None:
+            return 0
+        value = float(self.fitness_view_min) if which == "min" else float(self.fitness_view_max)
+        ratio = self._fitness_slider_ratio_for_value(value)
+        return self._fitness_range_slider_rect.x + int(ratio * self._fitness_range_slider_rect.width)
+
+    def _set_fitness_slider_from_mouse(self, mx: int, handle: str) -> None:
+        if self._fitness_range_slider_rect is None:
+            return
+        if self.fitness_global_max <= self.fitness_global_min:
+            self.fitness_view_min = float(self.fitness_global_min)
+            self.fitness_view_max = float(self.fitness_global_max)
+            return
+        value = self._fitness_slider_value_from_mouse(mx)
+        low = min(float(self.fitness_view_min), float(self.fitness_view_max))
+        high = max(float(self.fitness_view_min), float(self.fitness_view_max))
+        if handle == "min":
+            low = min(value, high)
+        else:
+            high = max(value, low)
+        self.fitness_view_min = max(float(self.fitness_global_min), min(float(self.fitness_global_max), float(low)))
+        self.fitness_view_max = max(float(self.fitness_global_min), min(float(self.fitness_global_max), float(high)))
+
+    def _rgb_size_slider_ratio(self) -> float:
+        den = max(1e-9, float(self.rgb_point_radius_max) - float(self.rgb_point_radius_min))
+        ratio = (float(self.rgb_point_radius_scale) - float(self.rgb_point_radius_min)) / den
+        return max(0.0, min(1.0, ratio))
+
+    def _set_rgb_size_slider_from_mouse(self, mx: int) -> None:
+        if self._rgb_size_slider_rect is None:
+            return
+        ratio = (float(mx) - float(self._rgb_size_slider_rect.x)) / max(
+            1.0,
+            float(self._rgb_size_slider_rect.width),
+        )
+        ratio = max(0.0, min(1.0, ratio))
+        value = float(self.rgb_point_radius_min) + (
+            ratio * (float(self.rgb_point_radius_max) - float(self.rgb_point_radius_min))
+        )
+        self.rgb_point_radius_scale = max(
+            float(self.rgb_point_radius_min),
+            min(float(self.rgb_point_radius_max), float(value)),
+        )
+
+    def _rgb_depth_slider_ratio(self) -> float:
+        den = max(1e-9, float(self.rgb_depth_shade_max) - float(self.rgb_depth_shade_min))
+        linear_ratio = (float(self.rgb_depth_shade_strength) - float(self.rgb_depth_shade_min)) / den
+        linear_ratio = max(0.0, min(1.0, linear_ratio))
+        exponent = max(1e-9, float(self.rgb_depth_shade_exponent))
+        return max(0.0, min(1.0, linear_ratio ** (1.0 / exponent)))
+
+    def _set_rgb_depth_slider_from_mouse(self, mx: int) -> None:
+        if self._rgb_depth_slider_rect is None:
+            return
+        ratio = (float(mx) - float(self._rgb_depth_slider_rect.x)) / max(
+            1.0,
+            float(self._rgb_depth_slider_rect.width),
+        )
+        ratio = max(0.0, min(1.0, ratio))
+        curved_ratio = ratio ** max(1e-9, float(self.rgb_depth_shade_exponent))
+        value = float(self.rgb_depth_shade_min) + (
+            curved_ratio * (float(self.rgb_depth_shade_max) - float(self.rgb_depth_shade_min))
+        )
+        self.rgb_depth_shade_strength = max(
+            float(self.rgb_depth_shade_min),
+            min(float(self.rgb_depth_shade_max), float(value)),
+        )
 
     def _active_graph_mode(self) -> str:
         if not self.graph_modes:
@@ -2401,10 +2699,27 @@ class HubViewer:
         self.export_status = str(message)
         self._export_status_ok = bool(ok)
 
+    def _copy_feedback_key(self, text: str, label: str = "") -> tuple[str, str]:
+        return (str(label), str(text))
+
+    def _mark_copied_feedback(self, text: str, label: str = "") -> None:
+        self._copy_feedback_until[self._copy_feedback_key(text, label)] = (
+            time.monotonic() + float(self._copy_feedback_seconds)
+        )
+
+    def _copy_button_label(self, default_label: str, text: str, label_key: str = "") -> str:
+        key = self._copy_feedback_key(text, label_key)
+        until = self._copy_feedback_until.get(key)
+        if hr._is_number(until) and time.monotonic() <= float(until):
+            return "Copied"
+        if hr._is_number(until):
+            self._copy_feedback_until.pop(key, None)
+        return str(default_label)
+
     def _draw_equation_copy_button(self, rect, equation_text: str, y: int, margin: int = 10) -> int:
         if not str(equation_text).strip():
             return 0
-        label = "Copy"
+        label = self._copy_button_label("Copy", str(equation_text), "equation")
         btn_w = max(40, int(self.tiny.size(label)[0]) + 10)
         btn_h = max(14, int(self.tiny.get_linesize()) + 2)
         btn_rect = self.pg.Rect(
@@ -2423,20 +2738,22 @@ class HubViewer:
                 btn_rect.y + (btn_rect.height - txt.get_height()) // 2,
             ),
         )
-        self._equation_copy_hits.append((btn_rect.copy(), str(equation_text)))
+        self._equation_copy_hits.append((btn_rect.copy(), str(equation_text), "equation"))
         return int(btn_rect.width + 8)
 
     def _handle_equation_copy_click(self, mx: int, my: int) -> bool:
         for item in reversed(self._equation_copy_hits):
-            if (not isinstance(item, tuple)) or len(item) != 2:
+            if (not isinstance(item, tuple)) or len(item) not in (2, 3):
                 continue
-            rect, eq_text = item
+            rect, eq_text = item[0], item[1]
+            label_key = item[2] if len(item) >= 3 else "equation"
             if not isinstance(rect, self.pg.Rect):
                 continue
             if not rect.collidepoint(mx, my):
                 continue
             ok = hr._copy_to_clipboard(str(eq_text))
             if ok:
+                self._mark_copied_feedback(str(eq_text), str(label_key))
                 self._set_export_status(True, "Equation copied to clipboard")
             else:
                 self._set_export_status(False, "Failed to copy equation to clipboard")
@@ -2444,7 +2761,13 @@ class HubViewer:
         return False
 
     def _is_3d_mode(self, mode: str) -> bool:
-        return str(mode) in ("hub_3d", "hub_3d_evo_fit_env", "range_hub_3d_fit", "master_fit_lines_3d")
+        return str(mode) in (
+            "hub_3d",
+            "hub_3d_evo_fit_env",
+            "hub_3d_rgb_channels",
+            "range_hub_3d_fit",
+            "master_fit_lines_3d",
+        )
 
     def _graph3d_export_payload(self, mode: str) -> dict | None:
         m = str(mode)
@@ -2454,6 +2777,11 @@ class HubViewer:
                 "points": list(self.graph_points),
             }
         if m == "hub_3d_evo_fit_env":
+            return {
+                "axis_keys": ("y", "fitness", "x"),
+                "points": list(self.graph_points),
+            }
+        if m == "hub_3d_rgb_channels":
             return {
                 "axis_keys": ("y", "fitness", "x"),
                 "points": list(self.graph_points),
@@ -2829,6 +3157,8 @@ class HubViewer:
             ry = table_top + (local_i * self.table_row_h)
             if (local_i % 2) == 0:
                 pg.draw.rect(self.screen, (15, 18, 24), (rect.x + 4, ry, rect.width - 8, self.table_row_h))
+            if self.compare_row_index is not None and row_idx == int(self.compare_row_index):
+                pg.draw.rect(self.screen, (58, 44, 70), (rect.x + 3, ry, rect.width - 6, self.table_row_h))
             if self.selected_row_index is not None and row_idx == int(self.selected_row_index):
                 pg.draw.rect(self.screen, (39, 56, 78), (rect.x + 3, ry, rect.width - 6, self.table_row_h))
 
@@ -3047,6 +3377,11 @@ class HubViewer:
         draw_points: bool = True,
         show_hub_equation: bool = True,
         title_text: str = "Hub 3D",
+        rgb_channel_color: bool = False,
+        point_radius_scale: float = 1.0,
+        use_fitness_filter: bool = False,
+        constant_point_radius: bool = False,
+        depth_shade_strength: float = 0.0,
     ) -> None:
         pg = self.pg
         pg.draw.rect(self.screen, (18, 20, 26), rect)
@@ -3063,6 +3398,10 @@ class HubViewer:
         graph_points = [
             point for point in points_source if self._env_rate_in_view(point.get("x"))
         ]
+        if use_fitness_filter:
+            graph_points = [
+                point for point in graph_points if self._fitness_in_view(point.get("fitness"))
+            ]
         graph_points, display_fit_bounds = self._normalize_graph_points_for_display(
             graph_points,
             group_key="row_index",
@@ -3124,6 +3463,12 @@ class HubViewer:
         ]
         if draw_bell_curves:
             header_items.insert(3, ("Bell curves: per-master stitched gaussian fits", (168, 226, 196)))
+        if rgb_channel_color:
+            header_items.insert(3, ("Color: red=fitness, green=evo speed, blue=env rate", (226, 210, 180)))
+        if use_fitness_filter:
+            low_fit = min(float(self.fitness_view_min), float(self.fitness_view_max))
+            high_fit = max(float(self.fitness_view_min), float(self.fitness_view_max))
+            header_items.insert(3, (f"Fitness shown: {low_fit:.3f} to {high_fit:.3f}", (230, 186, 186)))
         if self.normalize_display:
             header_items.insert(3, (self._normalize_mode_description(), (176, 214, 244)))
         header_y = rect.y + 8
@@ -3170,6 +3515,42 @@ class HubViewer:
         fit_min = min(fit_values)
         fit_max = max(fit_values)
         fit_den = max(1e-9, fit_max - fit_min)
+
+        env_color_values = [float(p.get("x")) for p in graph_points if hr._is_number(p.get("x"))]
+        evo_color_values = [float(p.get("y")) for p in graph_points if hr._is_number(p.get("y"))]
+        fitness_color_values = [
+            float(p.get("fitness")) for p in graph_points if hr._is_number(p.get("fitness"))
+        ]
+        env_color_min = min(env_color_values) if env_color_values else 0.0
+        env_color_den = max(
+            1e-9,
+            (max(env_color_values) - env_color_min) if env_color_values else 1.0,
+        )
+        evo_color_min = min(evo_color_values) if evo_color_values else 0.0
+        evo_color_den = max(
+            1e-9,
+            (max(evo_color_values) - evo_color_min) if evo_color_values else 1.0,
+        )
+        fitness_color_min = min(fitness_color_values) if fitness_color_values else fit_min
+        fitness_color_den = max(
+            1e-9,
+            (max(fitness_color_values) - fitness_color_min) if fitness_color_values else fit_den,
+        )
+
+        def _channel_norm(value, low: float, den: float) -> float:
+            if not hr._is_number(value):
+                return 0.0
+            return max(0.0, min(1.0, (float(value) - float(low)) / float(den)))
+
+        def _rgb_channel_color(item: dict) -> tuple[int, int, int]:
+            red = _channel_norm(item.get("fitness"), fitness_color_min, fitness_color_den)
+            green = _channel_norm(item.get("y"), evo_color_min, evo_color_den)
+            blue = _channel_norm(item.get("x"), env_color_min, env_color_den)
+            return (
+                int(85 + (120 * red)),
+                int(55 + (185 * green)),
+                int(55 + (130 * blue)),
+            )
 
         def _norm(val: float, low: float, den: float) -> float:
             return ((float(val) - float(low)) / float(den)) * 2.0 - 1.0
@@ -3367,9 +3748,18 @@ class HubViewer:
                 else:
                     fitness_val = float(item.get(key_y))
                 fitness_norm = max(0.0, min(1.0, (fitness_val - fit_min) / fit_den))
-                base_radius = 2.0 + (4.0 * fitness_norm)
-                radius = max(1, min(12, int(round(base_radius * max(0.65, min(2.2, perspective))))))
-                color = (35 + int(220 * fitness_norm), 128 + int(95 * fitness_norm), 236 - int(166 * fitness_norm))
+                base_radius = 4.0 if constant_point_radius else 2.0 + (4.0 * fitness_norm)
+                radius = max(
+                    1,
+                    min(
+                        12,
+                        int(round(base_radius * float(point_radius_scale) * max(0.65, min(2.2, perspective)))),
+                    ),
+                )
+                if rgb_channel_color:
+                    color = _rgb_channel_color(item)
+                else:
+                    color = (35 + int(220 * fitness_norm), 128 + int(95 * fitness_norm), 236 - int(166 * fitness_norm))
                 projected.append(
                     {
                         "depth": float(depth),
@@ -3382,6 +3772,22 @@ class HubViewer:
                 )
 
         projected.sort(key=lambda d: float(d["depth"]))
+        shade_strength = max(0.0, min(0.5, float(depth_shade_strength)))
+        if shade_strength > 0.0 and len(projected) >= 2:
+            min_depth = min(float(dot["depth"]) for dot in projected)
+            max_depth = max(float(dot["depth"]) for dot in projected)
+            depth_den = max(1e-9, max_depth - min_depth)
+            depth_exponent = max(1e-9, float(self.rgb_depth_shade_exponent))
+            for dot in projected:
+                depth_norm = (float(dot["depth"]) - min_depth) / depth_den
+                depth_curve = max(0.0, min(1.0, depth_norm)) ** depth_exponent
+                shade = (1.0 - shade_strength) + (shade_strength * depth_curve)
+                color = dot["color"]
+                dot["color"] = (
+                    max(0, min(255, int(round(float(color[0]) * shade)))),
+                    max(0, min(255, int(round(float(color[1]) * shade)))),
+                    max(0, min(255, int(round(float(color[2]) * shade)))),
+                )
         bell_curve_segments.sort(key=lambda d: float(d["depth"]))
         for seg in bell_curve_segments:
             p0 = seg["p0"]
@@ -3450,6 +3856,7 @@ class HubViewer:
         pg = self.pg
         self._selected_scatter_plot_rect = None
         self._selected_scatter_point_hits = []
+        self._selected_details_button_rect = None
         pg.draw.rect(self.screen, (17, 19, 24), rect)
         pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
         if not isinstance(row, dict):
@@ -3463,65 +3870,128 @@ class HubViewer:
         title = f"Selected Sim: step {step_label} | rate {float(rate_label):.2f}" if hr._is_number(rate_label) else f"Selected Sim: step {step_label}"
         if master_label is not None:
             title += f" | master_{int(master_label)}"
-        self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, title, rect.width - 20), True, (195, 210, 235)), (rect.x + 10, rect.y + 8))
+        details_ready = bool(row.get("_full_loaded")) and isinstance(row.get("points"), list) and bool(row.get("points"))
+        details_btn_w = 72
+        details_btn_h = 20
+        details_btn = pg.Rect(rect.right - details_btn_w - 10, rect.y + 7, details_btn_w, details_btn_h)
+        title_w = max(40, rect.width - 32 - details_btn_w)
+        self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, title, title_w), True, (195, 210, 235)), (rect.x + 10, rect.y + 8))
+        btn_fill = (48, 58, 72) if details_ready else (38, 40, 46)
+        btn_border = (150, 174, 206) if details_ready else (92, 96, 106)
+        btn_text_color = (226, 236, 250) if details_ready else (128, 132, 142)
+        pg.draw.rect(self.screen, btn_fill, details_btn)
+        pg.draw.rect(self.screen, btn_border, details_btn, 1)
+        btn_txt = self.tiny.render("Details", True, btn_text_color)
+        self.screen.blit(
+            btn_txt,
+            (
+                details_btn.x + (details_btn.width - btn_txt.get_width()) // 2,
+                details_btn.y + (details_btn.height - btn_txt.get_height()) // 2,
+            ),
+        )
+        if details_ready:
+            self._selected_details_button_rect = details_btn.copy()
 
-        row_idx = _safe_int(row.get("step_index"))
-        row_loaded = bool(row.get("_full_loaded"))
-        if not row_loaded:
-            if (
-                row_idx is not None
-                and self._selected_row_loading_idx is not None
-                and int(row_idx) == int(self._selected_row_loading_idx)
-            ):
-                text = self._selected_row_loading_status or "Loading selected master points..."
-                text = f"{text}  {self._selected_row_eta_text()}"
-            else:
-                text = "Waiting for selected master points..."
+        selected_rows = self._selected_scatter_rows()
+        palette = [
+            {"point": (82, 205, 255), "curve": (248, 196, 92), "label": "primary"},
+            {"point": (255, 132, 174), "curve": (145, 238, 190), "label": "shift"},
+        ]
+        series = []
+        loading_notes = []
+        for series_i, (series_row_idx, series_row) in enumerate(selected_rows[:2]):
+            row_loaded = bool(series_row.get("_full_loaded"))
+            row_step_idx = _safe_int(series_row.get("step_index"))
+            raw_points = []
+            raw_points_src = series_row.get("points")
+            if isinstance(raw_points_src, list):
+                for pair in raw_points_src:
+                    if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+                        continue
+                    if hr._is_number(pair[0]) and hr._is_number(pair[1]):
+                        raw_points.append((float(pair[0]), float(pair[1])))
+            if not row_loaded:
+                if (
+                    row_step_idx is not None
+                    and self._selected_row_loading_idx is not None
+                    and int(row_step_idx) == int(self._selected_row_loading_idx)
+                ):
+                    note = self._selected_row_loading_status or "Loading selected master points..."
+                    note = f"{note}  {self._selected_row_eta_text()}"
+                else:
+                    note = f"Waiting for row {int(series_row_idx) + 1} master points..."
+                loading_notes.append(note)
+                continue
+            if not raw_points:
+                loading_notes.append(f"Row {int(series_row_idx) + 1}: no points available.")
+                continue
+            display_points = list(raw_points)
+            fit_norm_context = None
+            if self.normalize_display and display_points:
+                vals = [float(p[1]) for p in display_points]
+                fit_norm_context = self._normalization_context_for_values(vals)
+                display_points = [
+                    (float(xv), self._normalize_value_for_display(float(yv), fit_norm_context))
+                    for xv, yv in display_points
+                ]
+            color_info = palette[min(series_i, len(palette) - 1)]
+            series.append(
+                {
+                    "row_idx": int(series_row_idx),
+                    "row": series_row,
+                    "raw_points": raw_points,
+                    "points": display_points,
+                    "fit_norm_context": fit_norm_context,
+                    "point_color": color_info["point"],
+                    "curve_color": color_info["curve"],
+                    "label": color_info["label"],
+                }
+            )
+
+        if not series:
+            text = loading_notes[0] if loading_notes else "No points available."
             msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
-        raw_points = []
-        raw_points_src = row.get("points")
-        if isinstance(raw_points_src, list):
-            for pair in raw_points_src:
-                if not isinstance(pair, (tuple, list)) or len(pair) < 2:
-                    continue
-                if hr._is_number(pair[0]) and hr._is_number(pair[1]):
-                    raw_points.append((float(pair[0]), float(pair[1])))
-        if not raw_points:
-            if (
-                row_idx is not None
-                and self._selected_row_loading_idx is not None
-                and int(row_idx) == int(self._selected_row_loading_idx)
-            ):
-                text = self._selected_row_loading_status or "Loading selected master points..."
-                text = f"{text}  {self._selected_row_eta_text()}"
-                msg = self.small.render(hr._fit_text(self.small, text, rect.width - 20), True, (182, 198, 230))
-            else:
-                msg = self.small.render("No points available.", True, (170, 170, 170))
-            self.screen.blit(msg, (rect.x + 10, rect.y + 30))
-            return
+        fit = row.get("fit")
+        equation_text = ""
+        r2_text = "--"
+        if isinstance(fit, dict):
+            equation_text = str(fit.get("equation", "")).strip()
+            if hr._is_number(fit.get("r2")):
+                r2_text = f"{float(fit.get('r2')):.4f}"
+        equation_y = rect.y + 24
+        if equation_text:
+            copy_reserved = self._draw_equation_copy_button(rect, equation_text, equation_y, margin=10)
+            equation_label = f"Master equation: {equation_text} | R^2={r2_text}"
+            equation_color = (235, 210, 146)
+            equation_width = max(40, rect.width - 20 - copy_reserved)
+        else:
+            equation_label = "Master equation: not enough data"
+            equation_color = (170, 170, 170)
+            equation_width = max(40, rect.width - 20)
+        self.screen.blit(
+            self.tiny.render(
+                hr._fit_text(self.tiny, equation_label, equation_width),
+                True,
+                equation_color,
+            ),
+            (rect.x + 10, equation_y),
+        )
 
-        points = list(raw_points)
-        fit_norm_context = None
-        if self.normalize_display and points:
-            vals = [float(p[1]) for p in points]
-            fit_norm_context = self._normalization_context_for_values(vals)
-            points = [
-                (float(xv), self._normalize_value_for_display(float(yv), fit_norm_context))
-                for xv, yv in points
-            ]
-
-        plot = pg.Rect(rect.x + 38, rect.y + 30, rect.width - 50, rect.height - 66)
+        plot = pg.Rect(rect.x + 38, rect.y + 48, rect.width - 50, rect.height - 84)
         if plot.width <= 24 or plot.height <= 24:
             return
         self._selected_scatter_plot_rect = plot
         pg.draw.rect(self.screen, (12, 14, 19), plot)
         pg.draw.rect(self.screen, (60, 66, 78), plot, 1)
 
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
+        all_points = []
+        for item in series:
+            all_points.extend(item["points"])
+        xs = [p[0] for p in all_points]
+        ys = [p[1] for p in all_points]
         raw_min_x = min(xs)
         raw_max_x = max(xs)
         raw_min_y = min(ys)
@@ -3542,75 +4012,92 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
-        fit_segments = []
-        fit = row.get("fit")
-        if isinstance(fit, dict):
-            apex_x = fit.get("apex_x")
-            apex_y = fit.get("apex_y")
-            sigma_left = fit.get("sigma_left")
-            sigma_right = fit.get("sigma_right")
-            if (
-                hr._is_number(apex_x)
-                and hr._is_number(apex_y)
-                and hr._is_number(sigma_left)
-                and hr._is_number(sigma_right)
-            ):
-                curve = []
-                for i in range(180):
-                    xv = min_x + ((max_x - min_x) * float(i) / 179.0)
-                    yv = hr._predict_piecewise_gaussian(
-                        float(xv),
-                        float(apex_x),
-                        float(apex_y),
-                        float(sigma_left),
-                        float(sigma_right),
-                    )
-                    if hr._is_number(yv):
-                        curve.append(
-                            (
-                                float(xv),
-                                self._normalize_value_for_display(float(yv), fit_norm_context),
-                            )
-                        )
-                if len(curve) >= 2:
-                    for i in range(1, len(curve)):
-                        fit_segments.append((curve[i - 1], curve[i]))
-
         selected_point = self._selected_scatter_selected if isinstance(self._selected_scatter_selected, dict) else None
         selected_row_idx = _safe_int(selected_point.get("row_idx")) if isinstance(selected_point, dict) else None
         selected_point_idx = _safe_int(selected_point.get("point_index")) if isinstance(selected_point, dict) else None
         y_min = min(ys)
         y_max = max(ys)
         den = max(1e-9, y_max - y_min)
-        for point_idx, ((raw_x, raw_y), (x_val, y_val)) in enumerate(zip(raw_points, points)):
-            n = max(0.0, min(1.0, (y_val - y_min) / den))
-            radius = 1 + int(round(3 * n))
-            color = (42 + int(210 * n), 128 + int(95 * n), 236 - int(166 * n))
-            px, py = _to_px(x_val, y_val)
-            pg.draw.circle(self.screen, color, (px, py), radius)
-            is_selected = (
-                row_idx is not None
-                and selected_row_idx is not None
-                and int(selected_row_idx) == int(row_idx)
-                and selected_point_idx is not None
-                and int(selected_point_idx) == int(point_idx)
-            )
-            if is_selected:
-                pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
-            self._selected_scatter_point_hits.append(
-                {
-                    "px": int(px),
-                    "py": int(py),
-                    "hit_radius": max(6, int(radius) + 4),
-                    "row_idx": row_idx,
-                    "point_index": int(point_idx),
-                    "x": float(raw_x),
-                    "y": float(raw_y),
-                    "display_y": float(y_val),
-                }
-            )
-        for start, end in fit_segments:
-            pg.draw.line(self.screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
+        for item in series:
+            for point_idx, ((raw_x, raw_y), (x_val, y_val)) in enumerate(zip(item["raw_points"], item["points"])):
+                n = max(0.0, min(1.0, (y_val - y_min) / den))
+                radius = 2 + int(round(2 * n))
+                color = item["point_color"]
+                px, py = _to_px(x_val, y_val)
+                pg.draw.circle(self.screen, color, (px, py), radius)
+                is_selected = (
+                    selected_row_idx is not None
+                    and int(selected_row_idx) == int(item["row_idx"])
+                    and selected_point_idx is not None
+                    and int(selected_point_idx) == int(point_idx)
+                )
+                if is_selected:
+                    pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
+                self._selected_scatter_point_hits.append(
+                    {
+                        "px": int(px),
+                        "py": int(py),
+                        "hit_radius": max(6, int(radius) + 4),
+                        "row_idx": int(item["row_idx"]),
+                        "point_index": int(point_idx),
+                        "x": float(raw_x),
+                        "y": float(raw_y),
+                        "display_y": float(y_val),
+                    }
+                )
+        for item in series:
+            row_fit = item["row"].get("fit") if isinstance(item.get("row"), dict) else None
+            fit_segments = []
+            if isinstance(row_fit, dict):
+                apex_x = row_fit.get("apex_x")
+                apex_y = row_fit.get("apex_y")
+                sigma_left = row_fit.get("sigma_left")
+                sigma_right = row_fit.get("sigma_right")
+                shape_power = row_fit.get("shape_power", 2.0)
+                if (
+                    hr._is_number(apex_x)
+                    and hr._is_number(apex_y)
+                    and hr._is_number(sigma_left)
+                    and hr._is_number(sigma_right)
+                ):
+                    curve = []
+                    for i in range(180):
+                        xv = min_x + ((max_x - min_x) * float(i) / 179.0)
+                        yv = hr._predict_piecewise_gaussian(
+                            float(xv),
+                            float(apex_x),
+                            float(apex_y),
+                            float(sigma_left),
+                            float(sigma_right),
+                            shape_power=(float(shape_power) if hr._is_number(shape_power) else 2.0),
+                        )
+                        if hr._is_number(yv):
+                            curve.append(
+                                (
+                                    float(xv),
+                                    self._normalize_value_for_display(float(yv), item["fit_norm_context"]),
+                                )
+                            )
+                    if len(curve) >= 2:
+                        for i in range(1, len(curve)):
+                            fit_segments.append((curve[i - 1], curve[i]))
+            for start, end in fit_segments:
+                pg.draw.line(self.screen, item["curve_color"], _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
+
+        legend_x = plot.x + 6
+        legend_y = plot.y + 6
+        for item in series:
+            label_row = item["row"]
+            label = f"{item['label']}: step {int(label_row.get('step_index', item['row_idx'])) + 1}"
+            if hr._is_number(label_row.get("env_rate")):
+                label += f" rate {float(label_row.get('env_rate')):.2f}"
+            pg.draw.circle(self.screen, item["point_color"], (legend_x + 5, legend_y + 6), 4)
+            pg.draw.line(self.screen, item["curve_color"], (legend_x + 16, legend_y + 6), (legend_x + 36, legend_y + 6), 2)
+            self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, label, max(20, plot.width - 48)), True, (205, 214, 230)), (legend_x + 42, legend_y))
+            legend_y += max(13, int(self.tiny.get_linesize()) + 1)
+        if loading_notes:
+            note = hr._fit_text(self.tiny, loading_notes[0], max(20, plot.width - 12))
+            self.screen.blit(self.tiny.render(note, True, (182, 198, 230)), (plot.x + 6, legend_y + 2))
 
         self.screen.blit(self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.y - 2))
         self.screen.blit(self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150)), (plot.x - 34, plot.bottom - 14))
@@ -3621,9 +4108,8 @@ class HubViewer:
         coord_color = (146, 156, 172)
         if (
             isinstance(selected_point, dict)
-            and row_idx is not None
             and selected_row_idx is not None
-            and int(selected_row_idx) == int(row_idx)
+            and any(int(selected_row_idx) == int(item["row_idx"]) for item in series)
             and hr._is_number(selected_point.get("x"))
             and hr._is_number(selected_point.get("y"))
         ):
@@ -3672,6 +4158,340 @@ class HubViewer:
         else:
             self._selected_scatter_selected = None
         return True
+
+    def _selected_details_payload(self) -> dict | None:
+        row = self._selected_row()
+        if not isinstance(row, dict):
+            return None
+        raw_points = []
+        raw_points_src = row.get("points")
+        if isinstance(raw_points_src, list):
+            for pair in raw_points_src:
+                if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+                    continue
+                if hr._is_number(pair[0]) and hr._is_number(pair[1]):
+                    raw_points.append((float(pair[0]), float(pair[1])))
+        if not raw_points:
+            return None
+        fit = row.get("fit") if isinstance(row.get("fit"), dict) else hr._fit_stitched_gaussian(raw_points)
+        stats = _bell_curve_fit_stats(raw_points, fit)
+        return {
+            "row": row,
+            "points": raw_points,
+            "fit": fit,
+            "stats": stats,
+        }
+
+    def _draw_selected_details_view(self, payload: dict, width: int, height: int) -> None:
+        pg = self.pg
+        screen = self.screen
+        screen.fill((10, 12, 16))
+        payload["_copy_hits"] = []
+        row = payload.get("row") if isinstance(payload, dict) else None
+        points = payload.get("points") if isinstance(payload.get("points"), list) else []
+        fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else None
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+
+        margin = 22
+        info_w = 348
+        graph_rect = pg.Rect(margin, 76, width - info_w - (margin * 3), height - 112)
+        info_rect = pg.Rect(graph_rect.right + margin, 76, info_w, height - 112)
+
+        env_rate = row.get("env_rate") if isinstance(row, dict) else None
+        master_num = row.get("master_run_num") if isinstance(row, dict) else None
+        step_idx = _safe_int(row.get("step_index")) if isinstance(row, dict) else None
+        title = "Simulation Details"
+        if step_idx is not None:
+            title += f" | step {int(step_idx) + 1}"
+        if hr._is_number(env_rate):
+            title += f" | env {float(env_rate):.4g}"
+        if master_num is not None:
+            title += f" | master_{int(master_num)}"
+        screen.blit(self.font.render(hr._fit_text(self.font, title, width - (2 * margin)), True, (230, 234, 242)), (margin, 18))
+        hint = "Esc/Q/Backspace closes this details view"
+        screen.blit(self.tiny.render(hint, True, (156, 166, 184)), (margin, 48))
+        if self.export_status:
+            status_color = (172, 226, 178) if self._export_status_ok else (255, 164, 164)
+            screen.blit(
+                self.tiny.render(hr._fit_text(self.tiny, self.export_status, width - (2 * margin)), True, status_color),
+                (margin + 260, 48),
+            )
+
+        pg.draw.rect(screen, (15, 17, 22), graph_rect)
+        pg.draw.rect(screen, (76, 84, 98), graph_rect, 1)
+        pg.draw.rect(screen, (17, 19, 24), info_rect)
+        pg.draw.rect(screen, (76, 84, 98), info_rect, 1)
+
+        numeric_points = [
+            (float(x), float(y))
+            for x, y in points
+            if hr._is_number(x) and hr._is_number(y)
+        ]
+        if not numeric_points:
+            msg = self.small.render("No points available.", True, (170, 170, 170))
+            screen.blit(msg, (graph_rect.x + 12, graph_rect.y + 12))
+            return
+
+        xs = [p[0] for p in numeric_points]
+        ys = [p[1] for p in numeric_points]
+        raw_min_x = min(xs)
+        raw_max_x = max(xs)
+        raw_min_y = min(ys)
+        raw_max_y = max(ys)
+        min_x, max_x = (raw_min_x, raw_max_x) if raw_max_x > raw_min_x else (raw_min_x - 0.05, raw_max_x + 0.05)
+        min_y, max_y = (raw_min_y, raw_max_y) if raw_max_y > raw_min_y else (raw_min_y - 0.05, raw_max_y + 0.05)
+        if raw_max_x > raw_min_x:
+            pad = (raw_max_x - raw_min_x) * 0.05
+            min_x -= pad
+            max_x += pad
+        if raw_max_y > raw_min_y:
+            pad = (raw_max_y - raw_min_y) * 0.08
+            min_y -= pad
+            max_y += pad
+
+        plot = pg.Rect(graph_rect.x + 54, graph_rect.y + 40, graph_rect.width - 76, graph_rect.height - 82)
+        pg.draw.rect(screen, (12, 14, 19), plot)
+        pg.draw.rect(screen, (58, 66, 78), plot, 1)
+
+        def _to_px(xv: float, yv: float) -> tuple[int, int]:
+            px = plot.x + int(((float(xv) - min_x) / max(1e-12, max_x - min_x)) * plot.width)
+            py = plot.y + plot.height - int(((float(yv) - min_y) / max(1e-12, max_y - min_y)) * plot.height)
+            return px, py
+
+        for gx in range(1, 4):
+            x = plot.x + int(plot.width * gx / 4.0)
+            pg.draw.line(screen, (30, 34, 42), (x, plot.y), (x, plot.bottom), 1)
+        for gy in range(1, 4):
+            y = plot.y + int(plot.height * gy / 4.0)
+            pg.draw.line(screen, (30, 34, 42), (plot.x, y), (plot.right, y), 1)
+
+        fit_segments = []
+        if isinstance(fit, dict):
+            apex_x = fit.get("apex_x")
+            apex_y = fit.get("apex_y")
+            sigma_left = fit.get("sigma_left")
+            sigma_right = fit.get("sigma_right")
+            shape_power = fit.get("shape_power", 2.0)
+            if (
+                hr._is_number(apex_x)
+                and hr._is_number(apex_y)
+                and hr._is_number(sigma_left)
+                and hr._is_number(sigma_right)
+            ):
+                curve = []
+                for idx in range(300):
+                    xv = min_x + ((max_x - min_x) * float(idx) / 299.0)
+                    yv = hr._predict_piecewise_gaussian(
+                        float(xv),
+                        float(apex_x),
+                        float(apex_y),
+                        float(sigma_left),
+                        float(sigma_right),
+                        shape_power=(float(shape_power) if hr._is_number(shape_power) else 2.0),
+                    )
+                    if hr._is_number(yv):
+                        curve.append((float(xv), float(yv)))
+                for idx in range(1, len(curve)):
+                    fit_segments.append((curve[idx - 1], curve[idx]))
+
+        y_den = max(1e-12, raw_max_y - raw_min_y)
+        for xv, yv in numeric_points:
+            n = max(0.0, min(1.0, (float(yv) - raw_min_y) / y_den))
+            color = (42 + int(210 * n), 128 + int(95 * n), 236 - int(166 * n))
+            radius = 2 + int(round(3 * n))
+            pg.draw.circle(screen, color, _to_px(xv, yv), radius)
+        for start, end in fit_segments:
+            pg.draw.line(screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 3)
+
+        screen.blit(self.tiny.render(f"{raw_max_y:.6g}", True, (156, 162, 174)), (plot.x - 48, plot.y - 2))
+        screen.blit(self.tiny.render(f"{raw_min_y:.6g}", True, (156, 162, 174)), (plot.x - 48, plot.bottom - 14))
+        screen.blit(self.tiny.render(f"{raw_min_x:.6g}", True, (156, 162, 174)), (plot.x, plot.bottom + 5))
+        max_x_label = self.tiny.render(f"{raw_max_x:.6g}", True, (156, 162, 174))
+        screen.blit(max_x_label, (plot.right - max_x_label.get_width(), plot.bottom + 5))
+        screen.blit(self.small.render("evolution speed", True, (176, 186, 204)), (plot.x + 8, plot.bottom + 24))
+        screen.blit(self.small.render("fitness", True, (176, 186, 204)), (plot.x - 48, plot.y + 18))
+        legend = self.tiny.render("points = observed fitness | gold line = stitched bell curve", True, (198, 205, 218))
+        screen.blit(legend, (plot.x + 8, plot.y + 8))
+
+        y = info_rect.y + 12
+        line_h = max(16, int(self.small.get_linesize()))
+        small_h = max(13, int(self.tiny.get_linesize()))
+        screen.blit(self.small.render("Bell Curve Equation", True, (230, 214, 162)), (info_rect.x + 12, y))
+        equation = str(fit.get("equation", "")) if isinstance(fit, dict) else ""
+        if equation:
+            self._draw_details_copy_button(payload, "Copy Eq", equation, info_rect.right - 82, y - 2)
+        y += line_h
+        if equation:
+            for line in self._wrap_text_for_font(equation, self.tiny, info_rect.width - 24):
+                screen.blit(self.tiny.render(line, True, (214, 218, 226)), (info_rect.x + 12, y))
+                y += small_h + 2
+        else:
+            screen.blit(self.tiny.render("No bell curve fit available.", True, (168, 172, 184)), (info_rect.x + 12, y))
+            y += small_h + 2
+        y += 8
+
+        rows = [
+            ("P-value", _format_stat(stats.get("p_value")), stats.get("p_source")),
+            ("r value", _format_stat(stats.get("r")), "actual vs predicted"),
+            ("r^2 value", _format_stat(stats.get("r2")), "recomputed from residuals"),
+            ("stored R^2", _format_stat(stats.get("stored_r2")), "saved fit value"),
+            ("points", str(int(stats.get("n", 0))), ""),
+            ("RMSE", _format_stat(stats.get("rmse")), ""),
+            ("SSE", _format_stat(stats.get("sse")), ""),
+            ("apex x", _format_stat(fit.get("apex_x") if isinstance(fit, dict) else None), ""),
+            ("apex y", _format_stat(fit.get("apex_y") if isinstance(fit, dict) else None), ""),
+            ("sigma left", _format_stat(fit.get("sigma_left") if isinstance(fit, dict) else None), ""),
+            ("sigma right", _format_stat(fit.get("sigma_right") if isinstance(fit, dict) else None), ""),
+            ("shape power", _format_stat(fit.get("shape_power") if isinstance(fit, dict) else 2.0), ""),
+            ("fitness range", f"{_format_stat(stats.get('min_actual'))} .. {_format_stat(stats.get('max_actual'))}", "observed"),
+            ("prediction range", f"{_format_stat(stats.get('min_predicted'))} .. {_format_stat(stats.get('max_predicted'))}", "bell curve"),
+        ]
+        screen.blit(self.small.render("Fit Statistics", True, (196, 216, 240)), (info_rect.x + 12, y))
+        self._draw_details_copy_button(
+            payload,
+            "Copy Stats",
+            self._selected_details_stats_text(payload, rows),
+            info_rect.right - 96,
+            y - 2,
+        )
+        y += line_h + 4
+        label_w = 104
+        for label, value, note in rows:
+            if y > info_rect.bottom - 18:
+                break
+            screen.blit(self.tiny.render(str(label), True, (166, 176, 194)), (info_rect.x + 12, y))
+            value_text = hr._fit_text(self.tiny, str(value), info_rect.width - label_w - 28)
+            screen.blit(self.tiny.render(value_text, True, (228, 232, 238)), (info_rect.x + label_w, y))
+            y += small_h + 1
+            if note:
+                note_text = hr._fit_text(self.tiny, str(note), info_rect.width - label_w - 28)
+                screen.blit(self.tiny.render(note_text, True, (130, 140, 156)), (info_rect.x + label_w, y))
+                y += small_h + 3
+
+    def _draw_details_copy_button(self, payload: dict, label: str, text: str, x: int, y: int) -> None:
+        if not str(text).strip():
+            return
+        display_label = self._copy_button_label(str(label), str(text), str(label))
+        btn_w = max(54, int(self.tiny.size(display_label)[0]) + 12)
+        btn_h = max(16, int(self.tiny.get_linesize()) + 4)
+        rect = self.pg.Rect(int(x), int(y), int(btn_w), int(btn_h))
+        self.pg.draw.rect(self.screen, (52, 58, 76), rect)
+        self.pg.draw.rect(self.screen, (150, 156, 174), rect, 1)
+        txt = self.tiny.render(str(display_label), True, (232, 236, 245))
+        self.screen.blit(
+            txt,
+            (
+                rect.x + (rect.width - txt.get_width()) // 2,
+                rect.y + (rect.height - txt.get_height()) // 2,
+            ),
+        )
+        hits = payload.get("_copy_hits")
+        if not isinstance(hits, list):
+            hits = []
+            payload["_copy_hits"] = hits
+        hits.append((rect.copy(), str(text), str(label)))
+
+    def _handle_details_copy_click(self, payload: dict, mx: int, my: int) -> bool:
+        hits = payload.get("_copy_hits") if isinstance(payload, dict) else None
+        if not isinstance(hits, list):
+            return False
+        for item in reversed(hits):
+            if (not isinstance(item, tuple)) or len(item) != 3:
+                continue
+            rect, text, label = item
+            if not isinstance(rect, self.pg.Rect):
+                continue
+            if not rect.collidepoint(int(mx), int(my)):
+                continue
+            ok = hr._copy_to_clipboard(str(text))
+            if ok:
+                self._mark_copied_feedback(str(text), str(label))
+                self._set_export_status(True, f"{label} copied to clipboard")
+            else:
+                self._set_export_status(False, f"Failed to copy {label}")
+            return True
+        return False
+
+    def _selected_details_stats_text(self, payload: dict, stat_rows: list[tuple[str, str, object]]) -> str:
+        row = payload.get("row") if isinstance(payload, dict) else None
+        fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else None
+        env_rate = row.get("env_rate") if isinstance(row, dict) else None
+        master_num = row.get("master_run_num") if isinstance(row, dict) else None
+        step_idx = _safe_int(row.get("step_index")) if isinstance(row, dict) else None
+        lines = ["Simulation Details"]
+        if step_idx is not None:
+            lines.append(f"step: {int(step_idx) + 1}")
+        if hr._is_number(env_rate):
+            lines.append(f"environment change rate: {float(env_rate):.12g}")
+        if master_num is not None:
+            lines.append(f"master run: {int(master_num)}")
+        equation = str(fit.get("equation", "")).strip() if isinstance(fit, dict) else ""
+        if equation:
+            lines.append(f"equation: {equation}")
+        lines.append("")
+        lines.append("Fit Statistics")
+        for label, value, note in stat_rows:
+            line = f"{label}: {value}"
+            if note:
+                line += f" ({note})"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _wrap_text_for_font(self, text: str, font, max_w: int) -> list[str]:
+        raw = str(text).strip()
+        if not raw:
+            return [""]
+        words = raw.split()
+        lines = []
+        current = ""
+        for word in words:
+            trial = word if not current else f"{current} {word}"
+            if font.size(trial)[0] <= max_w:
+                current = trial
+                continue
+            if current:
+                lines.append(current)
+            current = word
+            while font.size(current)[0] > max_w and len(current) > 1:
+                cut = len(current)
+                while cut > 1 and font.size(current[:cut])[0] > max_w:
+                    cut -= 1
+                lines.append(current[:cut])
+                current = current[cut:]
+        if current:
+            lines.append(current)
+        return lines if lines else [raw]
+
+    def _open_selected_details_view(self) -> None:
+        payload = self._selected_details_payload()
+        if not isinstance(payload, dict):
+            self._set_export_status(False, "No loaded simulation details available for the selected row")
+            return
+        old_w = int(self.window_w)
+        old_h = int(self.window_h)
+        detail_w = 1120
+        detail_h = 760
+        self.screen = self.pg.display.set_mode((detail_w, detail_h))
+        self.pg.display.set_caption("Simulation Details")
+        details_running = True
+        while details_running:
+            for event in self.pg.event.get():
+                if event.type == self.pg.QUIT:
+                    details_running = False
+                elif event.type == self.pg.KEYDOWN and event.key in (
+                    self.pg.K_ESCAPE,
+                    self.pg.K_q,
+                    self.pg.K_BACKSPACE,
+                ):
+                    details_running = False
+                elif event.type == self.pg.MOUSEBUTTONDOWN and event.button == 1:
+                    self._handle_details_copy_click(payload, int(event.pos[0]), int(event.pos[1]))
+            self._draw_selected_details_view(payload, detail_w, detail_h)
+            self.pg.display.flip()
+            self.clock.tick(30)
+        self.screen = self.pg.display.set_mode((old_w, old_h))
+        label = f"Hub Viewer - hub_{self.hub_idx}" if self.hub_idx is not None else f"Hub Viewer - {self.hub_dir.name}"
+        self.pg.display.set_caption(label)
 
     def _draw_timeline(self, rect, row: dict | None) -> None:
         pg = self.pg
@@ -4705,6 +5525,7 @@ class HubViewer:
             "normal": "Normal",
             "hub_3d": "Hub 3D",
             "hub_3d_evo_fit_env": "Hub 3D (Evo/Fit/Env)",
+            "hub_3d_rgb_channels": "Hub 3D RGB Channels",
             "timeline_hub": "Hub Timeline",
             "spectrum": "Spectrum+Curves",
             "range": "Range",
@@ -4723,6 +5544,9 @@ class HubViewer:
         self._timeline_slider_rect = None
         self._range_slider_rect = None
         self._env_range_slider_rect = None
+        self._fitness_range_slider_rect = None
+        self._rgb_size_slider_rect = None
+        self._rgb_depth_slider_rect = None
         if mode == "timeline_hub":
             btn_w = 92
             btn_h = 26
@@ -4849,10 +5673,110 @@ class HubViewer:
             )
             self.screen.blit(slider_label, (slider_x, slider_y - 18))
 
+        show_fitness_slider = mode == "hub_3d_rgb_channels"
         env_slider_x = self._next_button_rect.right + 200
         env_slider_w = max(200, rect.right - env_slider_x - 16)
+        if show_fitness_slider:
+            size_slider_x = rect.x + 12
+            available_w = max(240, rect.right - size_slider_x - 16)
+            gap = 14 if available_w >= 600 else 8
+            usable_w = max(80, available_w - (3 * gap))
+            min_widths = [92, 108, 165, 165]
+            if sum(min_widths) <= usable_w:
+                size_slider_w = max(min_widths[0], int(usable_w * 0.16))
+                depth_slider_w = max(min_widths[1], int(usable_w * 0.18))
+                fitness_slider_w = max(min_widths[2], int(usable_w * 0.32))
+                env_slider_w = max(
+                    min_widths[3],
+                    int(usable_w - size_slider_w - depth_slider_w - fitness_slider_w),
+                )
+            else:
+                scale = usable_w / max(1.0, float(sum(min_widths)))
+                size_slider_w = max(1, int(min_widths[0] * scale))
+                depth_slider_w = max(1, int(min_widths[1] * scale))
+                fitness_slider_w = max(1, int(min_widths[2] * scale))
+                env_slider_w = max(1, int(usable_w - size_slider_w - depth_slider_w - fitness_slider_w))
+            depth_slider_x = size_slider_x + size_slider_w + gap
+            fitness_slider_x = depth_slider_x + depth_slider_w + gap
+            env_slider_x = fitness_slider_x + fitness_slider_w + gap
         env_slider_y = rect.bottom - 16
         env_slider_h = 6
+
+        if show_fitness_slider:
+            self._rgb_size_slider_rect = pg.Rect(size_slider_x, env_slider_y, size_slider_w, env_slider_h)
+            pg.draw.rect(self.screen, (92, 92, 98), self._rgb_size_slider_rect)
+            size_ratio = self._rgb_size_slider_ratio()
+            size_knob_x = self._rgb_size_slider_rect.x + int(size_ratio * self._rgb_size_slider_rect.width)
+            if size_knob_x > self._rgb_size_slider_rect.x:
+                pg.draw.rect(
+                    self.screen,
+                    (132, 164, 132),
+                    (
+                        self._rgb_size_slider_rect.x,
+                        self._rgb_size_slider_rect.y,
+                        max(1, size_knob_x - self._rgb_size_slider_rect.x),
+                        self._rgb_size_slider_rect.height,
+                    ),
+                )
+            pg.draw.circle(self.screen, (186, 232, 184), (size_knob_x, self._rgb_size_slider_rect.centery), 7)
+            size_label = self.tiny.render(
+                f"Size: {float(self.rgb_point_radius_scale):.2f}",
+                True,
+                (198, 220, 198),
+            )
+            self.screen.blit(size_label, (size_slider_x, env_slider_y - 18))
+
+            self._rgb_depth_slider_rect = pg.Rect(depth_slider_x, env_slider_y, depth_slider_w, env_slider_h)
+            pg.draw.rect(self.screen, (92, 92, 98), self._rgb_depth_slider_rect)
+            depth_ratio = self._rgb_depth_slider_ratio()
+            depth_knob_x = self._rgb_depth_slider_rect.x + int(depth_ratio * self._rgb_depth_slider_rect.width)
+            if depth_knob_x > self._rgb_depth_slider_rect.x:
+                pg.draw.rect(
+                    self.screen,
+                    (112, 124, 150),
+                    (
+                        self._rgb_depth_slider_rect.x,
+                        self._rgb_depth_slider_rect.y,
+                        max(1, depth_knob_x - self._rgb_depth_slider_rect.x),
+                        self._rgb_depth_slider_rect.height,
+                    ),
+                )
+            pg.draw.circle(self.screen, (188, 204, 232), (depth_knob_x, self._rgb_depth_slider_rect.centery), 7)
+            depth_label = self.tiny.render(
+                f"Depth: {float(self.rgb_depth_shade_strength):.2f}",
+                True,
+                (198, 206, 226),
+            )
+            self.screen.blit(depth_label, (depth_slider_x, env_slider_y - 18))
+
+            self._fitness_range_slider_rect = pg.Rect(fitness_slider_x, env_slider_y, fitness_slider_w, env_slider_h)
+            pg.draw.rect(self.screen, (92, 92, 98), self._fitness_range_slider_rect)
+            min_fit_knob_x = self._fitness_slider_handle_x("min")
+            max_fit_knob_x = self._fitness_slider_handle_x("max")
+            if max_fit_knob_x < min_fit_knob_x:
+                min_fit_knob_x, max_fit_knob_x = max_fit_knob_x, min_fit_knob_x
+            if max_fit_knob_x > min_fit_knob_x:
+                pg.draw.rect(
+                    self.screen,
+                    (198, 106, 112),
+                    (
+                        min_fit_knob_x,
+                        self._fitness_range_slider_rect.y,
+                        max(1, max_fit_knob_x - min_fit_knob_x),
+                        self._fitness_range_slider_rect.height,
+                    ),
+                )
+            pg.draw.circle(self.screen, (255, 176, 182), (min_fit_knob_x, self._fitness_range_slider_rect.centery), 7)
+            pg.draw.circle(self.screen, (255, 224, 186), (max_fit_knob_x, self._fitness_range_slider_rect.centery), 7)
+            low_fit = min(float(self.fitness_view_min), float(self.fitness_view_max))
+            high_fit = max(float(self.fitness_view_min), float(self.fitness_view_max))
+            fitness_label = self.tiny.render(
+                f"Fitness shown: {low_fit:.3f} to {high_fit:.3f}",
+                True,
+                (218, 196, 198),
+            )
+            self.screen.blit(fitness_label, (fitness_slider_x, env_slider_y - 18))
+
         self._env_range_slider_rect = pg.Rect(env_slider_x, env_slider_y, env_slider_w, env_slider_h)
         pg.draw.rect(self.screen, (92, 92, 98), self._env_range_slider_rect)
         min_knob_x = self._env_slider_handle_x("min")
@@ -5016,7 +5940,7 @@ class HubViewer:
         )
         subtitle = (
             f"Path: {self.hub_dir}    Last reload: {time.strftime('%H:%M:%S', time.localtime(self.last_reload))}    "
-            "Controls: click row or Up/Down to select, wheel/Page scroll, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button cycles normalization (None/Range/Sum), I/Step button toggles increment (0.001/0.01), Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Load/Step/Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
+            "Controls: click row or Up/Down to select, Shift-click another row overlays selected sim charts, wheel/Page scroll, D/Details opens selected sim statistics, U refresh all master fits, S selector, G/Settings button edits settings, N/Norm button cycles normalization (None/Range/Sum), I/Step button toggles increment (0.001/0.01), Left/Right or Back/Next to rotate graph modes, E/Export (2D=.png, 3D=.stl+.png, timeline=.mov), Hub 3D modes: drag rotate + wheel/+/− zoom, timeline has Load/Step/Last/Play/Next + slider, env range slider has two handles, copy buttons beside equations, Esc/Q quit"
         )
         self.screen.blit(self.tiny.render(hr._fit_text(self.tiny, subtitle, self.window_w - (2 * margin)), True, (168, 176, 191)), (margin, 44))
         if include_status and self.export_status:
@@ -5049,6 +5973,19 @@ class HubViewer:
                 axis_labels=("evo speed", "fitness", "env rate"),
                 mapping_text="x=evo speed, y=fitness, z=env rate",
                 title_text="Hub 3D (Evo/Fit/Env)",
+            )
+        elif mode == "hub_3d_rgb_channels":
+            self._draw_hub_graph_3d(
+                hub_rect,
+                axis_keys=("y", "fitness", "x"),
+                axis_labels=("evo speed", "fitness", "env rate"),
+                mapping_text="x=evo speed, y=fitness, z=env rate",
+                title_text="Hub 3D RGB Channels",
+                rgb_channel_color=True,
+                point_radius_scale=self.rgb_point_radius_scale,
+                use_fitness_filter=True,
+                constant_point_radius=True,
+                depth_shade_strength=self.rgb_depth_shade_strength,
             )
         elif mode == "range_hub_3d_fit":
             self._draw_range_hub_graph_3d(hub_rect)
@@ -5089,13 +6026,24 @@ class HubViewer:
             for row_idx, y0, y1 in self.table_row_hits:
                 if y0 <= my < y1:
                     next_idx = int(row_idx)
-                    if self.selected_row_index != next_idx:
+                    shift_mask = int(getattr(self.pg, "KMOD_SHIFT", 0))
+                    shift_mask |= int(getattr(self.pg, "KMOD_LSHIFT", 0))
+                    shift_mask |= int(getattr(self.pg, "KMOD_RSHIFT", 0))
+                    shift_down = bool(self.pg.key.get_mods() & shift_mask)
+                    if shift_down and self.selected_row_index is not None and int(self.selected_row_index) != next_idx:
+                        self.compare_row_index = next_idx
                         self._selected_scatter_selected = None
-                    self.selected_row_index = next_idx
-                    self._queue_selected_row_load()
+                        self._queue_row_load(next_idx)
+                    else:
+                        if self.selected_row_index != next_idx:
+                            self._selected_scatter_selected = None
+                        self.selected_row_index = next_idx
+                        self.compare_row_index = None
+                        self._queue_selected_row_load()
                     return
             # Clicked selector panel but not on a row: clear selection.
             self.selected_row_index = None
+            self.compare_row_index = None
             self._selected_scatter_selected = None
             self._stop_selected_loader(wait=False)
             return
@@ -5117,6 +6065,9 @@ class HubViewer:
             return
         if self._increment_button_rect is not None and self._increment_button_rect.collidepoint(mx, my):
             self._cycle_increment_mode()
+            return
+        if self._selected_details_button_rect is not None and self._selected_details_button_rect.collidepoint(mx, my):
+            self._open_selected_details_view()
             return
         if self._timeline_load_button_rect is not None and self._timeline_load_button_rect.collidepoint(mx, my):
             self._start_timeline_cache_loader()
@@ -5152,6 +6103,33 @@ class HubViewer:
             self._range_slider_dragging = True
             self._set_range_slider_from_mouse(mx)
             return
+        if self._rgb_size_slider_rect is not None:
+            hit_rect = self._rgb_size_slider_rect.inflate(0, 18)
+            if hit_rect.collidepoint(mx, my):
+                self._rgb_size_slider_dragging = True
+                self._set_rgb_size_slider_from_mouse(mx)
+                return
+        if self._rgb_depth_slider_rect is not None:
+            hit_rect = self._rgb_depth_slider_rect.inflate(0, 18)
+            if hit_rect.collidepoint(mx, my):
+                self._rgb_depth_slider_dragging = True
+                self._set_rgb_depth_slider_from_mouse(mx)
+                return
+        if self._fitness_range_slider_rect is not None:
+            hit_rect = self._fitness_range_slider_rect.inflate(0, 18)
+            if hit_rect.collidepoint(mx, my):
+                min_knob_x = self._fitness_slider_handle_x("min")
+                max_knob_x = self._fitness_slider_handle_x("max")
+                center_y = self._fitness_range_slider_rect.centery
+                if abs(mx - min_knob_x) <= 10 and abs(my - center_y) <= 12:
+                    handle = "min"
+                elif abs(mx - max_knob_x) <= 10 and abs(my - center_y) <= 12:
+                    handle = "max"
+                else:
+                    handle = "min" if abs(mx - min_knob_x) <= abs(mx - max_knob_x) else "max"
+                self._fitness_range_drag_handle = handle
+                self._set_fitness_slider_from_mouse(mx, handle)
+                return
         if self._env_range_slider_rect is not None:
             hit_rect = self._env_range_slider_rect.inflate(0, 18)
             if hit_rect.collidepoint(mx, my):
@@ -5176,6 +6154,7 @@ class HubViewer:
             return
         # Clicked outside selector rows/controls: clear selection.
         self.selected_row_index = None
+        self.compare_row_index = None
         self._selected_scatter_selected = None
         self._stop_selected_loader(wait=False)
 
@@ -5193,6 +6172,7 @@ class HubViewer:
         self.hub_dir = hub_dir
         self.hub_idx = hub_idx
         self.selected_row_index = None
+        self.compare_row_index = None
         self._selected_scatter_selected = None
         self._stop_selected_loader(wait=False)
         self.env_view_min = None
@@ -5239,6 +6219,8 @@ class HubViewer:
                         self._cycle_normalize_mode()
                     elif event.key == self.pg.K_i:
                         self._cycle_increment_mode()
+                    elif event.key == self.pg.K_d:
+                        self._open_selected_details_view()
                     elif event.key == self.pg.K_LEFT:
                         self._rotate_graph_mode(-1)
                     elif event.key == self.pg.K_RIGHT:
@@ -5287,18 +6269,27 @@ class HubViewer:
                     self._handle_click(event.pos)
                 elif event.type == self.pg.MOUSEBUTTONUP and event.button == 1:
                     self._range_slider_dragging = False
+                    self._rgb_size_slider_dragging = False
+                    self._rgb_depth_slider_dragging = False
                     self._timeline_slider_dragging = False
                     self._env_range_drag_handle = None
+                    self._fitness_range_drag_handle = None
                     self._graph3d_dragging = False
                     self._table_scrollbar_dragging = False
                     self._graph3d_last_mouse = None
                 elif event.type == self.pg.MOUSEMOTION:
                     if self._range_slider_dragging:
                         self._set_range_slider_from_mouse(int(event.pos[0]))
+                    if self._rgb_size_slider_dragging:
+                        self._set_rgb_size_slider_from_mouse(int(event.pos[0]))
+                    if self._rgb_depth_slider_dragging:
+                        self._set_rgb_depth_slider_from_mouse(int(event.pos[0]))
                     if self._timeline_slider_dragging:
                         self._set_timeline_slider_from_mouse(int(event.pos[0]))
                     if isinstance(self._env_range_drag_handle, str):
                         self._set_env_slider_from_mouse(int(event.pos[0]), self._env_range_drag_handle)
+                    if isinstance(self._fitness_range_drag_handle, str):
+                        self._set_fitness_slider_from_mouse(int(event.pos[0]), self._fitness_range_drag_handle)
                     if self._table_scrollbar_dragging:
                         self._set_table_scroll_from_thumb_mouse(int(event.pos[1]))
                     if self._graph3d_dragging:
